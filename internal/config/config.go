@@ -19,6 +19,8 @@ type Config struct {
 	HeartbeatIntervalSeconds int      `json:"heartbeat_interval_seconds"`
 	PollIntervalSeconds      int      `json:"poll_interval_seconds"`
 	LedgerPath               string   `json:"ledger_path"`
+	SSHAuthorizedKeysPath    string   `json:"ssh_authorized_keys_path"`
+	AttachBinaryPath         string   `json:"attach_binary_path"`
 }
 
 // WithDefaults fills optional config values.
@@ -37,6 +39,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.LedgerPath == "" {
 		c.LedgerPath = "agent-remote-node-ledger.json"
+	}
+	if c.SSHAuthorizedKeysPath == "" {
+		c.SSHAuthorizedKeysPath = "authorized_keys.agent-remote"
+	}
+	if c.AttachBinaryPath == "" {
+		c.AttachBinaryPath = "agent-remote-attach"
 	}
 	return c
 }

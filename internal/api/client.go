@@ -92,6 +92,23 @@ type PollTasksResponse struct {
 	RequestID string `json:"request_id"`
 }
 
+// VerifyAttachRequest validates an SSH forced-command attach.
+type VerifyAttachRequest struct {
+	NodeID    string `json:"node_id"`
+	SessionID string `json:"session_id"`
+	DeviceID  string `json:"device_id"`
+}
+
+// VerifyAttachResponse is the attach verification response.
+type VerifyAttachResponse struct {
+	Data struct {
+		SessionID       string  `json:"session_id"`
+		TmuxSessionName string  `json:"tmux_session_name"`
+		ContainerID     *string `json:"container_id"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
 // ReconcileRequest is a node reconciliation payload.
 type ReconcileRequest struct {
 	NodeID   string         `json:"node_id"`
@@ -131,6 +148,13 @@ func (c Client) CompleteTask(ctx context.Context, taskID string, result map[stri
 // FailTask reports task failure.
 func (c Client) FailTask(ctx context.Context, taskID string, taskError map[string]any) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/node-api/tasks/"+taskID+"/fail", map[string]any{"error": taskError}, nil, true)
+}
+
+// VerifyAttach validates a forced-command attach request.
+func (c Client) VerifyAttach(ctx context.Context, request VerifyAttachRequest) (VerifyAttachResponse, error) {
+	var response VerifyAttachResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/attach/verify", request, &response, true)
+	return response, err
 }
 
 // Reconcile submits a reconciliation snapshot.

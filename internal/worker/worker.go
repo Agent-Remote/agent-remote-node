@@ -9,6 +9,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
+	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
 )
 
 // Worker executes node heartbeats, task polling, and reconciliation.
@@ -96,7 +97,7 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	if err := w.client.StartTask(ctx, task.TaskID); err != nil {
 		return err
 	}
-	result, err := executeKnownTask(task)
+	result, err := w.executeKnownTask(task)
 	if err != nil {
 		taskError := map[string]any{"code": "NODE_TASK_FAILED", "message": err.Error()}
 		_ = w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError})
@@ -108,12 +109,23 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	return w.client.CompleteTask(ctx, task.TaskID, result)
 }
 
-func executeKnownTask(task api.TaskEnvelope) (map[string]any, error) {
+func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) {
 	switch task.TaskType {
 	case "reconcile_state":
 		return map[string]any{"status": "reconciled"}, nil
 	case "sync_ssh_keys":
-		return map[string]any{"status": "accepted"}, nil
+		payload, err := sshkeys.DecodePayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		path := w.cfg.SSHAuthorizedKeysPath
+		if payload.AuthorizedKeysPath != nil && *payload.AuthorizedKeysPath != "" {
+			path = *payload.AuthorizedKeysPath
+		}
+		if err := sshkeys.Sync(path, w.cfg.AttachBinaryPath, payload); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "synced", "authorized_keys_path": path}, nil
 	case "prepare_workspace":
 		return map[string]any{"status": "prepared"}, nil
 	case "cleanup_resources":

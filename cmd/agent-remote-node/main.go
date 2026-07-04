@@ -11,6 +11,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
+	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
 	"github.com/Agent-Remote/agent-remote-node/internal/worker"
 )
 
@@ -45,6 +46,8 @@ func run(args []string) error {
 		return withWorker(args[1:], func(ctx context.Context, w worker.Worker) error {
 			return w.Run(ctx)
 		})
+	case "install-ssh":
+		return installSSH(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -89,6 +92,23 @@ func register(args []string) error {
 	return nil
 }
 
+func installSSH(args []string) error {
+	fs := flag.NewFlagSet("install-ssh", flag.ContinueOnError)
+	configPath := fs.String("config", "config.json", "config path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if err := sshkeys.Sync(cfg.SSHAuthorizedKeysPath, cfg.AttachBinaryPath, sshkeys.SyncPayload{}); err != nil {
+		return err
+	}
+	fmt.Printf("prepared managed authorized_keys at %s\n", cfg.SSHAuthorizedKeysPath)
+	return nil
+}
+
 func withWorker(args []string, fn func(context.Context, worker.Worker) error) error {
 	fs := flag.NewFlagSet("worker", flag.ContinueOnError)
 	configPath := fs.String("config", "config.json", "config path")
@@ -113,5 +133,5 @@ func withWorker(args []string, fn func(context.Context, worker.Worker) error) er
 }
 
 func printUsage() {
-	fmt.Println("agent-remote-node <register|heartbeat|poll-once|reconcile|run> [flags]")
+	fmt.Println("agent-remote-node <register|heartbeat|poll-once|reconcile|run|install-ssh> [flags]")
 }

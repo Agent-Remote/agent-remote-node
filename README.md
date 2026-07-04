@@ -34,6 +34,16 @@ go run ./cmd/agent-remote-node poll-once --config ./config.json
 go run ./cmd/agent-remote-node run --config ./config.json
 ```
 
+```sh
+go run ./cmd/agent-remote-node install-ssh --config ./config.json
+```
+
+```sh
+go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> --device <device-id> --dry-run
+```
+
+`install-ssh` prepares the managed `authorized_keys` file. Runtime SSH keys are written by the `sync_ssh_keys` node task with forced-command restrictions.
+
 ## Config
 
 `register` writes the node token to the configured JSON file:
@@ -47,7 +57,9 @@ go run ./cmd/agent-remote-node run --config ./config.json
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
-  "ledger_path": "./agent-remote-node-ledger.json"
+  "ledger_path": "./agent-remote-node-ledger.json",
+  "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
+  "attach_binary_path": "agent-remote-attach"
 }
 ```
 
