@@ -53,3 +53,9 @@ go run ./cmd/agent-remote-node run --config ./config.json
 
 The config file contains node credentials and must be stored with deployment-level file permissions.
 
+
+## License
+
+agent-remote-node is licensed under GPL-3.0-only. See `LICENSE`.
+
+Third-party dependency notices are listed in `THIRD_PARTY_NOTICES.md`.
