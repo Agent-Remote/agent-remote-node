@@ -125,3 +125,63 @@ func TestWorkerSyncSSHKeysWritesAuthorizedKeys(t *testing.T) {
 		t.Fatalf("authorized_keys missing forced command: %s", string(data))
 	}
 }
+
+func TestWorkerPrepareWorkspaceCreatesDirectory(t *testing.T) {
+	var completed bool
+	workspaceRoot := t.TempDir()
+	remotePath := workspaceRoot + "/user_1/workspaces/workspace_1/files"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/tasks/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"tasks": []map[string]any{{
+						"task_id":         "task_workspace",
+						"node_id":         "node_1",
+						"task_type":       "prepare_workspace",
+						"idempotency_key": "task_workspace",
+						"payload": map[string]any{
+							"user_id":         "user_1",
+							"workspace_id":    "workspace_1",
+							"sync_session_id": "sync_1",
+							"remote_path":     remotePath,
+						},
+						"lease_until": "2026-07-04T00:00:30Z",
+						"created_at":  "2026-07-04T00:00:00Z",
+						"expires_at":  "2026-07-05T00:00:00Z",
+					}},
+				},
+				"request_id": "req_test",
+			})
+		case "/api/v1/node-api/tasks/task_workspace/start":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/tasks/task_workspace/complete":
+			completed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID:        "node_1",
+		ServerURL:     server.URL,
+		NodeToken:     "node_token",
+		WorkspaceRoot: workspaceRoot,
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+	if err := w.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !completed {
+		t.Fatal("expected task completion")
+	}
+	if _, err := os.Stat(remotePath + "/.agent-remote-workspace.json"); err != nil {
+		t.Fatal(err)
+	}
+}

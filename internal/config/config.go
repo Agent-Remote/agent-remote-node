@@ -21,6 +21,8 @@ type Config struct {
 	LedgerPath               string   `json:"ledger_path"`
 	SSHAuthorizedKeysPath    string   `json:"ssh_authorized_keys_path"`
 	AttachBinaryPath         string   `json:"attach_binary_path"`
+	WorkspaceRoot            string   `json:"workspace_root"`
+	MutagenBinaryPath        string   `json:"mutagen_binary_path"`
 }
 
 // WithDefaults fills optional config values.
@@ -45,6 +47,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.AttachBinaryPath == "" {
 		c.AttachBinaryPath = "agent-remote-attach"
+	}
+	if c.WorkspaceRoot == "" {
+		c.WorkspaceRoot = "/var/lib/agent-remote/users"
+	}
+	if c.MutagenBinaryPath == "" {
+		c.MutagenBinaryPath = "mutagen"
 	}
 	return c
 }

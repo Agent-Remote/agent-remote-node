@@ -8,6 +8,7 @@
   "poll_interval_seconds": 5,
   "ledger_path": "./agent-remote-node-ledger.json",
   "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
-  "attach_binary_path": "agent-remote-attach"
+  "attach_binary_path": "agent-remote-attach",
+  "workspace_root": "/var/lib/agent-remote/users",
+  "mutagen_binary_path": "mutagen"
 }
-

@@ -44,6 +44,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
 
 `install-ssh` prepares the managed `authorized_keys` file. Runtime SSH keys are written by the `sync_ssh_keys` node task with forced-command restrictions.
 
+`prepare_workspace` node tasks create the remote workspace directory under `workspace_root` and write a `.agent-remote-workspace.json` marker file for reconciliation.
+
 ## Config
 
 `register` writes the node token to the configured JSON file:
@@ -59,7 +61,9 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
   "poll_interval_seconds": 5,
   "ledger_path": "./agent-remote-node-ledger.json",
   "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
-  "attach_binary_path": "agent-remote-attach"
+  "attach_binary_path": "agent-remote-attach",
+  "workspace_root": "/var/lib/agent-remote/users",
+  "mutagen_binary_path": "mutagen"
 }
 ```
 

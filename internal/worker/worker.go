@@ -10,6 +10,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
 	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
+	"github.com/Agent-Remote/agent-remote-node/internal/workspace"
 )
 
 // Worker executes node heartbeats, task polling, and reconciliation.
@@ -127,7 +128,19 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 		}
 		return map[string]any{"status": "synced", "authorized_keys_path": path}, nil
 	case "prepare_workspace":
-		return map[string]any{"status": "prepared"}, nil
+		payload, err := workspace.DecodePreparePayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := workspace.Prepare(w.cfg.WorkspaceRoot, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":      "prepared",
+			"remote_path": result.RemotePath,
+			"marker_path": result.MarkerPath,
+		}, nil
 	case "cleanup_resources":
 		return map[string]any{"status": "cleaned"}, nil
 	default:
