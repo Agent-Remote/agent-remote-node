@@ -10,6 +10,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
 	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
+	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/workspace"
 )
 
@@ -140,6 +141,44 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 			"status":      "prepared",
 			"remote_path": result.RemotePath,
 			"marker_path": result.MarkerPath,
+		}, nil
+	case "create_binding_session":
+		payload, err := toolaccounts.DecodeCreateBindingPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := toolaccounts.PrepareBinding(w.cfg.AccountRoot, w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":              result.Status,
+			"binding_session_id":  result.BindingSessionID,
+			"tool_account_id":     result.ToolAccountID,
+			"tool_type":           result.ToolType,
+			"account_remote_path": result.AccountRemotePath,
+			"tmux_session_name":   result.TmuxSessionName,
+			"container_name":      result.ContainerName,
+			"marker_path":         result.MarkerPath,
+			"tmux_started":        result.TmuxStarted,
+			"verifier":            result.Verifier,
+		}, nil
+	case "verify_tool_account":
+		payload, err := toolaccounts.DecodeVerifyPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := toolaccounts.Verify(w.cfg.AccountRoot, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"verified":            result.Verified,
+			"tool_account_id":     result.ToolAccountID,
+			"tool_type":           result.ToolType,
+			"account_remote_path": result.AccountRemotePath,
+			"metadata":            result.Metadata,
+			"error":               result.Error,
 		}, nil
 	case "cleanup_resources":
 		return map[string]any{"status": "cleaned"}, nil

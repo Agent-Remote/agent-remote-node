@@ -22,6 +22,9 @@ type Config struct {
 	SSHAuthorizedKeysPath    string   `json:"ssh_authorized_keys_path"`
 	AttachBinaryPath         string   `json:"attach_binary_path"`
 	WorkspaceRoot            string   `json:"workspace_root"`
+	AccountRoot              string   `json:"account_root"`
+	DockerBinaryPath         string   `json:"docker_binary_path"`
+	TmuxBinaryPath           string   `json:"tmux_binary_path"`
 	MutagenBinaryPath        string   `json:"mutagen_binary_path"`
 }
 
@@ -50,6 +53,15 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.WorkspaceRoot == "" {
 		c.WorkspaceRoot = "/var/lib/agent-remote/users"
+	}
+	if c.AccountRoot == "" {
+		c.AccountRoot = c.WorkspaceRoot
+	}
+	if c.DockerBinaryPath == "" {
+		c.DockerBinaryPath = "docker"
+	}
+	if c.TmuxBinaryPath == "" {
+		c.TmuxBinaryPath = "tmux"
 	}
 	if c.MutagenBinaryPath == "" {
 		c.MutagenBinaryPath = "mutagen"

@@ -46,6 +46,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
 
 `prepare_workspace` node tasks create the remote workspace directory under `workspace_root` and write a `.agent-remote-workspace.json` marker file for reconciliation.
 
+`create_binding_session` node tasks create the remote tool-account archive under `account_root`, write a non-secret `.agent-remote-tool-account.json` marker, and create a Docker Sandbox with the built-in `claude` agent. tmux then holds an interactive `docker sandbox exec ... claude login` process. The sandbox exposes the account archive at the same path, and `CLAUDE_CONFIG_DIR` points to `<account>/.claude`, so Claude authentication and settings persist in the account archive. `verify_tool_account` tasks currently include the Claude verifier and only report matched auth paths, never file contents.
+
 ## Config
 
 `register` writes the node token to the configured JSON file:
@@ -63,6 +65,9 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
   "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
   "attach_binary_path": "agent-remote-attach",
   "workspace_root": "/var/lib/agent-remote/users",
+  "account_root": "/var/lib/agent-remote/users",
+  "docker_binary_path": "docker",
+  "tmux_binary_path": "tmux",
   "mutagen_binary_path": "mutagen"
 }
 ```
