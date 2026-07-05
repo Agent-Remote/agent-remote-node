@@ -11,6 +11,7 @@ import (
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
 	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
+	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
 	"github.com/Agent-Remote/agent-remote-node/internal/workspace"
 )
 
@@ -179,6 +180,46 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 			"account_remote_path": result.AccountRemotePath,
 			"metadata":            result.Metadata,
 			"error":               result.Error,
+		}, nil
+	case "create_tool_session":
+		payload, err := toolsessions.DecodeCreatePayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := toolsessions.Prepare(w.cfg.WorkspaceRoot, w.cfg.AccountRoot, w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":                result.Status,
+			"session_id":            result.SessionID,
+			"tool_account_id":       result.ToolAccountID,
+			"tool_type":             result.ToolType,
+			"workspace_remote_path": result.WorkspaceRemotePath,
+			"account_remote_path":   result.AccountRemotePath,
+			"tmux_session_name":     result.TmuxSessionName,
+			"sandbox_name":          result.SandboxName,
+			"container_id":          result.SandboxName,
+			"marker_path":           result.MarkerPath,
+			"tmux_started":          result.TmuxStarted,
+		}, nil
+	case "stop_tool_session":
+		payload, err := toolsessions.DecodeStopPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := toolsessions.Stop(w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":            result.Status,
+			"session_id":        result.SessionID,
+			"tmux_session_name": result.TmuxSessionName,
+			"sandbox_name":      result.SandboxName,
+			"container_id":      result.SandboxName,
+			"tmux_stopped":      result.TmuxStopped,
+			"sandbox_removed":   result.SandboxRemoved,
 		}, nil
 	case "cleanup_resources":
 		return map[string]any{"status": "cleaned"}, nil

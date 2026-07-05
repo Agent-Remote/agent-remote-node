@@ -273,3 +273,93 @@ func TestWorkerCreateBindingSessionCompletesTask(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestWorkerCreateToolSessionCompletesTask(t *testing.T) {
+	var completed map[string]any
+	workspaceRoot := t.TempDir()
+	accountRoot := t.TempDir()
+	workspacePath := workspaceRoot + "/user_1/workspaces/workspace_1/files"
+	accountPath := accountRoot + "/user_1/accounts/account_1"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/tasks/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"tasks": []map[string]any{{
+						"task_id":         "task_session",
+						"node_id":         "node_1",
+						"task_type":       "create_tool_session",
+						"idempotency_key": "task_session",
+						"payload": map[string]any{
+							"session_id":            "session_1",
+							"tool_account_id":       "account_1",
+							"tool_type":             "claude",
+							"user_id":               "user_1",
+							"workspace_id":          "workspace_1",
+							"project_key":           "sha256:project",
+							"workspace_remote_path": workspacePath,
+							"account_remote_path":   accountPath,
+							"tmux_session_name":     "ar-claude-session",
+							"sandbox_name":          "agent-remote-claude-session",
+							"timezone":              "America/Los_Angeles",
+							"locale":                "en_US.UTF-8",
+							"argv":                  []string{"--model", "opus"},
+							"template":              map[string]any{"sandbox_agent": "claude", "command": []string{"claude", "--model", "opus"}},
+						},
+						"lease_until": "2026-07-04T00:00:30Z",
+						"created_at":  "2026-07-04T00:00:00Z",
+						"expires_at":  "2026-07-05T00:00:00Z",
+					}},
+				},
+				"request_id": "req_test",
+			})
+		case "/api/v1/node-api/tasks/task_session/start":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/tasks/task_session/complete":
+			var body struct {
+				Result map[string]any `json:"result"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			completed = body.Result
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID:           "node_1",
+		ServerURL:        server.URL,
+		NodeToken:        "node_token",
+		WorkspaceRoot:    workspaceRoot,
+		AccountRoot:      accountRoot,
+		DockerBinaryPath: "docker",
+		TmuxBinaryPath:   "agent-remote-missing-tmux",
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+	if err := w.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if completed == nil {
+		t.Fatal("expected task completion")
+	}
+	if completed["status"] != "running" {
+		t.Fatalf("unexpected result: %#v", completed)
+	}
+	if completed["session_id"] != "session_1" {
+		t.Fatalf("unexpected session result: %#v", completed)
+	}
+	if _, err := os.Stat(workspacePath + "/.agent-remote-session.json"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(accountPath + "/.claude"); err != nil {
+		t.Fatal(err)
+	}
+}
