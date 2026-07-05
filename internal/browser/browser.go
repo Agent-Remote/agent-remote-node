@@ -212,11 +212,11 @@ func startContainer(dockerBinary string, image string, profilePath string, brows
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(output), "already in use") || strings.Contains(string(output), "is already in use") {
-			return payload.ContainerName, browserEndpoint(dockerBinary, browserPublicBaseURL, payload.ContainerName), nil
+			return payload.ContainerName, browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
 		}
 		return "", "", fmt.Errorf("docker run failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	return strings.TrimSpace(string(output)), browserEndpoint(dockerBinary, browserPublicBaseURL, payload.ContainerName), nil
+	return lastOutputLine(string(output)), browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
 }
 
 func writeMarker(path string, payload CreatePayload) error {
@@ -267,11 +267,11 @@ func boolText(value bool) string {
 	return "false"
 }
 
-func browserEndpoint(dockerBinary string, browserPublicBaseURL string, containerName string) string {
+func browserEndpoint(dockerBinary string, browserPublicBaseURL string, payload CreatePayload) string {
 	if browserPublicBaseURL != "" {
 		return strings.TrimRight(browserPublicBaseURL, "/")
 	}
-	cmd := exec.Command(dockerBinary, "port", containerName, "6901/tcp")
+	cmd := exec.Command(dockerBinary, "port", payload.ContainerName, "6901/tcp")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return ""
@@ -283,7 +283,18 @@ func browserEndpoint(dockerBinary string, browserPublicBaseURL string, container
 	if strings.HasPrefix(endpoint, "0.0.0.0:") {
 		endpoint = "127.0.0.1:" + strings.TrimPrefix(endpoint, "0.0.0.0:")
 	}
-	return "https://" + endpoint
+	return "https://kasm_user:" + temporaryPassword(payload.BrowserSessionID) + "@" + endpoint + "/"
+}
+
+func lastOutputLine(output string) string {
+	lines := strings.Split(strings.TrimSpace(output), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line != "" {
+			return line
+		}
+	}
+	return ""
 }
 
 func chromeArgs(payload CreatePayload) string {
