@@ -212,11 +212,40 @@ func startContainer(dockerBinary string, image string, profilePath string, brows
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if strings.Contains(string(output), "already in use") || strings.Contains(string(output), "is already in use") {
+			if launchErr := launchChrome(dockerBinary, payload); launchErr != nil {
+				return "", "", launchErr
+			}
 			return payload.ContainerName, browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
 		}
 		return "", "", fmt.Errorf("docker run failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
+	if err := launchChrome(dockerBinary, payload); err != nil {
+		return "", "", err
+	}
 	return lastOutputLine(string(output)), browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
+}
+
+func launchChrome(dockerBinary string, payload CreatePayload) error {
+	script := strings.Join([]string{
+		"if pgrep -x chrome >/dev/null 2>&1; then exit 0; fi",
+		"for i in 1 2 3 4 5 6 7 8 9 10; do [ -S /tmp/.X11-unix/X1 ] && break; sleep 1; done",
+		"nohup google-chrome ${APP_ARGS:-} \"$LAUNCH_URL\" >/tmp/agent-remote-chrome.log 2>&1 &",
+	}, "\n")
+	cmd := exec.Command(
+		dockerBinary,
+		"exec",
+		"-u", "kasm-user",
+		"-e", "DISPLAY=:1",
+		payload.ContainerName,
+		"sh",
+		"-lc",
+		script,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("docker exec chrome launch failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
 }
 
 func writeMarker(path string, payload CreatePayload) error {
