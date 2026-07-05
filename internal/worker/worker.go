@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
+	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
@@ -220,6 +221,45 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 			"container_id":      result.SandboxName,
 			"tmux_stopped":      result.TmuxStopped,
 			"sandbox_removed":   result.SandboxRemoved,
+		}, nil
+	case "create_browser_session":
+		payload, err := browser.DecodeCreatePayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := browser.Start(
+			w.cfg.BrowserRoot,
+			w.cfg.DockerBinaryPath,
+			w.cfg.BrowserImage,
+			w.cfg.BrowserPublicBaseURL,
+			payload,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":             result.Status,
+			"browser_session_id": result.BrowserSessionID,
+			"container_id":       result.ContainerID,
+			"container_name":     result.ContainerName,
+			"stream_endpoint":    result.StreamEndpoint,
+			"profile_path":       result.ProfilePath,
+		}, nil
+	case "stop_browser_session":
+		payload, err := browser.DecodeStopPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := browser.Stop(w.cfg.BrowserRoot, w.cfg.DockerBinaryPath, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":             result.Status,
+			"browser_session_id": result.BrowserSessionID,
+			"container_name":     result.ContainerName,
+			"container_removed":  result.ContainerRemoved,
+			"profile_removed":    result.ProfileRemoved,
 		}, nil
 	case "cleanup_resources":
 		return map[string]any{"status": "cleaned"}, nil

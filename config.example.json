@@ -13,5 +13,8 @@
   "account_root": "/var/lib/agent-remote/users",
   "docker_binary_path": "docker",
   "tmux_binary_path": "tmux",
-  "mutagen_binary_path": "mutagen"
+  "mutagen_binary_path": "mutagen",
+  "browser_root": "/var/lib/agent-remote/browser-sessions",
+  "browser_image": "kasmweb/chrome:1.18.0",
+  "browser_public_base_url": ""
 }

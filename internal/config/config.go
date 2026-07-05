@@ -26,6 +26,9 @@ type Config struct {
 	DockerBinaryPath         string   `json:"docker_binary_path"`
 	TmuxBinaryPath           string   `json:"tmux_binary_path"`
 	MutagenBinaryPath        string   `json:"mutagen_binary_path"`
+	BrowserRoot              string   `json:"browser_root"`
+	BrowserImage             string   `json:"browser_image"`
+	BrowserPublicBaseURL     string   `json:"browser_public_base_url"`
 }
 
 // WithDefaults fills optional config values.
@@ -65,6 +68,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.MutagenBinaryPath == "" {
 		c.MutagenBinaryPath = "mutagen"
+	}
+	if c.BrowserRoot == "" {
+		c.BrowserRoot = "/var/lib/agent-remote/browser-sessions"
+	}
+	if c.BrowserImage == "" {
+		c.BrowserImage = "kasmweb/chrome:1.18.0"
 	}
 	return c
 }
