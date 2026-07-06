@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+const controlPlaneRoot = "/var/lib/agent-remote/users"
+
 // PreparePayload describes a prepare_workspace task payload.
 type PreparePayload struct {
 	UserID        string `json:"user_id"`
@@ -79,6 +81,9 @@ func resolveRemotePath(root string, payload PreparePayload) (string, error) {
 		remotePath = filepath.Join(cleanRoot, payload.UserID, "workspaces", payload.WorkspaceID, "files")
 	}
 	cleanPath := filepath.Clean(remotePath)
+	if mappedPath, ok := mapControlPlanePath(cleanRoot, cleanPath); ok {
+		cleanPath = mappedPath
+	}
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = filepath.Join(cleanRoot, cleanPath)
 	}
@@ -86,6 +91,21 @@ func resolveRemotePath(root string, payload PreparePayload) (string, error) {
 		return "", fmt.Errorf("remote_path %s is outside workspace_root %s", cleanPath, cleanRoot)
 	}
 	return cleanPath, nil
+}
+
+func mapControlPlanePath(root string, candidate string) (string, bool) {
+	cleanControlRoot := filepath.Clean(controlPlaneRoot)
+	if filepath.Clean(root) == cleanControlRoot {
+		return "", false
+	}
+	if !isPathInside(cleanControlRoot, candidate) {
+		return "", false
+	}
+	relative, err := filepath.Rel(cleanControlRoot, candidate)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+		return "", false
+	}
+	return filepath.Join(root, relative), true
 }
 
 func isPathInside(root string, candidate string) bool {

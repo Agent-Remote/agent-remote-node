@@ -1,6 +1,7 @@
 package toolaccounts
 
 import (
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"testing"
@@ -63,6 +64,50 @@ func TestPrepareBindingRejectsOutsidePath(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected outside path to be rejected")
+	}
+}
+
+func TestImportConfigWritesClaudeFiles(t *testing.T) {
+	root := t.TempDir()
+	result, err := ImportConfig(root, ImportConfigPayload{
+		ToolAccountID: "account_1",
+		ToolType:      "claude",
+		UserID:        "user_1",
+		Files: []ImportConfigFile{{
+			Path:          "~/.claude/settings.json",
+			ContentBase64: base64.StdEncoding.EncodeToString([]byte("{\"theme\":\"dark\"}\n")),
+			Mode:          0o600,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != "imported" {
+		t.Fatalf("unexpected status: %s", result.Status)
+	}
+	content, err := os.ReadFile(filepath.Join(result.AccountRemotePath, ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "{\"theme\":\"dark\"}\n" {
+		t.Fatalf("unexpected content: %q", string(content))
+	}
+}
+
+func TestImportConfigRejectsUnsafePath(t *testing.T) {
+	root := t.TempDir()
+	_, err := ImportConfig(root, ImportConfigPayload{
+		ToolAccountID: "account_1",
+		ToolType:      "claude",
+		UserID:        "user_1",
+		Files: []ImportConfigFile{{
+			Path:          "~/.claude/../credentials.json",
+			ContentBase64: base64.StdEncoding.EncodeToString([]byte("{}\n")),
+			Mode:          0o600,
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected unsafe path to be rejected")
 	}
 }
 

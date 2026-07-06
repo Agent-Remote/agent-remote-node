@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const controlPlaneRoot = "/var/lib/agent-remote/users"
+
 // RuntimeTemplate describes the command used by a tool session.
 type RuntimeTemplate struct {
 	SandboxAgent string   `json:"sandbox_agent"`
@@ -18,22 +20,33 @@ type RuntimeTemplate struct {
 	Verifier     string   `json:"verifier"`
 }
 
+// DeveloperCredentials describes optional developer credential injection.
+type DeveloperCredentials struct {
+	ProfileID   string         `json:"profile_id"`
+	GitIdentity map[string]any `json:"git_identity"`
+	GHMode      string         `json:"gh_mode"`
+	SSHMode     string         `json:"ssh_mode"`
+}
+
 // CreatePayload describes a create_tool_session task payload.
 type CreatePayload struct {
-	SessionID           string          `json:"session_id"`
-	ToolAccountID       string          `json:"tool_account_id"`
-	ToolType            string          `json:"tool_type"`
-	UserID              string          `json:"user_id"`
-	WorkspaceID         string          `json:"workspace_id"`
-	ProjectKey          string          `json:"project_key"`
-	WorkspaceRemotePath string          `json:"workspace_remote_path"`
-	AccountRemotePath   string          `json:"account_remote_path"`
-	TmuxSessionName     string          `json:"tmux_session_name"`
-	SandboxName         string          `json:"sandbox_name"`
-	Timezone            string          `json:"timezone"`
-	Locale              string          `json:"locale"`
-	Argv                []string        `json:"argv"`
-	Template            RuntimeTemplate `json:"template"`
+	SessionID                      string                `json:"session_id"`
+	ToolAccountID                  string                `json:"tool_account_id"`
+	ToolType                       string                `json:"tool_type"`
+	UserID                         string                `json:"user_id"`
+	WorkspaceID                    string                `json:"workspace_id"`
+	ProjectKey                     string                `json:"project_key"`
+	WorkspaceRemotePath            string                `json:"workspace_remote_path"`
+	AccountRemotePath              string                `json:"account_remote_path"`
+	DeveloperCredentialProfilePath string                `json:"developer_credential_profile_path"`
+	DeveloperCredentials           *DeveloperCredentials `json:"developer_credentials"`
+	SyncGit                        bool                  `json:"sync_git"`
+	TmuxSessionName                string                `json:"tmux_session_name"`
+	SandboxName                    string                `json:"sandbox_name"`
+	Timezone                       string                `json:"timezone"`
+	Locale                         string                `json:"locale"`
+	Argv                           []string              `json:"argv"`
+	Template                       RuntimeTemplate       `json:"template"`
 }
 
 // CreateResult describes the prepared tool session.
@@ -98,6 +111,9 @@ func DecodeCreatePayload(payload map[string]any) (CreatePayload, error) {
 	if decoded.SandboxName == "" {
 		return CreatePayload{}, errors.New("sandbox_name is required")
 	}
+	if _, ok := payload["sync_git"]; !ok {
+		decoded.SyncGit = true
+	}
 	return decoded, nil
 }
 
@@ -123,12 +139,32 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 	if err != nil {
 		return CreateResult{}, err
 	}
-	accountPath, err := resolvePath(accountRoot, payload.UserID, filepath.Join("accounts", payload.ToolAccountID), payload.AccountRemotePath, "account_remote_path")
+	accountPath, err := resolvePath(accountRoot, payload.UserID, filepath.Join("tool-accounts", payload.ToolType, payload.ToolAccountID), payload.AccountRemotePath, "account_remote_path")
 	if err != nil {
 		return CreateResult{}, err
 	}
+	developerProfilePath := ""
+	if payload.DeveloperCredentialProfilePath != "" {
+		if payload.DeveloperCredentials == nil || payload.DeveloperCredentials.ProfileID == "" {
+			return CreateResult{}, errors.New("developer_credentials.profile_id is required when developer_credential_profile_path is set")
+		}
+		developerProfilePath, err = resolvePath(accountRoot, payload.UserID, filepath.Join("developer-credential-profiles", payload.DeveloperCredentials.ProfileID), payload.DeveloperCredentialProfilePath, "developer_credential_profile_path")
+		if err != nil {
+			return CreateResult{}, err
+		}
+	}
 	for _, dir := range []string{workspacePath, accountPath, filepath.Join(accountPath, ".claude")} {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return CreateResult{}, err
+		}
+	}
+	if developerProfilePath != "" {
+		if err := prepareDeveloperCredentialProfile(developerProfilePath, payload.DeveloperCredentials); err != nil {
+			return CreateResult{}, err
+		}
+	}
+	if payload.SyncGit {
+		if err := ensureGitReady(workspacePath); err != nil {
 			return CreateResult{}, err
 		}
 	}
@@ -137,20 +173,21 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 	}
 	markerPath := filepath.Join(workspacePath, ".agent-remote-session.json")
 	marker := map[string]any{
-		"session_id":            payload.SessionID,
-		"tool_account_id":       payload.ToolAccountID,
-		"tool_type":             payload.ToolType,
-		"user_id":               payload.UserID,
-		"workspace_id":          payload.WorkspaceID,
-		"project_key":           payload.ProjectKey,
-		"workspace_remote_path": workspacePath,
-		"account_remote_path":   accountPath,
-		"tmux_session_name":     payload.TmuxSessionName,
-		"sandbox_name":          payload.SandboxName,
-		"timezone":              payload.Timezone,
-		"locale":                payload.Locale,
-		"command":               sessionCommand(payload),
-		"prepared_at":           time.Now().UTC().Format(time.RFC3339),
+		"session_id":                        payload.SessionID,
+		"tool_account_id":                   payload.ToolAccountID,
+		"tool_type":                         payload.ToolType,
+		"user_id":                           payload.UserID,
+		"workspace_id":                      payload.WorkspaceID,
+		"project_key":                       payload.ProjectKey,
+		"workspace_remote_path":             workspacePath,
+		"account_remote_path":               accountPath,
+		"developer_credential_profile_path": developerProfilePath,
+		"tmux_session_name":                 payload.TmuxSessionName,
+		"sandbox_name":                      payload.SandboxName,
+		"timezone":                          payload.Timezone,
+		"locale":                            payload.Locale,
+		"command":                           sessionCommand(payload),
+		"prepared_at":                       time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
@@ -160,7 +197,7 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 		return CreateResult{}, err
 	}
 
-	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, workspacePath, accountPath, payload)
+	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, workspacePath, accountPath, developerProfilePath, payload)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -212,24 +249,25 @@ func Stop(dockerBinary string, tmuxBinary string, payload StopPayload) (StopResu
 	}, nil
 }
 
-func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath string, accountPath string, payload CreatePayload) (bool, error) {
+func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) (bool, error) {
 	if tmuxBinary == "" || payload.TmuxSessionName == "" {
 		return false, nil
 	}
 	if _, err := exec.LookPath(tmuxBinary); err != nil {
 		return false, nil
 	}
-	if err := ensureSandbox(dockerBinary, workspacePath, accountPath, payload); err != nil {
+	if err := ensureSandbox(dockerBinary, workspacePath, accountPath, developerProfilePath, payload); err != nil {
 		return false, err
 	}
 	if err := exec.Command(tmuxBinary, "has-session", "-t", payload.TmuxSessionName).Run(); err == nil {
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, "new-session", "-d", "-s", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, payload)))
+	cmd := exec.Command(tmuxBinary, "new-session", "-d", "-s", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))
 	cmd.Dir = workspacePath
 	cmd.Env = append(os.Environ(),
 		"AGENT_REMOTE_WORKSPACE_PATH="+workspacePath,
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,
+		"AGENT_REMOTE_DEVELOPER_CREDENTIAL_PROFILE_PATH="+developerProfilePath,
 		"AGENT_REMOTE_TOOL_TYPE="+payload.ToolType,
 		"TZ="+payload.Timezone,
 		"LANG="+payload.Locale,
@@ -241,11 +279,15 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 	return true, nil
 }
 
-func ensureSandbox(dockerBinary string, workspacePath string, accountPath string, payload CreatePayload) error {
+func ensureSandbox(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) error {
 	if _, err := exec.LookPath(dockerBinary); err != nil {
 		return err
 	}
-	cmd := exec.Command(dockerBinary, "sandbox", "create", "--name", payload.SandboxName, sandboxAgent(payload), workspacePath, accountPath)
+	args := []string{"sandbox", "create", "--name", payload.SandboxName, sandboxAgent(payload), workspacePath, accountPath}
+	if developerProfilePath != "" {
+		args = append(args, developerProfilePath)
+	}
+	cmd := exec.Command(dockerBinary, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(string(output), "already exists") || strings.Contains(string(output), "already in use") {
 			return nil
@@ -255,7 +297,7 @@ func ensureSandbox(dockerBinary string, workspacePath string, accountPath string
 	return nil
 }
 
-func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath string, payload CreatePayload) []string {
+func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) []string {
 	args := []string{
 		dockerBinary,
 		"sandbox",
@@ -265,10 +307,78 @@ func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath s
 		"-e", "TZ=" + payload.Timezone,
 		"-e", "LANG=" + payload.Locale,
 		"-e", "LC_ALL=" + payload.Locale,
-		"-w", workspacePath,
-		payload.SandboxName,
 	}
+	if developerProfilePath != "" {
+		args = append(args,
+			"-e", "GH_CONFIG_DIR="+filepath.Join(developerProfilePath, "gh"),
+			"-e", "GIT_CONFIG_GLOBAL="+filepath.Join(developerProfilePath, "home", ".gitconfig"),
+			"-e", "AGENT_REMOTE_DEVELOPER_CREDENTIAL_PROFILE_PATH="+developerProfilePath,
+		)
+	}
+	args = append(args, "-w", workspacePath, payload.SandboxName)
 	return append(args, sessionCommand(payload)...)
+}
+
+func prepareDeveloperCredentialProfile(path string, credentials *DeveloperCredentials) error {
+	if credentials == nil {
+		return nil
+	}
+	for _, dir := range []string{path, filepath.Join(path, "home"), filepath.Join(path, "gh"), filepath.Join(path, ".ssh")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	gitconfig := gitConfig(credentials.GitIdentity)
+	if gitconfig != "" {
+		if err := os.WriteFile(filepath.Join(path, "home", ".gitconfig"), []byte(gitconfig), 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func gitConfig(identity map[string]any) string {
+	name, _ := identity["user_name"].(string)
+	email, _ := identity["user_email"].(string)
+	if name == "" && email == "" {
+		return ""
+	}
+	lines := []string{"[user]"}
+	if name != "" {
+		lines = append(lines, "\tname = "+name)
+	}
+	if email != "" {
+		lines = append(lines, "\temail = "+email)
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func ensureGitReady(workspacePath string) error {
+	gitPath := filepath.Join(workspacePath, ".git")
+	info, err := os.Stat(gitPath)
+	if err != nil || !info.IsDir() {
+		return nil
+	}
+	var locks []string
+	err = filepath.WalkDir(gitPath, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() && (path == filepath.Join(gitPath, "hooks") || path == filepath.Join(gitPath, "worktrees")) {
+			return filepath.SkipDir
+		}
+		if !entry.IsDir() && filepath.Ext(path) == ".lock" {
+			locks = append(locks, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if len(locks) > 0 {
+		return fmt.Errorf("workspace Git metadata has active lock files: %s", strings.Join(locks, ", "))
+	}
+	return nil
 }
 
 func sessionCommand(payload CreatePayload) []string {
@@ -295,6 +405,9 @@ func resolvePath(root string, userID string, defaultSuffix string, remotePath st
 		candidate = filepath.Join(cleanRoot, userID, defaultSuffix)
 	}
 	cleanPath := filepath.Clean(candidate)
+	if mappedPath, ok := mapControlPlanePath(cleanRoot, cleanPath); ok {
+		cleanPath = mappedPath
+	}
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = filepath.Join(cleanRoot, cleanPath)
 	}
@@ -302,6 +415,21 @@ func resolvePath(root string, userID string, defaultSuffix string, remotePath st
 		return "", fmt.Errorf("%s %s is outside root %s", label, cleanPath, cleanRoot)
 	}
 	return cleanPath, nil
+}
+
+func mapControlPlanePath(root string, candidate string) (string, bool) {
+	cleanControlRoot := filepath.Clean(controlPlaneRoot)
+	if filepath.Clean(root) == cleanControlRoot {
+		return "", false
+	}
+	if !isPathInside(cleanControlRoot, candidate) {
+		return "", false
+	}
+	relative, err := filepath.Rel(cleanControlRoot, candidate)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+		return "", false
+	}
+	return filepath.Join(root, relative), true
 }
 
 func ensureFile(path string, defaultContent []byte) error {

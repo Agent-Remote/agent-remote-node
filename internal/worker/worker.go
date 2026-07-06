@@ -182,6 +182,23 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 			"metadata":            result.Metadata,
 			"error":               result.Error,
 		}, nil
+	case "import_tool_account_config":
+		payload, err := toolaccounts.DecodeImportConfigPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		result, err := toolaccounts.ImportConfig(w.cfg.AccountRoot, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":              result.Status,
+			"tool_account_id":     result.ToolAccountID,
+			"tool_type":           result.ToolType,
+			"account_remote_path": result.AccountRemotePath,
+			"files_written":       result.FilesWritten,
+			"files_written_count": len(result.FilesWritten),
+		}, nil
 	case "create_tool_session":
 		payload, err := toolsessions.DecodeCreatePayload(task.Payload)
 		if err != nil {

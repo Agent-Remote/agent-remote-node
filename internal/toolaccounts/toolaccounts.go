@@ -1,6 +1,7 @@
 package toolaccounts
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"time"
 )
+
+const controlPlaneRoot = "/var/lib/agent-remote/users"
 
 // RuntimeTemplate describes the command used by a tool binding session.
 type RuntimeTemplate struct {
@@ -66,6 +69,31 @@ type VerifyResult struct {
 	Error             string         `json:"error,omitempty"`
 }
 
+// ImportConfigPayload describes an import_tool_account_config task payload.
+type ImportConfigPayload struct {
+	ToolAccountID     string             `json:"tool_account_id"`
+	ToolType          string             `json:"tool_type"`
+	UserID            string             `json:"user_id"`
+	AccountRemotePath string             `json:"account_remote_path"`
+	Files             []ImportConfigFile `json:"files"`
+}
+
+// ImportConfigFile describes one config file to write into the account directory.
+type ImportConfigFile struct {
+	Path          string `json:"path"`
+	ContentBase64 string `json:"content_base64"`
+	Mode          uint32 `json:"mode"`
+}
+
+// ImportConfigResult describes imported config files.
+type ImportConfigResult struct {
+	Status            string   `json:"status"`
+	ToolAccountID     string   `json:"tool_account_id"`
+	ToolType          string   `json:"tool_type"`
+	AccountRemotePath string   `json:"account_remote_path"`
+	FilesWritten      []string `json:"files_written"`
+}
+
 // DecodeCreateBindingPayload converts a generic task payload into a typed payload.
 func DecodeCreateBindingPayload(payload map[string]any) (CreateBindingPayload, error) {
 	data, err := json.Marshal(payload)
@@ -116,9 +144,34 @@ func DecodeVerifyPayload(payload map[string]any) (VerifyPayload, error) {
 	return decoded, nil
 }
 
+// DecodeImportConfigPayload converts a generic import payload into a typed payload.
+func DecodeImportConfigPayload(payload map[string]any) (ImportConfigPayload, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return ImportConfigPayload{}, err
+	}
+	var decoded ImportConfigPayload
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return ImportConfigPayload{}, err
+	}
+	if decoded.ToolAccountID == "" {
+		return ImportConfigPayload{}, errors.New("tool_account_id is required")
+	}
+	if decoded.ToolType == "" {
+		return ImportConfigPayload{}, errors.New("tool_type is required")
+	}
+	if decoded.UserID == "" {
+		return ImportConfigPayload{}, errors.New("user_id is required")
+	}
+	if len(decoded.Files) == 0 {
+		return ImportConfigPayload{}, errors.New("files are required")
+	}
+	return decoded, nil
+}
+
 // PrepareBinding creates the account config archive directory and binding shell.
 func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload CreateBindingPayload) (BindingResult, error) {
-	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolAccountID, payload.AccountRemotePath)
+	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolType, payload.ToolAccountID, payload.AccountRemotePath)
 	if err != nil {
 		return BindingResult{}, err
 	}
@@ -177,9 +230,43 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 	}, nil
 }
 
+// ImportConfig writes local CLI config files into the remote tool account directory.
+func ImportConfig(root string, payload ImportConfigPayload) (ImportConfigResult, error) {
+	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolType, payload.ToolAccountID, payload.AccountRemotePath)
+	if err != nil {
+		return ImportConfigResult{}, err
+	}
+	if err := os.MkdirAll(filepath.Join(accountPath, ".claude"), 0o700); err != nil {
+		return ImportConfigResult{}, err
+	}
+	filesWritten := make([]string, 0, len(payload.Files))
+	for _, file := range payload.Files {
+		targetPath, err := resolveImportConfigTarget(accountPath, file.Path)
+		if err != nil {
+			return ImportConfigResult{}, err
+		}
+		content, err := base64.StdEncoding.DecodeString(file.ContentBase64)
+		if err != nil {
+			return ImportConfigResult{}, fmt.Errorf("decode %s: %w", file.Path, err)
+		}
+		mode := sanitizeFileMode(file.Mode)
+		if err := writeFileAtomic(targetPath, content, mode); err != nil {
+			return ImportConfigResult{}, err
+		}
+		filesWritten = append(filesWritten, file.Path)
+	}
+	return ImportConfigResult{
+		Status:            "imported",
+		ToolAccountID:     payload.ToolAccountID,
+		ToolType:          payload.ToolType,
+		AccountRemotePath: accountPath,
+		FilesWritten:      filesWritten,
+	}, nil
+}
+
 // Verify checks whether a tool account has enough remote auth state to be active.
 func Verify(root string, payload VerifyPayload) (VerifyResult, error) {
-	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolAccountID, payload.AccountRemotePath)
+	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolType, payload.ToolAccountID, payload.AccountRemotePath)
 	if err != nil {
 		return VerifyResult{}, err
 	}
@@ -288,6 +375,60 @@ func ensureFile(path string, defaultContent []byte) error {
 	return os.WriteFile(path, defaultContent, 0o600)
 }
 
+func resolveImportConfigTarget(accountPath string, importPath string) (string, error) {
+	if importPath == "" || strings.Contains(importPath, "\\") || strings.Contains(importPath, "\x00") {
+		return "", fmt.Errorf("invalid import path %q", importPath)
+	}
+	if !strings.HasPrefix(importPath, "~/.claude/") {
+		return "", fmt.Errorf("unsupported import path %q", importPath)
+	}
+	relative := strings.TrimPrefix(importPath, "~/.claude/")
+	parts := strings.Split(relative, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("unsafe import path %q", importPath)
+		}
+	}
+	targetPath := filepath.Join(append([]string{accountPath, ".claude"}, parts...)...)
+	if !isPathInside(filepath.Join(accountPath, ".claude"), targetPath) {
+		return "", fmt.Errorf("import path %q resolves outside .claude", importPath)
+	}
+	return targetPath, nil
+}
+
+func sanitizeFileMode(mode uint32) os.FileMode {
+	if mode == 0o644 {
+		return 0o644
+	}
+	return 0o600
+}
+
+func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent-remote-import-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = os.Remove(tmpPath)
+	}()
+	if _, err := tmp.Write(content); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
+}
+
 func shellCommand(args []string) string {
 	quoted := make([]string, 0, len(args))
 	for _, arg := range args {
@@ -332,13 +473,16 @@ func hasAuthLikeFile(path string) bool {
 	return info.Size() > 4
 }
 
-func resolveAccountPath(root string, userID string, toolAccountID string, remotePath string) (string, error) {
+func resolveAccountPath(root string, userID string, toolType string, toolAccountID string, remotePath string) (string, error) {
 	cleanRoot := filepath.Clean(root)
 	accountPath := remotePath
 	if accountPath == "" {
-		accountPath = filepath.Join(cleanRoot, userID, "accounts", toolAccountID)
+		accountPath = filepath.Join(cleanRoot, userID, "tool-accounts", toolType, toolAccountID)
 	}
 	cleanPath := filepath.Clean(accountPath)
+	if mappedPath, ok := mapControlPlanePath(cleanRoot, cleanPath); ok {
+		cleanPath = mappedPath
+	}
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = filepath.Join(cleanRoot, cleanPath)
 	}
@@ -346,6 +490,21 @@ func resolveAccountPath(root string, userID string, toolAccountID string, remote
 		return "", fmt.Errorf("account_remote_path %s is outside account_root %s", cleanPath, cleanRoot)
 	}
 	return cleanPath, nil
+}
+
+func mapControlPlanePath(root string, candidate string) (string, bool) {
+	cleanControlRoot := filepath.Clean(controlPlaneRoot)
+	if filepath.Clean(root) == cleanControlRoot {
+		return "", false
+	}
+	if !isPathInside(cleanControlRoot, candidate) {
+		return "", false
+	}
+	relative, err := filepath.Rel(cleanControlRoot, candidate)
+	if err != nil || relative == "." || strings.HasPrefix(relative, "..") {
+		return "", false
+	}
+	return filepath.Join(root, relative), true
 }
 
 func isPathInside(root string, candidate string) bool {
