@@ -1,5 +1,7 @@
 # agent-remote-node
 
+English | [中文](README.zh-CN.md)
+
 Node-side runtime for agent-remote.
 
 The node runs on a VPS and talks to `agent-remote-server` by polling the control plane. It does not expose public HTTP ports.
@@ -108,7 +110,9 @@ sudo systemctl enable --now agent-remote-node
 VERSION=0.0.2 scripts/build-release.sh
 ```
 
-The release archive includes node binaries, installer, systemd unit, sample config, license, and notices.
+The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.
+
+Each archive includes node binaries, installer, systemd unit, sample config, license, and notices.
 
 GitHub Actions runs this packaging flow for `v*` tags and uploads the archives to the GitHub Release.
 

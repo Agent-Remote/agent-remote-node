@@ -16,10 +16,10 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7.0.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
       - name: Normalize version
@@ -46,7 +46,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet; then
-            git add README.md internal/config/config.go scripts/build-release.sh
+            git add README.md README.zh-CN.md internal/config/config.go scripts/build-release.sh CHANGELOG.md
             git commit -m "chore: release v${version}"
           fi
           git tag "v${version}"

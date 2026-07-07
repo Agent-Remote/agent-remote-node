@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.1.0" >&2
+  echo "Example: $0 0.0.2" >&2
 }
 
 if [[ $# -ne 1 ]]; then
@@ -35,6 +35,10 @@ replacements = {
         r'VERSION="\$\{VERSION:-[^}]+\}"',
         f'VERSION="${{VERSION:-{version}}}"',
     ),
+    Path("config.example.json"): (
+        r'"version": "[0-9A-Za-z.+-]+"',
+        f'"version": "{version}"',
+    ),
 }
 
 for path, (pattern, replacement) in replacements.items():
@@ -52,8 +56,20 @@ if readme.exists():
         text,
     )
     readme.write_text(text)
+
+readme_cn = Path("README.zh-CN.md")
+if readme_cn.exists():
+    text = readme_cn.read_text()
+    text = re.sub(
+        r"VERSION=[0-9A-Za-z.+-]+ scripts/build-release\.sh",
+        f"VERSION={version} scripts/build-release.sh",
+        text,
+    )
+    readme_cn.write_text(text)
 PY
 
 go test ./...
+
+scripts/update-changelog.sh "$VERSION"
 
 echo "Prepared agent-remote-node v${VERSION}"
