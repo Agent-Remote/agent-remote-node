@@ -7,7 +7,8 @@ import (
 	"path/filepath"
 )
 
-const defaultVersion = "0.1.0"
+// DefaultVersion is overridden by release builds through Go ldflags.
+var DefaultVersion = "0.1.0"
 
 // Config contains local node runtime settings.
 type Config struct {
@@ -34,7 +35,7 @@ type Config struct {
 // WithDefaults fills optional config values.
 func (c Config) WithDefaults() Config {
 	if c.Version == "" {
-		c.Version = defaultVersion
+		c.Version = DefaultVersion
 	}
 	if len(c.SupportedToolTypes) == 0 {
 		c.SupportedToolTypes = []string{"claude"}

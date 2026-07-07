@@ -59,7 +59,7 @@ func register(args []string) error {
 	serverURL := fs.String("server-url", "", "server URL")
 	nodeID := fs.String("node-id", "", "node ID")
 	registrationToken := fs.String("registration-token", "", "registration token")
-	version := fs.String("version", "0.1.0", "node version")
+	version := fs.String("version", config.DefaultVersion, "node version")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

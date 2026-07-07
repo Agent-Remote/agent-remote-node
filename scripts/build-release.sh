@@ -14,11 +14,11 @@ for target in $TARGETS; do
   package="agent-remote-node-${VERSION}-${GOOS}-${GOARCH}"
   work="$OUT_DIR/$package"
   mkdir -p "$work"
-  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -o "$work/agent-remote-node" ./cmd/agent-remote-node
-  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -o "$work/agent-remote-attach" ./cmd/agent-remote-attach
+  ldflags="-s -w -X github.com/Agent-Remote/agent-remote-node/internal/config.DefaultVersion=${VERSION}"
+  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$work/agent-remote-node" ./cmd/agent-remote-node
+  GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$work/agent-remote-attach" ./cmd/agent-remote-attach
   cp -R config.example.json systemd scripts/install-node.sh README.md LICENSE THIRD_PARTY_NOTICES.md "$work/"
   tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
 done
 
 echo "release artifacts written to $OUT_DIR"
-
