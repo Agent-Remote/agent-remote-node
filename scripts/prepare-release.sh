@@ -55,6 +55,7 @@ if readme.exists():
         f"VERSION={version} scripts/build-release.sh",
         text,
     )
+    text = re.sub(r"--version [0-9A-Za-z.+-]+", f"--version {version}", text)
     readme.write_text(text)
 
 readme_cn = Path("README.zh-CN.md")
@@ -65,6 +66,7 @@ if readme_cn.exists():
         f"VERSION={version} scripts/build-release.sh",
         text,
     )
+    text = re.sub(r"--version [0-9A-Za-z.+-]+", f"--version {version}", text)
     readme_cn.write_text(text)
 PY
 

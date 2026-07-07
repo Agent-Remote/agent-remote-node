@@ -94,7 +94,8 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
 Install a specific version or customize paths:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh |   sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
+  sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
 ```
 
 Install from a downloaded release archive:

@@ -94,7 +94,8 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
 安装指定版本或自定义路径：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh |   sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
+  sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
 ```
 
 从已下载的发布归档安装：
