@@ -81,6 +81,36 @@ The config file contains node credentials and must be stored with deployment-lev
 
 `browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.
 
+## Systemd Install
+
+Build or download a release archive, then run:
+
+```sh
+sudo scripts/install-node.sh
+```
+
+The installer installs node binaries, creates `/etc/agent-remote-node`, creates `/var/lib/agent-remote-node`, installs `systemd/agent-remote-node.service`, and checks Docker, OpenSSH, tmux, Mutagen, and TUN availability.
+
+After creating a node in the admin console, register it:
+
+```sh
+sudo agent-remote-node register \
+  --config /etc/agent-remote-node/config.json \
+  --server-url https://agent-remote.example.com \
+  --node-id <node-id> \
+  --registration-token <registration-token>
+sudo systemctl enable --now agent-remote-node
+```
+
+## Release Packaging
+
+```sh
+VERSION=0.1.0 scripts/build-release.sh
+```
+
+The release archive includes node binaries, installer, systemd unit, sample config, license, and notices.
+
+GitHub Actions runs this packaging flow for `v*` tags and uploads the archives to the GitHub Release.
 
 ## License
 

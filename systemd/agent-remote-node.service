@@ -1,0 +1,20 @@
+[Unit]
+Description=agent-remote node worker
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/agent-remote-node/agent-remote-node.env
+ExecStart=/usr/local/bin/agent-remote-node run --config /etc/agent-remote-node/config.json
+Restart=always
+RestartSec=5
+User=agent-remote
+Group=agent-remote
+WorkingDirectory=/var/lib/agent-remote-node
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
+
