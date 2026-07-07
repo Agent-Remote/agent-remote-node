@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version without the leading v
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -16,12 +22,20 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Resolve release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
+          version="${version#v}"
+          echo "value=${version}" >> "$GITHUB_OUTPUT"
       - name: Build release packages
         env:
-          VERSION: ${{ github.ref_name }}
-        run: |
-          VERSION="${VERSION#v}" scripts/build-release.sh
+          VERSION: ${{ steps.version.outputs.value }}
+        run: scripts/build-release.sh
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: v${{ steps.version.outputs.value }}
           files: dist/*.tar.gz
-
