@@ -59,7 +59,7 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.1.0",
+  "version": "0.0.2",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -105,7 +105,7 @@ sudo systemctl enable --now agent-remote-node
 ## Release Packaging
 
 ```sh
-VERSION=0.1.0 scripts/build-release.sh
+VERSION=0.0.2 scripts/build-release.sh
 ```
 
 The release archive includes node binaries, installer, systemd unit, sample config, license, and notices.
