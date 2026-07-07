@@ -120,7 +120,7 @@ sudo systemctl enable --now agent-remote-node
 ## 发布打包
 
 ```sh
-VERSION=0.0.2 scripts/build-release.sh
+VERSION=0.0.3 scripts/build-release.sh
 ```
 
 发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。
