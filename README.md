@@ -85,13 +85,25 @@ The config file contains node credentials and must be stored with deployment-lev
 
 ## Systemd Install
 
-Build or download a release archive, then run:
+Install the latest release directly:
 
 ```sh
-sudo scripts/install-node.sh
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | sudo bash
 ```
 
-The installer installs node binaries, creates `/etc/agent-remote-node`, creates `/var/lib/agent-remote-node`, installs `systemd/agent-remote-node.service`, and checks Docker, OpenSSH, tmux, Mutagen, and TUN availability.
+Install a specific version or customize paths:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh |   sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
+```
+
+Install from a downloaded release archive:
+
+```sh
+sudo ./install.sh
+```
+
+The installer installs node binaries, creates `/etc/agent-remote-node`, creates `/var/lib/agent-remote-node`, installs `systemd/agent-remote-node.service` when systemd is enabled, and checks Docker, OpenSSH, tmux, Mutagen, and TUN availability. It can also override the GitHub repository, version, target, OS, architecture, libc label, prefix, config directory, state directory, data directory, service user, systemd installation, and sudo behavior.
 
 After creating a node in the admin console, register it:
 

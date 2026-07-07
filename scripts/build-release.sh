@@ -35,7 +35,10 @@ EOF
   ldflags="-s -w -X github.com/Agent-Remote/agent-remote-node/internal/config.DefaultVersion=${VERSION}"
   GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$work/agent-remote-node" ./cmd/agent-remote-node
   GOOS="$GOOS" GOARCH="$GOARCH" CGO_ENABLED=0 go build -ldflags "$ldflags" -o "$work/agent-remote-attach" ./cmd/agent-remote-attach
-  cp -R config.example.json systemd scripts/install-node.sh README.md README.zh-CN.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md "$work/"
+  cp -R config.example.json systemd README.md README.zh-CN.md CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md "$work/"
+  mkdir -p "$work/scripts"
+  install -m 0755 scripts/install.sh "$work/scripts/install.sh"
+  install -m 0755 scripts/install.sh "$work/install.sh"
   tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
 done
 

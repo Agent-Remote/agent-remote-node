@@ -85,13 +85,25 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
 
 ## Systemd 安装
 
-构建或下载发布归档后运行：
+直接安装最新 release：
 
 ```sh
-sudo scripts/install-node.sh
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | sudo bash
 ```
 
-安装器会安装节点二进制，创建 `/etc/agent-remote-node`，创建 `/var/lib/agent-remote-node`，安装 `systemd/agent-remote-node.service`，并检查 Docker、OpenSSH、tmux、Mutagen 和 TUN 可用性。
+安装指定版本或自定义路径：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh |   sudo bash -s -- --version 0.0.3 --prefix /usr/local --config-dir /etc/agent-remote-node
+```
+
+从已下载的发布归档安装：
+
+```sh
+sudo ./install.sh
+```
+
+安装器会安装节点二进制，创建 `/etc/agent-remote-node`，创建 `/var/lib/agent-remote-node`，在启用 systemd 时安装 `systemd/agent-remote-node.service`，并检查 Docker、OpenSSH、tmux、Mutagen 和 TUN 可用性。它也可以覆盖 GitHub 仓库、版本、target、OS、架构、libc 标签、prefix、配置目录、状态目录、数据目录、服务用户、systemd 安装和 sudo 行为。
 
 在管理控制台创建节点后注册它：
 
