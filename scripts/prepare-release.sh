@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.0.2" >&2
+  echo "Example: $0 0.0.3" >&2
 }
 
 if [[ $# -ne 1 ]]; then
@@ -27,6 +27,10 @@ from pathlib import Path
 version = sys.argv[1]
 
 replacements = {
+    Path("scripts/prepare-release.sh"): (
+        r"Example: \$0 [0-9A-Za-z.+-]+",
+        f"Example: $0 {version}",
+    ),
     Path("internal/config/config.go"): (
         r'var DefaultVersion = "[^"]+"',
         f'var DefaultVersion = "{version}"',
@@ -61,6 +65,7 @@ if readme.exists():
 readme_cn = Path("README.zh-CN.md")
 if readme_cn.exists():
     text = readme_cn.read_text()
+    text = re.sub(r'"version": "[0-9A-Za-z.+-]+"', f'"version": "{version}"', text, count=1)
     text = re.sub(
         r"VERSION=[0-9A-Za-z.+-]+ scripts/build-release\.sh",
         f"VERSION={version} scripts/build-release.sh",

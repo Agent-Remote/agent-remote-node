@@ -61,7 +61,7 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
