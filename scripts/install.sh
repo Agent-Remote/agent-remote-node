@@ -18,7 +18,18 @@ INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 CREATE_USER="${CREATE_USER:-1}"
 USE_SUDO="${USE_SUDO:-auto}"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+resolve_script_dir() {
+  if [ -n "${BASH_SOURCE+x}" ] && [ "${#BASH_SOURCE[@]}" -gt 0 ]; then
+    local source="${BASH_SOURCE[0]:-}"
+    if [ -n "$source" ] && [ -e "$source" ]; then
+      cd "$(dirname "$source")" && pwd
+      return
+    fi
+  fi
+  printf ''
+}
+
+SCRIPT_DIR="$(resolve_script_dir)"
 
 usage() {
   cat <<'EOF'
@@ -335,9 +346,9 @@ download_and_install() {
   fi
 }
 
-if [ -x "$SCRIPT_DIR/agent-remote-node" ] && [ -x "$SCRIPT_DIR/agent-remote-attach" ]; then
+if [ -n "$SCRIPT_DIR" ] && [ -x "$SCRIPT_DIR/agent-remote-node" ] && [ -x "$SCRIPT_DIR/agent-remote-attach" ]; then
   install_packaged "$SCRIPT_DIR"
-elif [ -x "$SCRIPT_DIR/../agent-remote-node" ] && [ -x "$SCRIPT_DIR/../agent-remote-attach" ]; then
+elif [ -n "$SCRIPT_DIR" ] && [ -x "$SCRIPT_DIR/../agent-remote-node" ] && [ -x "$SCRIPT_DIR/../agent-remote-attach" ]; then
   install_packaged "$(cd "$SCRIPT_DIR/.." && pwd)"
 else
   download_and_install
