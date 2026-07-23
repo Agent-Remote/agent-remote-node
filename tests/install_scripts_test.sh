@@ -27,6 +27,8 @@ grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools ar
 grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
 grep -q 'systemctl restart agent-remote-runtime.service' "$ROOT/scripts/install.sh" || \
   fail "runtime helper is not restarted during upgrades"
+grep -q '^StateDirectoryMode=0711$' "$ROOT/systemd/agent-remote-runtime.service" || \
+  fail "runtime state root must remain traversable after systemd restarts"
 grep -q 'systemctl restart "wg-quick@\$WIREGUARD_INTERFACE.service"' "$ROOT/scripts/install.sh" || \
   fail "WireGuard is not restarted during upgrades"
 grep -q 'systemctl restart agent-remote-node.service' "$ROOT/scripts/install.sh" || \

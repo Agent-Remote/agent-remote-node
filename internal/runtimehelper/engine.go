@@ -635,7 +635,7 @@ func (e Engine) prepareAccount(ctx context.Context, payload map[string]any) (map
 	if err := ensureOwnedFile(filepath.Join(accountPath, ".claude.json"), []byte("{}\n"), 0o600, e.identity(userID)); err != nil {
 		return nil, err
 	}
-	spec, err := e.buildSpec(payload, bindingID, userID, accountID, workspacePath, accountPath, []string{"login"}, "binding")
+	spec, err := e.buildSpec(payload, bindingID, userID, accountID, workspacePath, accountPath, []string{"auth", "login"}, "binding")
 	if err != nil {
 		return nil, err
 	}

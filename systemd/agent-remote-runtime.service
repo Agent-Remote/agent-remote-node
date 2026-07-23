@@ -14,7 +14,9 @@ UMask=0077
 RuntimeDirectory=agent-remote
 RuntimeDirectoryMode=0750
 StateDirectory=agent-remote-runtime
-StateDirectoryMode=0700
+# Runtime identities need to traverse the state root; per-session ACLs and
+# owner-only tmux directories enforce access below it.
+StateDirectoryMode=0711
 NoNewPrivileges=no
 # The helper must create host-visible mounts and network namespaces for transient units.
 PrivateTmp=no
