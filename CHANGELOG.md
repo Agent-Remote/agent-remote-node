@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.7 - 2026-07-23
+
+- fix: support Mutagen agent bootstrap in sync sandbox (2b854f1)
+
 ## v0.0.4-fix.6 - 2026-07-23
 
 - fix: keep native binding sessions attachable (837faae)
