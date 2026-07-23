@@ -1691,15 +1691,21 @@ func SyncCommand(config EngineConfig, userID string, command string) error {
 	}
 	userRoot := filepath.Join(config.WorkspaceRoot, userID)
 	syncHome := filepath.Join(userRoot, ".sync-home")
-	if err := engine.prepareOwnedDirectories(userID, userRoot, syncHome); err != nil {
+	syncTemp := filepath.Join(userRoot, ".sync-tmp")
+	if err := engine.prepareOwnedDirectories(userID, userRoot, syncHome, syncTemp); err != nil {
 		return err
 	}
 	args := []string{
 		"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid",
 		"--unshare-ipc", "--unshare-uts", "--unshare-net", "--proc", "/proc",
-		"--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/home", "--dir", "/home/runtime",
+		"--dev", "/dev", "--dir", "/tmp", "--dir", "/etc", "--dir", "/home", "--dir", "/home/runtime",
 	}
 	for _, path := range []string{"/usr", "/bin", "/lib", "/lib64"} {
+		if pathExists(path) {
+			args = append(args, "--ro-bind", path, path)
+		}
+	}
+	for _, path := range []string{"/etc/passwd", "/etc/group", "/etc/nsswitch.conf"} {
 		if pathExists(path) {
 			args = append(args, "--ro-bind", path, path)
 		}
@@ -1709,10 +1715,9 @@ func SyncCommand(config EngineConfig, userID string, command string) error {
 	}
 	args = append(args,
 		"--bind", userRoot, userRoot,
-		"--bind", syncHome, "/home/runtime",
-		"--setenv", "HOME", "/home/runtime",
-		"--setenv", "TMPDIR", "/tmp",
-		"--chdir", userRoot,
+		"--setenv", "HOME", syncHome,
+		"--setenv", "TMPDIR", syncTemp,
+		"--chdir", syncHome,
 		"--", "/bin/sh", "-lc", command,
 	)
 	if err := syscall.Setgroups([]int{identity.GID}); err != nil {

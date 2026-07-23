@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"errors"
+	"os/exec"
+	"testing"
+)
 
 func TestSessionFromOriginalCommand(t *testing.T) {
 	sessionID, err := sessionFromOriginalCommand("agent-remote-attach --session session-123")
@@ -34,5 +38,16 @@ func TestDefaultConfigPathUsesEnvironment(t *testing.T) {
 	t.Setenv("AGENT_REMOTE_NODE_CONFIG", "/custom/config.json")
 	if path := defaultConfigPath(); path != "/custom/config.json" {
 		t.Fatalf("unexpected config path %q", path)
+	}
+}
+
+func TestChildExitErrorCanPreserveMissingCommandStatus(t *testing.T) {
+	err := exec.Command("sh", "-c", "exit 127").Run()
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) {
+		t.Fatalf("expected exec exit error, got %v", err)
+	}
+	if exitError.ExitCode() != 127 {
+		t.Fatalf("unexpected exit code %d", exitError.ExitCode())
 	}
 }
