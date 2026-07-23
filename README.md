@@ -79,6 +79,7 @@ Native account binding requires a registered device token and an active SSH key.
   "browser_root": "/var/lib/agent-remote/browser-sessions",
   "browser_image": "kasmweb/chrome:1.18.0",
   "browser_public_base_url": "",
+  "browser_docker_network": "",
   "allowed_runtime_backends": ["docker_sandbox", "native"],
   "runtime_socket_path": "/run/agent-remote/runtime.sock",
   "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
@@ -89,6 +90,8 @@ Native account binding requires a registered device token and an active SSH key.
 The config file contains node credentials and must be stored with deployment-level file permissions.
 
 `browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.
+
+For a control plane and node running on the same Docker host, set `browser_docker_network` to the control-plane Compose network (for example `agent-remote_default`). Browser containers then join that private network and the control plane reaches KasmVNC by container DNS without exposing its port on the host.
 
 ## One-command Install
 

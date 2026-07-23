@@ -36,6 +36,7 @@ type Config struct {
 	BrowserRoot              string   `json:"browser_root"`
 	BrowserImage             string   `json:"browser_image"`
 	BrowserPublicBaseURL     string   `json:"browser_public_base_url"`
+	BrowserDockerNetwork     string   `json:"browser_docker_network"`
 	AllowedRuntimeBackends   []string `json:"allowed_runtime_backends"`
 	RuntimeSocketPath        string   `json:"runtime_socket_path"`
 	RuntimeBinaryPath        string   `json:"runtime_binary_path"`

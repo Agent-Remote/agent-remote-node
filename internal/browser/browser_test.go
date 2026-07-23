@@ -22,7 +22,7 @@ func TestStartCreatesTemporaryProfileWithoutDocker(t *testing.T) {
 	payload.Browser.Mode = "incognito"
 	payload.NetworkPolicy.DisableWebRTCLocalIP = true
 
-	result, err := Start(root, "agent-remote-missing-docker", "kasmweb/chrome:1.18.0", "", payload)
+	result, err := Start(root, "agent-remote-missing-docker", "kasmweb/chrome:1.18.0", "", "", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestStopRemovesTemporaryProfileWithoutDocker(t *testing.T) {
 		Locale:           "en_US.UTF-8",
 		ContainerName:    "agent-remote-browser-bsess123",
 	}
-	result, err := Start(root, "agent-remote-missing-docker", "kasmweb/chrome:1.18.0", "", payload)
+	result, err := Start(root, "agent-remote-missing-docker", "kasmweb/chrome:1.18.0", "", "", payload)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,5 +64,16 @@ func TestStopRemovesTemporaryProfileWithoutDocker(t *testing.T) {
 	}
 	if _, err := os.Stat(result.ProfilePath); !os.IsNotExist(err) {
 		t.Fatalf("expected profile directory to be removed, got %v", err)
+	}
+}
+
+func TestBrowserEndpointUsesContainerDNSOnConfiguredNetwork(t *testing.T) {
+	payload := CreatePayload{
+		BrowserSessionID: "bsess_123",
+		ContainerName:    "agent-remote-browser-bsess123",
+	}
+	want := "https://kasm_user:ar-bsess123@agent-remote-browser-bsess123:6901/"
+	if got := browserEndpoint("missing-docker", "", "agent-remote_default", payload); got != want {
+		t.Fatalf("unexpected network endpoint: %s", got)
 	}
 }

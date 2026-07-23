@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
 
@@ -93,6 +94,7 @@ func serve(args []string) error {
 	wireGuardPrivateKey := fs.String("wireguard-private-key", "/etc/agent-remote-node/wireguard.key", "root-owned WireGuard private key")
 	wireGuardListenPort := fs.Int("wireguard-listen-port", 51820, "WireGuard UDP listen port")
 	wgBinary := fs.String("wg-binary", "wg", "WireGuard control binary")
+	nodeConfigPath := fs.String("node-config", "/etc/agent-remote-node/config.json", "node configuration path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -117,10 +119,29 @@ func serve(args []string) error {
 		WireGuardListenPort: *wireGuardListenPort,
 		WGBinaryPath:        *wgBinary,
 	}
+	if err := applyBrowserConfig(&config, *nodeConfigPath); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server := runtimehelper.NewServer(*socketPath, groupID, userID, runtimehelper.NewEngine(config))
 	return server.Serve(ctx)
+}
+
+func applyBrowserConfig(runtimeConfig *runtimehelper.EngineConfig, path string) error {
+	nodeConfig, err := config.Load(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load node config: %w", err)
+	}
+	runtimeConfig.DockerBinaryPath = nodeConfig.DockerBinaryPath
+	runtimeConfig.BrowserRoot = nodeConfig.BrowserRoot
+	runtimeConfig.BrowserImage = nodeConfig.BrowserImage
+	runtimeConfig.BrowserPublicBaseURL = nodeConfig.BrowserPublicBaseURL
+	runtimeConfig.BrowserDockerNetwork = nodeConfig.BrowserDockerNetwork
+	return nil
 }
 
 func probe(args []string) error {

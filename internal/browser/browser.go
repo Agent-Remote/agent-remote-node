@@ -123,7 +123,7 @@ func DecodeStopPayload(payload map[string]any) (StopPayload, error) {
 }
 
 // Start creates an incognito browser runtime without mounting workspace or account data.
-func Start(browserRoot string, dockerBinary string, defaultImage string, browserPublicBaseURL string, payload CreatePayload) (CreateResult, error) {
+func Start(browserRoot string, dockerBinary string, defaultImage string, browserPublicBaseURL string, browserDockerNetwork string, payload CreatePayload) (CreateResult, error) {
 	profilePath, err := sessionProfilePath(browserRoot, payload.BrowserSessionID)
 	if err != nil {
 		return CreateResult{}, err
@@ -142,7 +142,7 @@ func Start(browserRoot string, dockerBinary string, defaultImage string, browser
 	containerID := payload.ContainerName
 	streamEndpoint := "node-local://browser/" + payload.BrowserSessionID
 	if _, err := exec.LookPath(dockerBinary); err == nil {
-		startedID, mappedEndpoint, err := startContainer(dockerBinary, image, profilePath, browserPublicBaseURL, payload)
+		startedID, mappedEndpoint, err := startContainer(dockerBinary, image, profilePath, browserPublicBaseURL, browserDockerNetwork, payload)
 		if err != nil {
 			return CreateResult{}, err
 		}
@@ -192,7 +192,7 @@ func Stop(browserRoot string, dockerBinary string, payload StopPayload) (StopRes
 	}, nil
 }
 
-func startContainer(dockerBinary string, image string, profilePath string, browserPublicBaseURL string, payload CreatePayload) (string, string, error) {
+func startContainer(dockerBinary string, image string, profilePath string, browserPublicBaseURL string, browserDockerNetwork string, payload CreatePayload) (string, string, error) {
 	args := []string{
 		"run",
 		"--rm",
@@ -205,9 +205,13 @@ func startContainer(dockerBinary string, image string, profilePath string, brows
 		"-e", "APP_ARGS=" + chromeArgs(payload),
 		"-e", "VNC_PW=" + temporaryPassword(payload.BrowserSessionID),
 		"-v", profilePath + ":/tmp/agent-remote-browser-profile",
-		"-p", "127.0.0.1::6901",
-		image,
 	}
+	if browserDockerNetwork == "" {
+		args = append(args, "-p", "127.0.0.1::6901")
+	} else {
+		args = append(args, "--network", browserDockerNetwork)
+	}
+	args = append(args, image)
 	cmd := exec.Command(dockerBinary, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -215,14 +219,14 @@ func startContainer(dockerBinary string, image string, profilePath string, brows
 			if launchErr := launchChrome(dockerBinary, payload); launchErr != nil {
 				return "", "", launchErr
 			}
-			return payload.ContainerName, browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
+			return payload.ContainerName, browserEndpoint(dockerBinary, browserPublicBaseURL, browserDockerNetwork, payload), nil
 		}
 		return "", "", fmt.Errorf("docker run failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	if err := launchChrome(dockerBinary, payload); err != nil {
 		return "", "", err
 	}
-	return lastOutputLine(string(output)), browserEndpoint(dockerBinary, browserPublicBaseURL, payload), nil
+	return lastOutputLine(string(output)), browserEndpoint(dockerBinary, browserPublicBaseURL, browserDockerNetwork, payload), nil
 }
 
 func launchChrome(dockerBinary string, payload CreatePayload) error {
@@ -296,9 +300,12 @@ func boolText(value bool) string {
 	return "false"
 }
 
-func browserEndpoint(dockerBinary string, browserPublicBaseURL string, payload CreatePayload) string {
+func browserEndpoint(dockerBinary string, browserPublicBaseURL string, browserDockerNetwork string, payload CreatePayload) string {
 	if browserPublicBaseURL != "" {
 		return strings.TrimRight(browserPublicBaseURL, "/")
+	}
+	if browserDockerNetwork != "" {
+		return "https://kasm_user:" + temporaryPassword(payload.BrowserSessionID) + "@" + payload.ContainerName + ":6901/"
 	}
 	cmd := exec.Command(dockerBinary, "port", payload.ContainerName, "6901/tcp")
 	output, err := cmd.CombinedOutput()

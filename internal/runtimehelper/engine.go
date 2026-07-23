@@ -49,6 +49,7 @@ type EngineConfig struct {
 	BrowserRoot          string
 	BrowserImage         string
 	BrowserPublicBaseURL string
+	BrowserDockerNetwork string
 	WireGuardInterface   string
 	WireGuardPrivateKey  string
 	WireGuardListenPort  int
@@ -337,7 +338,14 @@ func (e Engine) dockerStartBrowser(payload map[string]any) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
-	result, err := browser.Start(e.config.BrowserRoot, e.config.DockerBinaryPath, e.config.BrowserImage, e.config.BrowserPublicBaseURL, decoded)
+	result, err := browser.Start(
+		e.config.BrowserRoot,
+		e.config.DockerBinaryPath,
+		e.config.BrowserImage,
+		e.config.BrowserPublicBaseURL,
+		e.config.BrowserDockerNetwork,
+		decoded,
+	)
 	if err != nil {
 		return nil, err
 	}
