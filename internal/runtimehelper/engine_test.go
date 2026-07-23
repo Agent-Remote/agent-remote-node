@@ -2,6 +2,7 @@ package runtimehelper
 
 import (
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,55 @@ import (
 	"syscall"
 	"testing"
 )
+
+func TestWireGuardSyncUsesValidatedRootOwnedConfig(t *testing.T) {
+	stateRoot := t.TempDir()
+	privateKeyPath := filepath.Join(t.TempDir(), "wireguard.key")
+	privateKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	publicBytes := make([]byte, 32)
+	publicBytes[0] = 1
+	publicKey := base64.StdEncoding.EncodeToString(publicBytes)
+	if err := os.WriteFile(privateKeyPath, []byte(privateKey+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	capturePath := filepath.Join(t.TempDir(), "sync.conf")
+	wgPath := writeTestCommand(t, "wg", `
+[ "$1" = syncconf ] || exit 2
+[ "$2" = agent-remote ] || exit 3
+cp "$3" "$WG_CAPTURE"
+`)
+	t.Setenv("WG_CAPTURE", capturePath)
+	engine := NewEngine(EngineConfig{
+		StateRoot: stateRoot, WireGuardPrivateKey: privateKeyPath, WGBinaryPath: wgPath,
+	})
+	result, err := engine.wireGuardSync(context.Background(), map[string]any{
+		"peers": []any{map[string]any{
+			"public_key": publicKey, "allowed_ips": []any{"10.77.0.2/32"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["peer_count"] != 1 {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	captured, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{privateKey, publicKey, "AllowedIPs = 10.77.0.2/32"} {
+		if !strings.Contains(string(captured), expected) {
+			t.Fatalf("sync config is missing %q", expected)
+		}
+	}
+	entries, err := os.ReadDir(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary WireGuard config was not removed: %#v", entries)
+	}
+}
 
 func TestParseRuntimePolicyAppliesDefaultsAndLowerLimits(t *testing.T) {
 	policy, err := parseRuntimePolicy(map[string]any{

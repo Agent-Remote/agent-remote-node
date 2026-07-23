@@ -1,8 +1,9 @@
 [Unit]
 Description=agent-remote node worker
-After=network-online.target agent-remote-runtime.service
+After=network-online.target agent-remote-runtime.service wg-quick@agent-remote.service
 Wants=network-online.target
 Wants=agent-remote-runtime.service
+Wants=wg-quick@agent-remote.service
 
 [Service]
 Type=simple

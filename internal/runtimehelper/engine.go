@@ -21,6 +21,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
+	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
 	"github.com/Agent-Remote/agent-remote-node/internal/workspace"
 )
 
@@ -48,6 +49,10 @@ type EngineConfig struct {
 	BrowserRoot          string
 	BrowserImage         string
 	BrowserPublicBaseURL string
+	WireGuardInterface   string
+	WireGuardPrivateKey  string
+	WireGuardListenPort  int
+	WGBinaryPath         string
 }
 
 // WithDefaults returns a complete helper configuration.
@@ -115,6 +120,18 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 	if c.BrowserImage == "" {
 		c.BrowserImage = "kasmweb/chrome:1.18.0"
 	}
+	if c.WireGuardInterface == "" {
+		c.WireGuardInterface = "agent-remote"
+	}
+	if c.WireGuardPrivateKey == "" {
+		c.WireGuardPrivateKey = "/etc/agent-remote-node/wireguard.key"
+	}
+	if c.WireGuardListenPort <= 0 {
+		c.WireGuardListenPort = 51820
+	}
+	if c.WGBinaryPath == "" {
+		c.WGBinaryPath = "wg"
+	}
 	return c
 }
 
@@ -136,7 +153,7 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 	if err := validateID(request.RequestID, "request_id"); err != nil {
 		return nil, err
 	}
-	cacheable := request.Operation != "probe" && request.Operation != "inspect_session" && request.Operation != "list_sessions"
+	cacheable := request.Operation != "probe" && request.Operation != "inspect_session" && request.Operation != "list_sessions" && request.Operation != "wireguard_sync"
 	if cacheable {
 		if cached, ok, err := e.cachedResult(request.RequestID); err != nil {
 			return nil, err
@@ -175,6 +192,8 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 		result, err = e.dockerStopBrowser(request.Payload)
 	case "prepare_workspace":
 		result, err = e.prepareWorkspace(request.Payload)
+	case "wireguard_sync":
+		result, err = e.wireGuardSync(ctx, request.Payload)
 	default:
 		err = fmt.Errorf("unsupported operation %q", request.Operation)
 	}
@@ -187,6 +206,46 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 		}
 	}
 	return result, nil
+}
+
+func (e Engine) wireGuardSync(ctx context.Context, payload map[string]any) (map[string]any, error) {
+	decoded, err := wireguard.DecodeSyncPayload(payload)
+	if err != nil {
+		return nil, err
+	}
+	if err := wireguard.ValidateInterface(e.config.WireGuardInterface); err != nil {
+		return nil, err
+	}
+	privateKey, err := os.ReadFile(e.config.WireGuardPrivateKey)
+	if err != nil {
+		return nil, fmt.Errorf("read wireguard private key: %w", err)
+	}
+	rendered, err := wireguard.RenderSyncConfig(string(privateKey), e.config.WireGuardListenPort, decoded)
+	if err != nil {
+		return nil, err
+	}
+	file, err := os.CreateTemp(e.config.StateRoot, "wireguard-sync-*.conf")
+	if err != nil {
+		return nil, err
+	}
+	path := file.Name()
+	defer os.Remove(path)
+	if err := file.Chmod(0o600); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if _, err := file.WriteString(rendered); err != nil {
+		file.Close()
+		return nil, err
+	}
+	if err := file.Close(); err != nil {
+		return nil, err
+	}
+	output, err := exec.CommandContext(ctx, e.config.WGBinaryPath, "syncconf", e.config.WireGuardInterface, path).CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("wireguard sync failed: %s", strings.TrimSpace(string(output)))
+	}
+	return map[string]any{"status": "synchronized", "peer_count": len(decoded.Peers)}, nil
 }
 
 func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error) {

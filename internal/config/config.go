@@ -3,8 +3,13 @@ package config
 import (
 	"encoding/json"
 	"errors"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
+
+	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
 )
 
 // DefaultVersion is overridden by release builds through Go ldflags.
@@ -34,6 +39,12 @@ type Config struct {
 	RuntimeSocketPath        string   `json:"runtime_socket_path"`
 	RuntimeBinaryPath        string   `json:"runtime_binary_path"`
 	ClaudeRuntimePath        string   `json:"claude_runtime_path"`
+	WireGuardInterface       string   `json:"wireguard_interface"`
+	WireGuardPrivateKeyPath  string   `json:"wireguard_private_key_path"`
+	WireGuardAddress         string   `json:"wireguard_address"`
+	WireGuardPublicKey       string   `json:"wireguard_public_key"`
+	WireGuardEndpoint        string   `json:"wireguard_endpoint"`
+	WireGuardListenPort      int      `json:"wireguard_listen_port"`
 }
 
 // WithDefaults fills optional config values.
@@ -92,6 +103,15 @@ func (c Config) WithDefaults() Config {
 	if c.ClaudeRuntimePath == "" {
 		c.ClaudeRuntimePath = "/opt/agent-remote/runtimes/claude/current/bin/claude"
 	}
+	if c.WireGuardInterface == "" {
+		c.WireGuardInterface = "agent-remote"
+	}
+	if c.WireGuardPrivateKeyPath == "" {
+		c.WireGuardPrivateKeyPath = "/etc/agent-remote-node/wireguard.key"
+	}
+	if c.WireGuardListenPort <= 0 {
+		c.WireGuardListenPort = 51820
+	}
 	return c
 }
 
@@ -109,6 +129,26 @@ func (c Config) Validate(requireToken bool) error {
 	if len(c.AllowedRuntimeBackends) == 0 {
 		return errors.New("allowed_runtime_backends requires at least one backend")
 	}
+	if err := wireguard.ValidateInterface(c.WireGuardInterface); err != nil {
+		return err
+	}
+	if c.WireGuardListenPort < 1 || c.WireGuardListenPort > 65535 {
+		return errors.New("wireguard_listen_port is invalid")
+	}
+	wireGuardConfigured := c.WireGuardPublicKey != "" || c.WireGuardAddress != "" || c.WireGuardEndpoint != ""
+	if wireGuardConfigured {
+		if err := wireguard.ValidateKey(c.WireGuardPublicKey); err != nil {
+			return errors.New("wireguard_public_key is invalid")
+		}
+		address, err := netip.ParsePrefix(c.WireGuardAddress)
+		if err != nil || !address.Addr().Is4() || address.Bits() < 8 || address.Bits() > 32 {
+			return errors.New("wireguard_address must be an IPv4 CIDR")
+		}
+		host, port, err := net.SplitHostPort(c.WireGuardEndpoint)
+		if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" || strings.ContainsAny(host, " \t\r\n") {
+			return errors.New("wireguard_endpoint must contain a host and port")
+		}
+	}
 	seenBackends := make(map[string]bool, len(c.AllowedRuntimeBackends))
 	for _, backend := range c.AllowedRuntimeBackends {
 		if backend != "docker_sandbox" && backend != "native" {
@@ -120,6 +160,15 @@ func (c Config) Validate(requireToken bool) error {
 		seenBackends[backend] = true
 	}
 	return nil
+}
+
+// WireGuardIP returns the host address without the local interface prefix.
+func (c Config) WireGuardIP() string {
+	prefix, err := netip.ParsePrefix(c.WireGuardAddress)
+	if err != nil {
+		return ""
+	}
+	return prefix.Addr().String()
 }
 
 // Load reads a JSON config file.

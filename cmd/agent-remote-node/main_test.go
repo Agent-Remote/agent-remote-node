@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -9,6 +10,29 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 )
+
+func TestConfigureWireGuardUsesControlPlaneHost(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Config{
+		ServerURL: "https://64-81-112-77.sslip.io",
+		NodeID:    "node_1",
+		NodeToken: "node_token",
+	}.WithDefaults()
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	publicKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
+	if err := configureWireGuard([]string{"--config", configPath, "--public-key", publicKey}); err != nil {
+		t.Fatal(err)
+	}
+	configured, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.WireGuardEndpoint != "64-81-112-77.sslip.io:51820" || configured.WireGuardAddress != "10.77.0.1/24" {
+		t.Fatalf("unexpected WireGuard config: %#v", configured)
+	}
+}
 
 func TestSplitCommaList(t *testing.T) {
 	got := splitCommaList("native, docker_sandbox, ,native")

@@ -89,6 +89,10 @@ func serve(args []string) error {
 	claudeRuntime := fs.String("claude-runtime", "/opt/agent-remote/runtimes/claude/current/bin/claude", "managed Claude executable")
 	groupName := fs.String("group", "agent-remote", "socket access group")
 	userName := fs.String("user", "agent-remote", "authorized node worker user")
+	wireGuardInterface := fs.String("wireguard-interface", "agent-remote", "managed WireGuard interface")
+	wireGuardPrivateKey := fs.String("wireguard-private-key", "/etc/agent-remote-node/wireguard.key", "root-owned WireGuard private key")
+	wireGuardListenPort := fs.Int("wireguard-listen-port", 51820, "WireGuard UDP listen port")
+	wgBinary := fs.String("wg-binary", "wg", "WireGuard control binary")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -101,13 +105,17 @@ func serve(args []string) error {
 		return err
 	}
 	config := runtimehelper.EngineConfig{
-		StateRoot:         *stateRoot,
-		WorkspaceRoot:     *workspaceRoot,
-		AccountRoot:       *accountRoot,
-		RuntimeBinaryPath: os.Args[0],
-		ClaudeRuntimePath: *claudeRuntime,
-		DataGroup:         *groupName,
-		NodeUser:          *userName,
+		StateRoot:           *stateRoot,
+		WorkspaceRoot:       *workspaceRoot,
+		AccountRoot:         *accountRoot,
+		RuntimeBinaryPath:   os.Args[0],
+		ClaudeRuntimePath:   *claudeRuntime,
+		DataGroup:           *groupName,
+		NodeUser:            *userName,
+		WireGuardInterface:  *wireGuardInterface,
+		WireGuardPrivateKey: *wireGuardPrivateKey,
+		WireGuardListenPort: *wireGuardListenPort,
+		WGBinaryPath:        *wgBinary,
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

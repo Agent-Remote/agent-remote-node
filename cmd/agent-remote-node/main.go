@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -50,9 +53,51 @@ func run(args []string) error {
 		})
 	case "install-ssh":
 		return installSSH(args[1:])
+	case "configure-wireguard":
+		return configureWireGuard(args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func configureWireGuard(args []string) error {
+	fs := flag.NewFlagSet("configure-wireguard", flag.ContinueOnError)
+	configPath := fs.String("config", "config.json", "config path")
+	publicKey := fs.String("public-key", "", "WireGuard public key")
+	address := fs.String("address", "10.77.0.1/24", "WireGuard interface address")
+	endpoint := fs.String("endpoint", "", "public WireGuard endpoint")
+	interfaceName := fs.String("interface", "agent-remote", "WireGuard interface")
+	privateKeyPath := fs.String("private-key-path", "/etc/agent-remote-node/wireguard.key", "root-owned private key path")
+	listenPort := fs.Int("listen-port", 51820, "WireGuard UDP listen port")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *publicKey == "" {
+		return errors.New("public-key is required")
+	}
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	resolvedEndpoint := *endpoint
+	if resolvedEndpoint == "" {
+		serverURL, err := url.Parse(cfg.ServerURL)
+		if err != nil || serverURL.Hostname() == "" {
+			return errors.New("cannot infer WireGuard endpoint from server_url")
+		}
+		resolvedEndpoint = net.JoinHostPort(serverURL.Hostname(), fmt.Sprintf("%d", *listenPort))
+	}
+	cfg.WireGuardInterface = *interfaceName
+	cfg.WireGuardPrivateKeyPath = *privateKeyPath
+	cfg.WireGuardAddress = *address
+	cfg.WireGuardPublicKey = *publicKey
+	cfg.WireGuardEndpoint = resolvedEndpoint
+	cfg.WireGuardListenPort = *listenPort
+	if err := config.Save(*configPath, cfg); err != nil {
+		return err
+	}
+	fmt.Printf("configured WireGuard endpoint for node %s\n", cfg.NodeID)
+	return nil
 }
 
 func register(args []string) error {
@@ -194,5 +239,5 @@ func withWorker(args []string, fn func(context.Context, worker.Worker) error) er
 }
 
 func printUsage() {
-	fmt.Println("agent-remote-node <register|heartbeat|poll-once|reconcile|run|install-ssh> [flags]")
+	fmt.Println("agent-remote-node <register|heartbeat|poll-once|reconcile|run|install-ssh|configure-wireguard> [flags]")
 }

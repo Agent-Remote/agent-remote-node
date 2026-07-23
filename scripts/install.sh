@@ -31,6 +31,10 @@ CLAUDE_VERSION="${CLAUDE_VERSION:-}"
 CLAUDE_SOURCE="${CLAUDE_SOURCE:-}"
 CLAUDE_SHA256="${CLAUDE_SHA256:-}"
 CLAUDE_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-/opt/agent-remote/runtimes/claude}"
+WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
+WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
+WIREGUARD_ENDPOINT="${AGENT_REMOTE_WIREGUARD_ENDPOINT:-}"
+WIREGUARD_LISTEN_PORT="${AGENT_REMOTE_WIREGUARD_LISTEN_PORT:-51820}"
 TEMP_PATHS=()
 
 track_temp() {
@@ -86,6 +90,10 @@ Options:
   --registration-token T  One-time node registration token.
   --force-register        Exchange the token even if this node is already configured.
   --runtime-backends LIST Comma-separated backends. Default: native.
+  --wireguard-interface NAME  WireGuard interface. Default: agent-remote.
+  --wireguard-address CIDR    Node tunnel address. Default: 10.77.0.1/24.
+  --wireguard-endpoint HOST:PORT  Public UDP endpoint; inferred from server URL by default.
+  --wireguard-listen-port PORT    UDP listen port. Default: 51820.
   --claude-channel VALUE  Official Claude channel. Default: stable.
   --claude-version VALUE  Pin an official Claude version, or use with --claude-source.
   --claude-source PATH    Pinned Claude executable path or URL.
@@ -115,6 +123,10 @@ Environment:
   AGENT_REMOTE_NODE_ID       Same as --node-id.
   AGENT_REMOTE_REGISTRATION_TOKEN  Same as --registration-token.
   AGENT_REMOTE_RUNTIME_BACKENDS    Same as --runtime-backends.
+  AGENT_REMOTE_WIREGUARD_INTERFACE Same as --wireguard-interface.
+  AGENT_REMOTE_WIREGUARD_ADDRESS   Same as --wireguard-address.
+  AGENT_REMOTE_WIREGUARD_ENDPOINT  Same as --wireguard-endpoint.
+  AGENT_REMOTE_WIREGUARD_LISTEN_PORT Same as --wireguard-listen-port.
   CLAUDE_CHANNEL             Same as --claude-channel.
   CLAUDE_VERSION             Same as --claude-version.
   CLAUDE_SOURCE              Same as --claude-source.
@@ -193,6 +205,22 @@ while [ "$#" -gt 0 ]; do
       ;;
     --runtime-backends)
       RUNTIME_BACKENDS="${2:?--runtime-backends requires a value}"
+      shift 2
+      ;;
+    --wireguard-interface)
+      WIREGUARD_INTERFACE="${2:?--wireguard-interface requires a value}"
+      shift 2
+      ;;
+    --wireguard-address)
+      WIREGUARD_ADDRESS="${2:?--wireguard-address requires a value}"
+      shift 2
+      ;;
+    --wireguard-endpoint)
+      WIREGUARD_ENDPOINT="${2:?--wireguard-endpoint requires a value}"
+      shift 2
+      ;;
+    --wireguard-listen-port)
+      WIREGUARD_LISTEN_PORT="${2:?--wireguard-listen-port requires a value}"
       shift 2
       ;;
     --claude-channel)
@@ -276,6 +304,20 @@ validate_options() {
       *) echo "unsupported runtime backend: $backend" >&2; exit 2 ;;
     esac
   done
+  case "$WIREGUARD_INTERFACE" in
+    ''|*[!A-Za-z0-9_.-]*) echo "invalid WireGuard interface: $WIREGUARD_INTERFACE" >&2; exit 2 ;;
+  esac
+  if [ "${#WIREGUARD_INTERFACE}" -gt 15 ]; then
+    echo "WireGuard interface must not exceed 15 characters" >&2
+    exit 2
+  fi
+  case "$WIREGUARD_LISTEN_PORT" in
+    ''|*[!0-9]*) echo "invalid WireGuard listen port" >&2; exit 2 ;;
+  esac
+  if [ "$WIREGUARD_LISTEN_PORT" -lt 1 ] || [ "$WIREGUARD_LISTEN_PORT" -gt 65535 ]; then
+    echo "invalid WireGuard listen port" >&2
+    exit 2
+  fi
 }
 
 backend_enabled() {
@@ -320,7 +362,7 @@ run_as_service_user() {
 }
 
 install_system_dependencies() {
-  if [ "$INSTALL_DEPENDENCIES" != "1" ] || ! backend_enabled native; then
+  if [ "$INSTALL_DEPENDENCIES" != "1" ]; then
     return
   fi
   if [ "$(uname -s)" != "Linux" ]; then
@@ -354,8 +396,15 @@ install_system_dependencies() {
   esac
   echo "Installing native runtime dependencies"
   run_as_root apt-get update
-  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
-    acl bubblewrap ca-certificates curl iproute2 locales nftables openssh-server procps tar tmux util-linux
+  if backend_enabled native; then
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
+      acl bubblewrap ca-certificates curl iproute2 locales nftables openssh-server procps tar tmux util-linux wireguard-tools
+  else
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends wireguard-tools
+  fi
+  if ! backend_enabled native; then
+    return
+  fi
   if ! locale -a | tr '[:upper:]' '[:lower:]' | grep -Eq '^en_us\.(utf-?8|utf8)$'; then
     run_as_root locale-gen en_US.UTF-8
   fi
@@ -477,13 +526,14 @@ escape_sed_replacement() {
 }
 
 render_system_file() {
-  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root
+  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root wireguard_interface
   prefix="$(escape_sed_replacement "$PREFIX")"
   config_dir="$(escape_sed_replacement "$CONFIG_DIR")"
   state_dir="$(escape_sed_replacement "$STATE_DIR")"
   data_dir="$(escape_sed_replacement "$DATA_DIR")"
   user_name="$(escape_sed_replacement "$USER_NAME")"
   claude_runtime_root="$(escape_sed_replacement "$CLAUDE_RUNTIME_ROOT")"
+  wireguard_interface="$(escape_sed_replacement "$WIREGUARD_INTERFACE")"
   sed \
     -e "s|/var/lib/agent-remote-runtime|@AGENT_REMOTE_RUNTIME_STATE@|g" \
     -e "s|/var/lib/agent-remote-node|@AGENT_REMOTE_NODE_STATE@|g" \
@@ -496,6 +546,9 @@ render_system_file() {
     -e "s|Group=agent-remote|Group=$user_name|g" \
     -e "s|--group agent-remote|--group $user_name|g" \
     -e "s|--user agent-remote|--user $user_name|g" \
+    -e "s|--wireguard-interface agent-remote|--wireguard-interface $wireguard_interface|g" \
+    -e "s|wg-quick@agent-remote|wg-quick@$wireguard_interface|g" \
+    -e "s|--wireguard-listen-port 51820|--wireguard-listen-port $WIREGUARD_LISTEN_PORT|g" \
     -e "s|^agent-remote ALL=|$user_name ALL=|" \
     -e "s|@AGENT_REMOTE_NODE_STATE@|$state_dir|g" \
     -e "s|@AGENT_REMOTE_USERS@|$data_dir/users|g" \
@@ -639,6 +692,8 @@ install_packaged() {
   check_dependency mount
   check_dependency umount
   check_dependency cp
+  check_dependency wg
+  check_dependency wg-quick
   check_native_prerequisites
   if [ "$(uname -s)" = "Linux" ] && [ ! -c /dev/net/tun ]; then
     echo "warn missing /dev/net/tun; WireGuard tunnel support may be unavailable" >&2
@@ -768,6 +823,45 @@ register_node() {
   run_as_root chmod 0600 "$CONFIG_DIR/config.json"
 }
 
+configure_wireguard() {
+  if [ "$INSTALL_SYSTEMD" != "1" ] || [ "$(uname -s)" != "Linux" ]; then
+    return
+  fi
+  if ! command -v wg >/dev/null 2>&1 || ! command -v wg-quick >/dev/null 2>&1; then
+    echo "WireGuard tools are required; install wireguard-tools or remove --no-dependencies" >&2
+    exit 1
+  fi
+  local key_path config_path public_key wg_path endpoint_args
+  key_path="$CONFIG_DIR/wireguard.key"
+  config_path="/etc/wireguard/$WIREGUARD_INTERFACE.conf"
+  wg_path="$(command -v wg)"
+  run_as_root install -d -m 0700 "$CONFIG_DIR"
+  run_as_root install -d -m 0700 /etc/wireguard
+  if ! run_as_root test -s "$key_path"; then
+    run_as_root sh -c 'umask 077; "$1" genkey > "$2"' sh "$wg_path" "$key_path"
+  fi
+  run_as_root chmod 0600 "$key_path"
+  public_key="$(run_as_root sh -c '"$1" pubkey < "$2"' sh "$wg_path" "$key_path")"
+  run_as_root sh -c 'umask 077; { printf "[Interface]\nPrivateKey = "; cat "$1"; printf "Address = %s\nListenPort = %s\n" "$3" "$4"; } > "$2"' \
+    sh "$key_path" "$config_path" "$WIREGUARD_ADDRESS" "$WIREGUARD_LISTEN_PORT"
+  endpoint_args=()
+  if [ -n "$WIREGUARD_ENDPOINT" ]; then
+    endpoint_args=(--endpoint "$WIREGUARD_ENDPOINT")
+  fi
+  run_as_root "$PREFIX/bin/agent-remote-node" configure-wireguard \
+    --config "$CONFIG_DIR/config.json" \
+    --public-key "$public_key" \
+    --address "$WIREGUARD_ADDRESS" \
+    --interface "$WIREGUARD_INTERFACE" \
+    --private-key-path "$key_path" \
+    --listen-port "$WIREGUARD_LISTEN_PORT" \
+    "${endpoint_args[@]}"
+  if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
+    run_as_root chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR/config.json"
+  fi
+  run_as_root chmod 0600 "$CONFIG_DIR/config.json"
+}
+
 start_and_verify() {
   if [ "$START_SERVICES" != "1" ]; then
     return
@@ -777,6 +871,7 @@ start_and_verify() {
     exit 2
   fi
   run_as_root systemctl enable --now agent-remote-runtime.service
+  run_as_root systemctl enable --now "wg-quick@$WIREGUARD_INTERFACE.service"
   local attempt
   for attempt in $(seq 1 20); do
     if [ -S /run/agent-remote/runtime.sock ]; then
@@ -816,11 +911,15 @@ else
 fi
 install_managed_claude
 register_node
+configure_wireguard
 start_and_verify
 
 echo "agent-remote-node installation completed"
 echo "  config: $CONFIG_DIR/config.json"
 echo "  runtime backends: $RUNTIME_BACKENDS"
+if [ "$INSTALL_SYSTEMD" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
+  echo "  WireGuard: $WIREGUARD_INTERFACE ($WIREGUARD_ADDRESS, UDP $WIREGUARD_LISTEN_PORT)"
+fi
 if backend_enabled native; then
   echo "  Claude: $CLAUDE_RUNTIME_ROOT/current/bin/claude"
 fi

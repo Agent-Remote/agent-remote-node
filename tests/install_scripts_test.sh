@@ -23,6 +23,8 @@ bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" "$R
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
   fail "dependency installation may upgrade existing packages"
+grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
+grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
 
 cleanup_probe="$WORK/cleanup-probe"
 if AGENT_REMOTE_INSTALL_LIB_ONLY=1 bash -c \
@@ -50,6 +52,8 @@ grep -q -- '--account-root /var/lib/agent-remote-installer-e2e-data/users' "$ren
   fail "custom account path was rendered incorrectly"
 grep -q -- '--group agent-remote-e2e --user agent-remote-e2e' "$rendered_unit" || \
   fail "custom runtime user and group were rendered incorrectly"
+grep -q -- '--wireguard-interface agent-remote' "$rendered_unit" || \
+  fail "WireGuard runtime configuration is missing"
 if grep -q 'installer-e2e-data-installer-e2e-data' "$rendered_unit"; then
   fail "custom data path was substituted twice"
 fi

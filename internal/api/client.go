@@ -50,8 +50,25 @@ type HeartbeatRequest struct {
 	NodeID             string         `json:"node_id"`
 	Version            string         `json:"version"`
 	SupportedToolTypes []string       `json:"supported_tool_types"`
+	WireGuardIP        string         `json:"wireguard_ip,omitempty"`
+	WireGuardPublicKey string         `json:"wireguard_public_key,omitempty"`
+	WireGuardEndpoint  string         `json:"wireguard_endpoint,omitempty"`
 	Resources          ResourceStatus `json:"resources"`
 	Runtime            RuntimeStatus  `json:"runtime"`
+}
+
+// WireGuardPeer is a device peer applied to the node interface.
+type WireGuardPeer struct {
+	PublicKey  string   `json:"public_key"`
+	AllowedIPs []string `json:"allowed_ips"`
+}
+
+// WireGuardPeersResponse contains active device peers.
+type WireGuardPeersResponse struct {
+	Data struct {
+		Items []WireGuardPeer `json:"items"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
 }
 
 // ResourceStatus describes node resources.
@@ -170,6 +187,13 @@ func (c Client) RegisterNode(ctx context.Context, request RegisterNodeRequest) (
 // SendHeartbeat submits a node heartbeat.
 func (c Client) SendHeartbeat(ctx context.Context, request HeartbeatRequest) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/node-api/heartbeat", request, nil, true)
+}
+
+// ListWireGuardPeers returns active device peers for node synchronization.
+func (c Client) ListWireGuardPeers(ctx context.Context) (WireGuardPeersResponse, error) {
+	var response WireGuardPeersResponse
+	err := c.do(ctx, http.MethodGet, "/api/v1/node-api/wireguard/peers", nil, &response, true)
+	return response, err
 }
 
 // PollTasks leases pending tasks.

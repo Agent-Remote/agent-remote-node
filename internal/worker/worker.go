@@ -32,11 +32,28 @@ func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker
 
 // Heartbeat sends a single heartbeat.
 func (w Worker) Heartbeat(ctx context.Context) error {
+	if w.cfg.WireGuardPublicKey != "" {
+		peers, err := w.client.ListWireGuardPeers(ctx)
+		if err != nil {
+			return err
+		}
+		if _, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
+			ctx,
+			fmt.Sprintf("wireguard-sync-%d", time.Now().UnixNano()),
+			"wireguard_sync",
+			map[string]any{"peers": peers.Data.Items},
+		); err != nil {
+			return err
+		}
+	}
 	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
 	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
 		SupportedToolTypes: w.cfg.SupportedToolTypes,
+		WireGuardIP:        w.cfg.WireGuardIP(),
+		WireGuardPublicKey: w.cfg.WireGuardPublicKey,
+		WireGuardEndpoint:  w.cfg.WireGuardEndpoint,
 		Resources:          resources,
 		Runtime:            runtimeStatus,
 	})

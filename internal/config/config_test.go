@@ -2,6 +2,13 @@ package config
 
 import "testing"
 
+func TestWireGuardIPRemovesInterfacePrefix(t *testing.T) {
+	cfg := Config{WireGuardAddress: "10.77.0.1/24"}
+	if got := cfg.WireGuardIP(); got != "10.77.0.1" {
+		t.Fatalf("unexpected WireGuard IP %q", got)
+	}
+}
+
 func TestValidateRejectsInvalidRuntimeBackends(t *testing.T) {
 	for _, backends := range [][]string{
 		{},

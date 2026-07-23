@@ -20,5 +20,11 @@
   "allowed_runtime_backends": ["docker_sandbox", "native"],
   "runtime_socket_path": "/run/agent-remote/runtime.sock",
   "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
-  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude"
+  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude",
+  "wireguard_interface": "agent-remote",
+  "wireguard_private_key_path": "/etc/agent-remote-node/wireguard.key",
+  "wireguard_address": "",
+  "wireguard_public_key": "",
+  "wireguard_endpoint": "",
+  "wireguard_listen_port": 51820
 }
