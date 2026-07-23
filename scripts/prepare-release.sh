@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.0.3" >&2
+  echo "Example: $0 0.0.4" >&2
 }
 
 if [[ $# -ne 1 ]]; then
@@ -76,6 +76,7 @@ if readme_cn.exists():
 PY
 
 go test ./...
+tests/install_scripts_test.sh
 
 scripts/update-changelog.sh "$VERSION"
 

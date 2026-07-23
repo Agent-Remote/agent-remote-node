@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
@@ -10,6 +11,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
+	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
@@ -30,7 +32,7 @@ func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker
 
 // Heartbeat sends a single heartbeat.
 func (w Worker) Heartbeat(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot()
+	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
 	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
@@ -56,13 +58,26 @@ func (w Worker) PollOnce(ctx context.Context) error {
 
 // Reconcile submits a basic node snapshot.
 func (w Worker) Reconcile(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot()
+	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
+	sessions := []any{}
+	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") {
+		result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
+			ctx, fmt.Sprintf("reconcile-%d", time.Now().UnixNano()), "list_sessions", map[string]any{},
+		)
+		if err != nil {
+			return err
+		}
+		if listed, ok := result["sessions"].([]any); ok {
+			sessions = listed
+		}
+	}
 	return w.client.Reconcile(ctx, api.ReconcileRequest{
 		NodeID:   w.cfg.NodeID,
-		Sections: []string{"containers", "tmux"},
+		Sections: []string{"runtime_sessions", "resources"},
 		Snapshot: map[string]any{
 			"resources": resources,
 			"runtime":   runtimeStatus,
+			"sessions":  sessions,
 		},
 	})
 }
@@ -75,6 +90,9 @@ func (w Worker) Run(ctx context.Context) error {
 	defer pollTicker.Stop()
 
 	if err := w.Heartbeat(ctx); err != nil {
+		return err
+	}
+	if err := w.Reconcile(ctx); err != nil {
 		return err
 	}
 	for {
@@ -101,7 +119,7 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	if err := w.client.StartTask(ctx, task.TaskID); err != nil {
 		return err
 	}
-	result, err := w.executeKnownTask(task)
+	result, err := w.executeKnownTask(ctx, task)
 	if err != nil {
 		taskError := map[string]any{"code": "NODE_TASK_FAILED", "message": err.Error()}
 		_ = w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError})
@@ -113,10 +131,26 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	return w.client.CompleteTask(ctx, task.TaskID, result)
 }
 
-func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) {
+func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (map[string]any, error) {
 	switch task.TaskType {
 	case "reconcile_state":
-		return map[string]any{"status": "reconciled"}, nil
+		resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
+		result := map[string]any{
+			"status":    "reconciled",
+			"resources": resources,
+			"runtime":   runtimeStatus,
+			"sessions":  []any{},
+		}
+		if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") {
+			listed, err := w.callRuntimeHelper(ctx, task, "list_sessions", map[string]any{})
+			if err != nil {
+				return nil, err
+			}
+			result["sessions"] = listed["sessions"]
+		}
+		return result, nil
+	case "migrate_tool_account_runtime":
+		return w.callRuntimeHelper(ctx, task, "migrate_account", task.Payload)
 	case "sync_ssh_keys":
 		payload, err := sshkeys.DecodePayload(task.Payload)
 		if err != nil {
@@ -135,36 +169,29 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 		if err != nil {
 			return nil, err
 		}
-		result, err := workspace.Prepare(w.cfg.WorkspaceRoot, payload)
+		sshPayload, err := sshkeys.DecodePayload(task.Payload)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"status":      "prepared",
-			"remote_path": result.RemotePath,
-			"marker_path": result.MarkerPath,
-		}, nil
+		if len(sshPayload.SSHKeys) > 0 {
+			if err := sshkeys.Sync(w.cfg.SSHAuthorizedKeysPath, w.cfg.AttachBinaryPath, sshPayload); err != nil {
+				return nil, err
+			}
+		}
+		return w.callRuntimeHelper(ctx, task, "prepare_workspace", payload)
 	case "create_binding_session":
 		payload, err := toolaccounts.DecodeCreateBindingPayload(task.Payload)
 		if err != nil {
 			return nil, err
 		}
-		result, err := toolaccounts.PrepareBinding(w.cfg.AccountRoot, w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
-		if err != nil {
+		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"status":              result.Status,
-			"binding_session_id":  result.BindingSessionID,
-			"tool_account_id":     result.ToolAccountID,
-			"tool_type":           result.ToolType,
-			"account_remote_path": result.AccountRemotePath,
-			"tmux_session_name":   result.TmuxSessionName,
-			"container_name":      result.ContainerName,
-			"marker_path":         result.MarkerPath,
-			"tmux_started":        result.TmuxStarted,
-			"verifier":            result.Verifier,
-		}, nil
+		operation := "docker_prepare_account"
+		if payload.RuntimeBackend == "native" {
+			operation = "prepare_account"
+		}
+		return w.callRuntimeHelper(ctx, task, operation, payload)
 	case "verify_tool_account":
 		payload, err := toolaccounts.DecodeVerifyPayload(task.Payload)
 		if err != nil {
@@ -204,86 +231,66 @@ func (w Worker) executeKnownTask(task api.TaskEnvelope) (map[string]any, error) 
 		if err != nil {
 			return nil, err
 		}
-		result, err := toolsessions.Prepare(w.cfg.WorkspaceRoot, w.cfg.AccountRoot, w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
-		if err != nil {
+		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"status":                result.Status,
-			"session_id":            result.SessionID,
-			"tool_account_id":       result.ToolAccountID,
-			"tool_type":             result.ToolType,
-			"workspace_remote_path": result.WorkspaceRemotePath,
-			"account_remote_path":   result.AccountRemotePath,
-			"tmux_session_name":     result.TmuxSessionName,
-			"sandbox_name":          result.SandboxName,
-			"container_id":          result.SandboxName,
-			"marker_path":           result.MarkerPath,
-			"tmux_started":          result.TmuxStarted,
-		}, nil
+		operation := "docker_start_session"
+		if payload.RuntimeBackend == "native" {
+			operation = "start_session"
+		}
+		return w.callRuntimeHelper(ctx, task, operation, payload)
 	case "stop_tool_session":
 		payload, err := toolsessions.DecodeStopPayload(task.Payload)
 		if err != nil {
 			return nil, err
 		}
-		result, err := toolsessions.Stop(w.cfg.DockerBinaryPath, w.cfg.TmuxBinaryPath, payload)
-		if err != nil {
+		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"status":            result.Status,
-			"session_id":        result.SessionID,
-			"tmux_session_name": result.TmuxSessionName,
-			"sandbox_name":      result.SandboxName,
-			"container_id":      result.SandboxName,
-			"tmux_stopped":      result.TmuxStopped,
-			"sandbox_removed":   result.SandboxRemoved,
-		}, nil
+		operation := "docker_stop_session"
+		if payload.RuntimeBackend == "native" {
+			operation = "stop_session"
+		}
+		return w.callRuntimeHelper(ctx, task, operation, payload)
 	case "create_browser_session":
 		payload, err := browser.DecodeCreatePayload(task.Payload)
 		if err != nil {
 			return nil, err
 		}
-		result, err := browser.Start(
-			w.cfg.BrowserRoot,
-			w.cfg.DockerBinaryPath,
-			w.cfg.BrowserImage,
-			w.cfg.BrowserPublicBaseURL,
-			payload,
-		)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"status":             result.Status,
-			"browser_session_id": result.BrowserSessionID,
-			"container_id":       result.ContainerID,
-			"container_name":     result.ContainerName,
-			"stream_endpoint":    result.StreamEndpoint,
-			"profile_path":       result.ProfilePath,
-		}, nil
+		return w.callRuntimeHelper(ctx, task, "docker_start_browser", payload)
 	case "stop_browser_session":
 		payload, err := browser.DecodeStopPayload(task.Payload)
 		if err != nil {
 			return nil, err
 		}
-		result, err := browser.Stop(w.cfg.BrowserRoot, w.cfg.DockerBinaryPath, payload)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{
-			"status":             result.Status,
-			"browser_session_id": result.BrowserSessionID,
-			"container_name":     result.ContainerName,
-			"container_removed":  result.ContainerRemoved,
-			"profile_removed":    result.ProfileRemoved,
-		}, nil
+		return w.callRuntimeHelper(ctx, task, "docker_stop_browser", payload)
 	case "cleanup_resources":
-		return map[string]any{"status": "cleaned"}, nil
+		return w.callRuntimeHelper(ctx, task, "cleanup_resources", task.Payload)
 	default:
-		return map[string]any{"status": "noop", "task_type": task.TaskType}, nil
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedTask, task.TaskType)
 	}
 }
 
-// ErrUnsupportedTask is reserved for future strict task execution.
+func (w Worker) requireBackend(backend string) error {
+	if backend != "docker_sandbox" && backend != "native" {
+		return fmt.Errorf("unsupported runtime backend %q", backend)
+	}
+	if !slices.Contains(w.cfg.AllowedRuntimeBackends, backend) {
+		return fmt.Errorf("runtime backend %q is not enabled on this node", backend)
+	}
+	return nil
+}
+
+func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, operation string, payload any) (map[string]any, error) {
+	mapped, err := runtimehelper.Map(payload)
+	if err != nil {
+		return nil, err
+	}
+	mapped["workspace_root"] = w.cfg.WorkspaceRoot
+	mapped["account_root"] = w.cfg.AccountRoot
+	mapped["claude_runtime_path"] = w.cfg.ClaudeRuntimePath
+	return runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
+}
+
+// ErrUnsupportedTask identifies a task type this node does not implement.
 var ErrUnsupportedTask = fmt.Errorf("unsupported task")

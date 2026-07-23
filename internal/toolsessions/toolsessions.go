@@ -47,6 +47,8 @@ type CreatePayload struct {
 	Locale                         string                `json:"locale"`
 	Argv                           []string              `json:"argv"`
 	Template                       RuntimeTemplate       `json:"template"`
+	RuntimeBackend                 string                `json:"runtime_backend"`
+	RuntimePolicy                  map[string]any        `json:"runtime_policy"`
 }
 
 // CreateResult describes the prepared tool session.
@@ -61,23 +63,29 @@ type CreateResult struct {
 	SandboxName         string `json:"sandbox_name"`
 	MarkerPath          string `json:"marker_path"`
 	TmuxStarted         bool   `json:"tmux_started"`
+	RuntimeBackend      string `json:"runtime_backend"`
+	RuntimeResourceID   string `json:"runtime_resource_id"`
 }
 
 // StopPayload describes a stop_tool_session task payload.
 type StopPayload struct {
-	SessionID       string `json:"session_id"`
-	TmuxSessionName string `json:"tmux_session_name"`
-	SandboxName     string `json:"sandbox_name"`
+	SessionID         string `json:"session_id"`
+	TmuxSessionName   string `json:"tmux_session_name"`
+	SandboxName       string `json:"sandbox_name"`
+	RuntimeBackend    string `json:"runtime_backend"`
+	RuntimeResourceID string `json:"runtime_resource_id"`
 }
 
 // StopResult describes stopped runtime resources.
 type StopResult struct {
-	Status          string `json:"status"`
-	SessionID       string `json:"session_id"`
-	TmuxSessionName string `json:"tmux_session_name"`
-	SandboxName     string `json:"sandbox_name"`
-	TmuxStopped     bool   `json:"tmux_stopped"`
-	SandboxRemoved  bool   `json:"sandbox_removed"`
+	Status            string `json:"status"`
+	SessionID         string `json:"session_id"`
+	TmuxSessionName   string `json:"tmux_session_name"`
+	SandboxName       string `json:"sandbox_name"`
+	TmuxStopped       bool   `json:"tmux_stopped"`
+	SandboxRemoved    bool   `json:"sandbox_removed"`
+	RuntimeBackend    string `json:"runtime_backend"`
+	RuntimeResourceID string `json:"runtime_resource_id"`
 }
 
 // DecodeCreatePayload converts a generic task payload into a typed payload.
@@ -111,6 +119,9 @@ func DecodeCreatePayload(payload map[string]any) (CreatePayload, error) {
 	if decoded.SandboxName == "" {
 		return CreatePayload{}, errors.New("sandbox_name is required")
 	}
+	if decoded.RuntimeBackend == "" {
+		decoded.RuntimeBackend = "docker_sandbox"
+	}
 	if _, ok := payload["sync_git"]; !ok {
 		decoded.SyncGit = true
 	}
@@ -129,6 +140,9 @@ func DecodeStopPayload(payload map[string]any) (StopPayload, error) {
 	}
 	if decoded.SessionID == "" {
 		return StopPayload{}, errors.New("session_id is required")
+	}
+	if decoded.RuntimeBackend == "" {
+		decoded.RuntimeBackend = "docker_sandbox"
 	}
 	return decoded, nil
 }

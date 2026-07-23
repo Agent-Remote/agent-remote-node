@@ -1,0 +1,2 @@
+agent-remote ALL=(root) NOPASSWD: /usr/local/bin/agent-remote-runtime attach --session *
+agent-remote ALL=(root) NOPASSWD: /usr/local/bin/agent-remote-runtime sync-command --user * --command-base64 * --workspace-root /var/lib/agent-remote/users

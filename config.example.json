@@ -16,5 +16,9 @@
   "mutagen_binary_path": "mutagen",
   "browser_root": "/var/lib/agent-remote/browser-sessions",
   "browser_image": "kasmweb/chrome:1.18.0",
-  "browser_public_base_url": ""
+  "browser_public_base_url": "",
+  "allowed_runtime_backends": ["docker_sandbox", "native"],
+  "runtime_socket_path": "/run/agent-remote/runtime.sock",
+  "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
+  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude"
 }

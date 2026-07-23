@@ -1,0 +1,26 @@
+[Unit]
+Description=agent-remote privileged native runtime helper
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/agent-remote-runtime serve --socket /run/agent-remote/runtime.sock --state-root /var/lib/agent-remote-runtime --workspace-root /var/lib/agent-remote/users --account-root /var/lib/agent-remote/users --claude-runtime /opt/agent-remote/runtimes/claude/current/bin/claude --group agent-remote --user agent-remote
+Restart=always
+RestartSec=5
+User=root
+Group=agent-remote
+UMask=0077
+RuntimeDirectory=agent-remote
+RuntimeDirectoryMode=0750
+StateDirectory=agent-remote-runtime
+StateDirectoryMode=0700
+NoNewPrivileges=no
+# The helper must create host-visible mounts and network namespaces for transient units.
+PrivateTmp=no
+ProtectKernelTunables=no
+ProtectControlGroups=no
+RestrictAddressFamilies=AF_UNIX AF_NETLINK AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

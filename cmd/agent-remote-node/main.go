@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
@@ -59,12 +61,44 @@ func register(args []string) error {
 	serverURL := fs.String("server-url", "", "server URL")
 	nodeID := fs.String("node-id", "", "node ID")
 	registrationToken := fs.String("registration-token", "", "registration token")
+	force := fs.Bool("force", false, "replace an existing node registration")
 	version := fs.String("version", config.DefaultVersion, "node version")
+	runtimeBackends := fs.String("runtime-backends", "", "comma-separated runtime backends")
+	systemInstall := fs.Bool("system-install", false, "use system service paths")
+	prefix := fs.String("prefix", "/usr/local", "system installation prefix")
+	stateDir := fs.String("state-dir", "/var/lib/agent-remote-node", "system service state directory")
+	dataDir := fs.String("data-dir", "/var/lib/agent-remote", "managed workspace and account data directory")
+	claudeRuntimePath := fs.String(
+		"claude-runtime-path",
+		"/opt/agent-remote/runtimes/claude/current/bin/claude",
+		"managed Claude executable",
+	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *registrationToken == "" {
 		return fmt.Errorf("registration-token is required")
+	}
+	if !*force {
+		existing, err := config.Load(*configPath)
+		if err == nil && existing.NodeToken != "" && existing.NodeToken != "node_replace_me" &&
+			existing.NodeID == *nodeID && strings.TrimRight(existing.ServerURL, "/") == strings.TrimRight(*serverURL, "/") {
+			existing.Version = *version
+			if *runtimeBackends != "" {
+				existing.AllowedRuntimeBackends = splitCommaList(*runtimeBackends)
+			}
+			if *systemInstall {
+				applySystemInstallPaths(&existing, *prefix, *stateDir, *dataDir, *claudeRuntimePath)
+			}
+			if err := existing.Validate(true); err != nil {
+				return err
+			}
+			if err := config.Save(*configPath, existing); err != nil {
+				return err
+			}
+			fmt.Printf("node %s is already registered; refreshed local configuration\n", existing.NodeID)
+			return nil
+		}
 	}
 	cfg := config.Config{
 		ServerURL:          *serverURL,
@@ -72,6 +106,12 @@ func register(args []string) error {
 		Version:            *version,
 		SupportedToolTypes: []string{"claude"},
 	}.WithDefaults()
+	if *runtimeBackends != "" {
+		cfg.AllowedRuntimeBackends = splitCommaList(*runtimeBackends)
+	}
+	if *systemInstall {
+		applySystemInstallPaths(&cfg, *prefix, *stateDir, *dataDir, *claudeRuntimePath)
+	}
 	if err := cfg.Validate(false); err != nil {
 		return err
 	}
@@ -90,6 +130,27 @@ func register(args []string) error {
 	}
 	fmt.Printf("registered node %s\n", response.Data.NodeID)
 	return nil
+}
+
+func splitCommaList(value string) []string {
+	items := make([]string, 0)
+	for item := range strings.SplitSeq(value, ",") {
+		if trimmed := strings.TrimSpace(item); trimmed != "" {
+			items = append(items, trimmed)
+		}
+	}
+	return items
+}
+
+func applySystemInstallPaths(cfg *config.Config, prefix string, stateDir string, dataDir string, claudeRuntimePath string) {
+	cfg.LedgerPath = filepath.Join(stateDir, "ledger.json")
+	cfg.SSHAuthorizedKeysPath = filepath.Join(stateDir, "authorized_keys")
+	cfg.AttachBinaryPath = filepath.Join(prefix, "bin", "agent-remote-attach")
+	cfg.WorkspaceRoot = filepath.Join(dataDir, "users")
+	cfg.AccountRoot = cfg.WorkspaceRoot
+	cfg.BrowserRoot = filepath.Join(dataDir, "browser-sessions")
+	cfg.RuntimeBinaryPath = filepath.Join(prefix, "bin", "agent-remote-runtime")
+	cfg.ClaudeRuntimePath = claudeRuntimePath
 }
 
 func installSSH(args []string) error {

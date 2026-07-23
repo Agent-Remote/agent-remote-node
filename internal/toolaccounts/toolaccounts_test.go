@@ -2,10 +2,34 @@ package toolaccounts
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestDecodeCreateBindingPayloadPreservesRuntimePolicy(t *testing.T) {
+	payload := map[string]any{
+		"binding_id": "bind_1", "tool_account_id": "account_1", "tool_type": "claude", "user_id": "user_1",
+		"runtime_policy": map[string]any{"memory_max_bytes": float64(768 << 20)},
+	}
+	decoded, err := DecodeCreateBindingPayload(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip map[string]any
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	policy, ok := roundTrip["runtime_policy"].(map[string]any)
+	if !ok || policy["memory_max_bytes"] != float64(768<<20) {
+		t.Fatalf("runtime policy was not preserved: %#v", roundTrip)
+	}
+}
 
 func TestPrepareBindingCreatesAccountArchive(t *testing.T) {
 	root := t.TempDir()

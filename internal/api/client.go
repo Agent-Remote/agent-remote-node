@@ -65,11 +65,22 @@ type ResourceStatus struct {
 
 // RuntimeStatus describes node runtime state.
 type RuntimeStatus struct {
-	DockerOK              bool `json:"docker_ok"`
-	TmuxOK                bool `json:"tmux_ok"`
-	ActiveSessions        int  `json:"active_sessions"`
-	ActiveBrowserSessions int  `json:"active_browser_sessions"`
-	Containers            int  `json:"containers"`
+	DockerOK              bool                `json:"docker_ok"`
+	TmuxOK                bool                `json:"tmux_ok"`
+	ActiveSessions        int                 `json:"active_sessions"`
+	ActiveBrowserSessions int                 `json:"active_browser_sessions"`
+	Containers            int                 `json:"containers"`
+	RuntimeCapabilities   RuntimeCapabilities `json:"runtime_capabilities"`
+}
+
+// RuntimeCapabilities describes independently detected node runtimes.
+type RuntimeCapabilities struct {
+	Backends      []string          `json:"backends"`
+	Native        map[string]bool   `json:"native"`
+	DockerSandbox map[string]bool   `json:"docker_sandbox"`
+	BrowserDocker map[string]bool   `json:"browser_docker"`
+	Dependencies  map[string]string `json:"dependencies"`
+	ProbeErrors   []string          `json:"probe_errors"`
 }
 
 // TaskEnvelope is a leased task.
@@ -102,9 +113,42 @@ type VerifyAttachRequest struct {
 // VerifyAttachResponse is the attach verification response.
 type VerifyAttachResponse struct {
 	Data struct {
-		SessionID       string  `json:"session_id"`
-		TmuxSessionName string  `json:"tmux_session_name"`
-		ContainerID     *string `json:"container_id"`
+		SessionID         string  `json:"session_id"`
+		TmuxSessionName   string  `json:"tmux_session_name"`
+		ContainerID       *string `json:"container_id"`
+		RuntimeBackend    string  `json:"runtime_backend"`
+		RuntimeResourceID *string `json:"runtime_resource_id"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
+// VerifyBindingAttachRequest validates an SSH forced-command binding attach.
+type VerifyBindingAttachRequest struct {
+	NodeID        string `json:"node_id"`
+	ToolAccountID string `json:"tool_account_id"`
+	DeviceID      string `json:"device_id"`
+}
+
+// VerifyBindingAttachResponse is the binding attach verification response.
+type VerifyBindingAttachResponse struct {
+	Data struct {
+		BindingSessionID string `json:"binding_session_id"`
+		TmuxSessionName  string `json:"tmux_session_name"`
+		RuntimeBackend   string `json:"runtime_backend"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
+// VerifySyncRequest validates an SSH forced-command sync transport.
+type VerifySyncRequest struct {
+	NodeID   string `json:"node_id"`
+	DeviceID string `json:"device_id"`
+}
+
+// VerifySyncResponse identifies the isolated user for a sync transport.
+type VerifySyncResponse struct {
+	Data struct {
+		UserID string `json:"user_id"`
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 }
@@ -154,6 +198,20 @@ func (c Client) FailTask(ctx context.Context, taskID string, taskError map[strin
 func (c Client) VerifyAttach(ctx context.Context, request VerifyAttachRequest) (VerifyAttachResponse, error) {
 	var response VerifyAttachResponse
 	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/attach/verify", request, &response, true)
+	return response, err
+}
+
+// VerifyBindingAttach validates a forced-command account binding attach request.
+func (c Client) VerifyBindingAttach(ctx context.Context, request VerifyBindingAttachRequest) (VerifyBindingAttachResponse, error) {
+	var response VerifyBindingAttachResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/binding-attach/verify", request, &response, true)
+	return response, err
+}
+
+// VerifySync validates a forced-command sync transport request.
+func (c Client) VerifySync(ctx context.Context, request VerifySyncRequest) (VerifySyncResponse, error) {
+	var response VerifySyncResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/sync/verify", request, &response, true)
 	return response, err
 }
 

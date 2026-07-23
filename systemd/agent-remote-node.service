@@ -1,8 +1,8 @@
 [Unit]
 Description=agent-remote node worker
-After=network-online.target docker.service
+After=network-online.target agent-remote-runtime.service
 Wants=network-online.target
-Requires=docker.service
+Wants=agent-remote-runtime.service
 
 [Service]
 Type=simple
@@ -13,8 +13,11 @@ RestartSec=5
 User=agent-remote
 Group=agent-remote
 WorkingDirectory=/var/lib/agent-remote-node
-NoNewPrivileges=false
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/agent-remote-node /var/lib/agent-remote /run/agent-remote
+ProtectHome=true
 
 [Install]
 WantedBy=multi-user.target
-

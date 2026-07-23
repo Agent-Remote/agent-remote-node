@@ -34,7 +34,10 @@ func TestSyncWritesManagedBlock(t *testing.T) {
 	if !strings.Contains(text, "command=\"/usr/local/bin/agent-remote-attach --session sess_1 --device dev_1\"") {
 		t.Fatalf("forced command missing: %s", text)
 	}
-	if !strings.Contains(text, "no-pty") {
-		t.Fatal("restrictive options missing")
+	if strings.Contains(text, "no-pty") {
+		t.Fatal("interactive attach must permit a PTY")
+	}
+	if !strings.Contains(text, "no-agent-forwarding,no-X11-forwarding,no-port-forwarding") {
+		t.Fatal("forwarding restrictions missing")
 	}
 }

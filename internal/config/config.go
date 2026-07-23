@@ -30,6 +30,10 @@ type Config struct {
 	BrowserRoot              string   `json:"browser_root"`
 	BrowserImage             string   `json:"browser_image"`
 	BrowserPublicBaseURL     string   `json:"browser_public_base_url"`
+	AllowedRuntimeBackends   []string `json:"allowed_runtime_backends"`
+	RuntimeSocketPath        string   `json:"runtime_socket_path"`
+	RuntimeBinaryPath        string   `json:"runtime_binary_path"`
+	ClaudeRuntimePath        string   `json:"claude_runtime_path"`
 }
 
 // WithDefaults fills optional config values.
@@ -76,6 +80,18 @@ func (c Config) WithDefaults() Config {
 	if c.BrowserImage == "" {
 		c.BrowserImage = "kasmweb/chrome:1.18.0"
 	}
+	if len(c.AllowedRuntimeBackends) == 0 {
+		c.AllowedRuntimeBackends = []string{"docker_sandbox"}
+	}
+	if c.RuntimeSocketPath == "" {
+		c.RuntimeSocketPath = "/run/agent-remote/runtime.sock"
+	}
+	if c.RuntimeBinaryPath == "" {
+		c.RuntimeBinaryPath = "/usr/local/bin/agent-remote-runtime"
+	}
+	if c.ClaudeRuntimePath == "" {
+		c.ClaudeRuntimePath = "/opt/agent-remote/runtimes/claude/current/bin/claude"
+	}
 	return c
 }
 
@@ -89,6 +105,19 @@ func (c Config) Validate(requireToken bool) error {
 	}
 	if requireToken && c.NodeToken == "" {
 		return errors.New("node_token is required")
+	}
+	if len(c.AllowedRuntimeBackends) == 0 {
+		return errors.New("allowed_runtime_backends requires at least one backend")
+	}
+	seenBackends := make(map[string]bool, len(c.AllowedRuntimeBackends))
+	for _, backend := range c.AllowedRuntimeBackends {
+		if backend != "docker_sandbox" && backend != "native" {
+			return errors.New("allowed_runtime_backends contains an unsupported backend")
+		}
+		if seenBackends[backend] {
+			return errors.New("allowed_runtime_backends contains a duplicate backend")
+		}
+		seenBackends[backend] = true
 	}
 	return nil
 }

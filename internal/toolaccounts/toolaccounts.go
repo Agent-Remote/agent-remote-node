@@ -34,6 +34,8 @@ type CreateBindingPayload struct {
 	TmuxSessionName   string          `json:"tmux_session_name"`
 	Template          RuntimeTemplate `json:"template"`
 	Verifier          string          `json:"verifier"`
+	RuntimeBackend    string          `json:"runtime_backend"`
+	RuntimePolicy     map[string]any  `json:"runtime_policy"`
 }
 
 // BindingResult describes the prepared binding session.
@@ -48,6 +50,7 @@ type BindingResult struct {
 	MarkerPath        string `json:"marker_path"`
 	TmuxStarted       bool   `json:"tmux_started"`
 	Verifier          string `json:"verifier"`
+	RuntimeBackend    string `json:"runtime_backend"`
 }
 
 // VerifyPayload describes a verify_tool_account task payload.
@@ -118,6 +121,9 @@ func DecodeCreateBindingPayload(payload map[string]any) (CreateBindingPayload, e
 	}
 	if decoded.Template.Verifier == "" {
 		decoded.Template.Verifier = decoded.Verifier
+	}
+	if decoded.RuntimeBackend == "" {
+		decoded.RuntimeBackend = "docker_sandbox"
 	}
 	return decoded, nil
 }
@@ -227,6 +233,7 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 		MarkerPath:        markerPath,
 		TmuxStarted:       tmuxStarted,
 		Verifier:          payload.Verifier,
+		RuntimeBackend:    payload.RuntimeBackend,
 	}, nil
 }
 

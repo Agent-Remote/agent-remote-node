@@ -31,6 +31,10 @@ jobs:
           version="${INPUT_VERSION:-${GITHUB_REF_NAME#v}}"
           version="${version#v}"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
+      - name: Run tests
+        run: |
+          go test ./...
+          tests/install_scripts_test.sh
       - name: Build release packages
         env:
           VERSION: ${{ steps.version.outputs.value }}

@@ -3,6 +3,8 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,7 +14,70 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
+	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
+
+func TestWorkerRejectsUnknownTask(t *testing.T) {
+	w := Worker{cfg: config.Config{}.WithDefaults()}
+	_, err := w.executeKnownTask(context.Background(), api.TaskEnvelope{
+		TaskID: "task_unknown", TaskType: "future_task", Payload: map[string]any{},
+	})
+	if !errors.Is(err, ErrUnsupportedTask) {
+		t.Fatalf("expected ErrUnsupportedTask, got %v", err)
+	}
+}
+
+func TestWorkerCleanupResourcesUsesRuntimeHelper(t *testing.T) {
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "cleaned", "cleaned_count": float64(1),
+	})
+	w := Worker{cfg: config.Config{RuntimeSocketPath: runtimeSocket}.WithDefaults()}
+	result, err := w.executeKnownTask(context.Background(), api.TaskEnvelope{
+		TaskID: "task_cleanup", TaskType: "cleanup_resources",
+		Payload: map[string]any{"runtime_backend": "native", "session_ids": []any{"session_1"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "cleaned" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if operation := <-operations; operation != "cleanup_resources" {
+		t.Fatalf("unexpected helper operation %q", operation)
+	}
+}
+
+func startRuntimeHelperStub(t *testing.T, result map[string]any) (string, <-chan string) {
+	t.Helper()
+	directory, err := os.MkdirTemp("/tmp", "ar-worker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(directory) })
+	path := directory + "/runtime.sock"
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operations := make(chan string, 1)
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		var request runtimehelper.Request
+		if json.NewDecoder(connection).Decode(&request) != nil {
+			return
+		}
+		operations <- request.Operation
+		_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
+			Version: runtimehelper.ProtocolVersion, OK: true, Result: result,
+		})
+	}()
+	return path, operations
+}
 
 func TestWorkerPollOnceCompletesTask(t *testing.T) {
 	var completed bool
@@ -128,6 +193,9 @@ func TestWorkerSyncSSHKeysWritesAuthorizedKeys(t *testing.T) {
 
 func TestWorkerPrepareWorkspaceCreatesDirectory(t *testing.T) {
 	var completed bool
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "prepared", "remote_path": "/managed/workspace",
+	})
 	workspaceRoot := t.TempDir()
 	remotePath := workspaceRoot + "/user_1/workspaces/workspace_1/files"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -169,10 +237,11 @@ func TestWorkerPrepareWorkspaceCreatesDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		NodeID:        "node_1",
-		ServerURL:     server.URL,
-		NodeToken:     "node_token",
-		WorkspaceRoot: workspaceRoot,
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		WorkspaceRoot:     workspaceRoot,
+		RuntimeSocketPath: runtimeSocket,
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 	if err := w.PollOnce(context.Background()); err != nil {
@@ -181,13 +250,17 @@ func TestWorkerPrepareWorkspaceCreatesDirectory(t *testing.T) {
 	if !completed {
 		t.Fatal("expected task completion")
 	}
-	if _, err := os.Stat(remotePath + "/.agent-remote-workspace.json"); err != nil {
-		t.Fatal(err)
+	if operation := <-operations; operation != "prepare_workspace" {
+		t.Fatalf("unexpected helper operation %q", operation)
 	}
 }
 
 func TestWorkerCreateBindingSessionCompletesTask(t *testing.T) {
 	var completed map[string]any
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "waiting_user_login", "runtime_backend": "docker_sandbox",
+		"binding_session_id": "bind_1", "tool_account_id": "account_1",
+	})
 	accountRoot := t.TempDir()
 	accountPath := accountRoot + "/user_1/accounts/account_1"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -246,12 +319,13 @@ func TestWorkerCreateBindingSessionCompletesTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		NodeID:           "node_1",
-		ServerURL:        server.URL,
-		NodeToken:        "node_token",
-		AccountRoot:      accountRoot,
-		DockerBinaryPath: "docker",
-		TmuxBinaryPath:   "agent-remote-missing-tmux",
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		AccountRoot:       accountRoot,
+		DockerBinaryPath:  "docker",
+		TmuxBinaryPath:    "agent-remote-missing-tmux",
+		RuntimeSocketPath: runtimeSocket,
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 	if err := w.PollOnce(context.Background()); err != nil {
@@ -263,19 +337,17 @@ func TestWorkerCreateBindingSessionCompletesTask(t *testing.T) {
 	if completed["status"] != "waiting_user_login" {
 		t.Fatalf("unexpected result: %#v", completed)
 	}
-	if _, err := os.Stat(accountPath + "/.agent-remote-tool-account.json"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(accountPath + "/.claude"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(accountPath + "/.claude.json"); err != nil {
-		t.Fatal(err)
+	if operation := <-operations; operation != "docker_prepare_account" {
+		t.Fatalf("unexpected helper operation %q", operation)
 	}
 }
 
 func TestWorkerCreateToolSessionCompletesTask(t *testing.T) {
 	var completed map[string]any
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "running", "runtime_backend": "docker_sandbox",
+		"session_id": "session_1", "runtime_resource_id": "sandbox_1",
+	})
 	workspaceRoot := t.TempDir()
 	accountRoot := t.TempDir()
 	workspacePath := workspaceRoot + "/user_1/workspaces/workspace_1/files"
@@ -335,13 +407,14 @@ func TestWorkerCreateToolSessionCompletesTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := config.Config{
-		NodeID:           "node_1",
-		ServerURL:        server.URL,
-		NodeToken:        "node_token",
-		WorkspaceRoot:    workspaceRoot,
-		AccountRoot:      accountRoot,
-		DockerBinaryPath: "docker",
-		TmuxBinaryPath:   "agent-remote-missing-tmux",
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		WorkspaceRoot:     workspaceRoot,
+		AccountRoot:       accountRoot,
+		DockerBinaryPath:  "docker",
+		TmuxBinaryPath:    "agent-remote-missing-tmux",
+		RuntimeSocketPath: runtimeSocket,
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 	if err := w.PollOnce(context.Background()); err != nil {
@@ -356,10 +429,7 @@ func TestWorkerCreateToolSessionCompletesTask(t *testing.T) {
 	if completed["session_id"] != "session_1" {
 		t.Fatalf("unexpected session result: %#v", completed)
 	}
-	if _, err := os.Stat(workspacePath + "/.agent-remote-session.json"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(accountPath + "/.claude"); err != nil {
-		t.Fatal(err)
+	if operation := <-operations; operation != "docker_start_session" {
+		t.Fatalf("unexpected helper operation %q", operation)
 	}
 }
