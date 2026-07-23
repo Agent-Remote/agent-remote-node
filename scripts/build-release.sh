@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.0.4-fix.4}"
+VERSION="${VERSION:-0.0.4-fix.5}"
 OUT_DIR="${OUT_DIR:-dist}"
 TARGETS="${TARGETS:-darwin/amd64 darwin/arm64 linux/amd64/glibc linux/arm64/glibc linux/amd64/musl linux/arm64/musl}"
 

@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.5 - 2026-07-23
+
+- fix: preserve ssh keys during node upgrades (5ff6719)
+
 ## v0.0.4-fix.4 - 2026-07-23
 
 - fix: pass node config to ssh attach helper (1953582)
