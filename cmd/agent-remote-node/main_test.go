@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -116,5 +117,34 @@ func TestApplySystemInstallPaths(t *testing.T) {
 	}
 	if cfg.ClaudeRuntimePath != "/opt/claude" {
 		t.Fatalf("unexpected Claude path %q", cfg.ClaudeRuntimePath)
+	}
+}
+
+func TestInstallSSHPreservesExistingAuthorizedKeys(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	keysPath := filepath.Join(dir, "authorized_keys")
+	want := []byte("# existing managed keys\n")
+	if err := os.WriteFile(keysPath, want, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		ServerURL:             "https://example.test",
+		NodeID:                "node_1",
+		NodeToken:             "node_token",
+		SSHAuthorizedKeysPath: keysPath,
+	}.WithDefaults()
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := installSSH([]string{"--config", configPath}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(keysPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("authorized keys changed during install: %q", got)
 	}
 }
