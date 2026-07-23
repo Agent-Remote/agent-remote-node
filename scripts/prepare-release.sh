@@ -21,7 +21,9 @@ python3 - "$VERSION" <<'PY'
 from __future__ import annotations
 
 import re
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 version = sys.argv[1]
@@ -48,7 +50,17 @@ replacements = {
 for path, (pattern, replacement) in replacements.items():
     text = path.read_text()
     text = re.sub(pattern, replacement, text, count=1)
-    path.write_text(text)
+    if path == Path("scripts/prepare-release.sh"):
+        mode = stat.S_IMODE(path.stat().st_mode)
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as temporary:
+            temporary.write(text)
+        staged = Path(temporary.name)
+        staged.chmod(mode)
+        staged.replace(path)
+    else:
+        path.write_text(text)
 
 readme = Path("README.md")
 if readme.exists():
