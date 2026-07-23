@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.2 - 2026-07-23
+
+- add node wireguard peer synchronization (d506d1a)
+- fix: replace release script atomically (3a65d4b)
+
 ## v0.0.4 - 2026-07-23
 
 - fix: support Go 1.23 in node registration (3520fb5)
