@@ -134,7 +134,7 @@ func register(args []string) error {
 
 func splitCommaList(value string) []string {
 	items := make([]string, 0)
-	for item := range strings.SplitSeq(value, ",") {
+	for _, item := range strings.Split(value, ",") {
 		if trimmed := strings.TrimSpace(item); trimmed != "" {
 			items = append(items, trimmed)
 		}
