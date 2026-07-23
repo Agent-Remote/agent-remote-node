@@ -25,6 +25,14 @@ grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
   fail "dependency installation may upgrade existing packages"
 grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
 grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
+grep -q 'systemctl restart agent-remote-runtime.service' "$ROOT/scripts/install.sh" || \
+  fail "runtime helper is not restarted during upgrades"
+grep -q 'systemctl restart "wg-quick@\$WIREGUARD_INTERFACE.service"' "$ROOT/scripts/install.sh" || \
+  fail "WireGuard is not restarted during upgrades"
+grep -q 'systemctl restart agent-remote-node.service' "$ROOT/scripts/install.sh" || \
+  fail "node worker is not restarted during upgrades"
+grep -q -- '--version "$VERSION"' "$ROOT/scripts/install.sh" || \
+  fail "existing node version is not refreshed"
 
 cleanup_probe="$WORK/cleanup-probe"
 if AGENT_REMOTE_INSTALL_LIB_ONLY=1 bash -c \

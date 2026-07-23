@@ -22,7 +22,11 @@ func TestConfigureWireGuardUsesControlPlaneHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	publicKey := base64.StdEncoding.EncodeToString(make([]byte, 32))
-	if err := configureWireGuard([]string{"--config", configPath, "--public-key", publicKey}); err != nil {
+	if err := configureWireGuard([]string{
+		"--config", configPath,
+		"--public-key", publicKey,
+		"--version", "0.0.4-fix.3",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	configured, err := config.Load(configPath)
@@ -31,6 +35,9 @@ func TestConfigureWireGuardUsesControlPlaneHost(t *testing.T) {
 	}
 	if configured.WireGuardEndpoint != "64-81-112-77.sslip.io:51820" || configured.WireGuardAddress != "10.77.0.1/24" {
 		t.Fatalf("unexpected WireGuard config: %#v", configured)
+	}
+	if configured.Version != "0.0.4-fix.3" {
+		t.Fatalf("node version was not refreshed: %q", configured.Version)
 	}
 }
 

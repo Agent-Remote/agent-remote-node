@@ -69,6 +69,7 @@ func configureWireGuard(args []string) error {
 	interfaceName := fs.String("interface", "agent-remote", "WireGuard interface")
 	privateKeyPath := fs.String("private-key-path", "/etc/agent-remote-node/wireguard.key", "root-owned private key path")
 	listenPort := fs.Int("listen-port", 51820, "WireGuard UDP listen port")
+	version := fs.String("version", "", "node version to persist")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -93,6 +94,9 @@ func configureWireGuard(args []string) error {
 	cfg.WireGuardPublicKey = *publicKey
 	cfg.WireGuardEndpoint = resolvedEndpoint
 	cfg.WireGuardListenPort = *listenPort
+	if *version != "" {
+		cfg.Version = *version
+	}
 	if err := config.Save(*configPath, cfg); err != nil {
 		return err
 	}

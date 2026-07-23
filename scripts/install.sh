@@ -25,6 +25,7 @@ SERVER_URL="${AGENT_REMOTE_SERVER_URL:-}"
 NODE_ID="${AGENT_REMOTE_NODE_ID:-}"
 REGISTRATION_TOKEN="${AGENT_REMOTE_REGISTRATION_TOKEN:-}"
 FORCE_REGISTER="${FORCE_REGISTER:-0}"
+NODE_READY=0
 RUNTIME_BACKENDS="${AGENT_REMOTE_RUNTIME_BACKENDS:-native}"
 CLAUDE_CHANNEL="${CLAUDE_CHANNEL:-stable}"
 CLAUDE_VERSION="${CLAUDE_VERSION:-}"
@@ -855,6 +856,7 @@ configure_wireguard() {
     --interface "$WIREGUARD_INTERFACE" \
     --private-key-path "$key_path" \
     --listen-port "$WIREGUARD_LISTEN_PORT" \
+    --version "$VERSION" \
     "${endpoint_args[@]}"
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR/config.json"
@@ -870,8 +872,10 @@ start_and_verify() {
     echo "--no-systemd requires --no-start" >&2
     exit 2
   fi
-  run_as_root systemctl enable --now agent-remote-runtime.service
-  run_as_root systemctl enable --now "wg-quick@$WIREGUARD_INTERFACE.service"
+  run_as_root systemctl enable agent-remote-runtime.service
+  run_as_root systemctl restart agent-remote-runtime.service
+  run_as_root systemctl enable "wg-quick@$WIREGUARD_INTERFACE.service"
+  run_as_root systemctl restart "wg-quick@$WIREGUARD_INTERFACE.service"
   local attempt
   for attempt in $(seq 1 20); do
     if [ -S /run/agent-remote/runtime.sock ]; then
@@ -887,8 +891,10 @@ start_and_verify() {
     fi
     exit 1
   fi
+  NODE_READY=1
   run_as_service_user "$PREFIX/bin/agent-remote-node" install-ssh --config "$CONFIG_DIR/config.json"
-  run_as_root systemctl enable --now agent-remote-node.service
+  run_as_root systemctl enable agent-remote-node.service
+  run_as_root systemctl restart agent-remote-node.service
   if ! run_as_root systemctl is-active --quiet agent-remote-runtime.service || \
      ! run_as_root systemctl is-active --quiet agent-remote-node.service; then
     echo "agent-remote services did not become active" >&2
@@ -923,7 +929,7 @@ fi
 if backend_enabled native; then
   echo "  Claude: $CLAUDE_RUNTIME_ROOT/current/bin/claude"
 fi
-if [ -n "$REGISTRATION_TOKEN" ] && [ "$START_SERVICES" = "1" ]; then
+if [ "$NODE_READY" = "1" ] && [ "$START_SERVICES" = "1" ]; then
   echo "  services: active"
 elif [ -z "$REGISTRATION_TOKEN" ]; then
   echo "  registration: pending (--server-url, --node-id, --registration-token)"
