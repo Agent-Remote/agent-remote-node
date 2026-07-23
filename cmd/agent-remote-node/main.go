@@ -212,7 +212,7 @@ func installSSH(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := sshkeys.Sync(cfg.SSHAuthorizedKeysPath, cfg.AttachBinaryPath, sshkeys.SyncPayload{}); err != nil {
+	if err := sshkeys.Sync(cfg.SSHAuthorizedKeysPath, cfg.AttachBinaryPath, cfg.SourcePath, sshkeys.SyncPayload{}); err != nil {
 		return err
 	}
 	fmt.Printf("prepared managed authorized_keys at %s\n", cfg.SSHAuthorizedKeysPath)

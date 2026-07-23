@@ -22,7 +22,7 @@ func main() {
 
 func run(args []string) error {
 	fs := flag.NewFlagSet("agent-remote-attach", flag.ContinueOnError)
-	configPath := fs.String("config", "config.json", "config path")
+	configPath := fs.String("config", defaultConfigPath(), "config path")
 	sessionID := fs.String("session", "", "session ID")
 	bindingID := fs.String("binding", "", "tool account ID for a binding session")
 	deviceID := fs.String("device", "", "device ID")
@@ -94,6 +94,17 @@ func run(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func defaultConfigPath() string {
+	if path := strings.TrimSpace(os.Getenv("AGENT_REMOTE_NODE_CONFIG")); path != "" {
+		return path
+	}
+	const systemPath = "/etc/agent-remote-node/config.json"
+	if _, err := os.Stat(systemPath); err == nil {
+		return systemPath
+	}
+	return "config.json"
 }
 
 func runSyncGateway(cfg config.Config, deviceID string, originalCommand string, dryRun bool) error {

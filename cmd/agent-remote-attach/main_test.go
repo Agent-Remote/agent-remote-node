@@ -29,3 +29,10 @@ func TestBindingFromOriginalCommand(t *testing.T) {
 		t.Fatalf("unexpected target %q %q", kind, id)
 	}
 }
+
+func TestDefaultConfigPathUsesEnvironment(t *testing.T) {
+	t.Setenv("AGENT_REMOTE_NODE_CONFIG", "/custom/config.json")
+	if path := defaultConfigPath(); path != "/custom/config.json" {
+		t.Fatalf("unexpected config path %q", path)
+	}
+}

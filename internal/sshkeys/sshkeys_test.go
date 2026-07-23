@@ -17,7 +17,7 @@ func TestSyncWritesManagedBlock(t *testing.T) {
 		PublicKey:     "ssh-ed25519 AAAATEST rem@test",
 		ForcedCommand: "agent-remote-attach --session sess_1 --device dev_1",
 	}}}
-	if err := Sync(path, "/usr/local/bin/agent-remote-attach", payload); err != nil {
+	if err := Sync(path, "/usr/local/bin/agent-remote-attach", "/etc/agent-remote-node/config.json", payload); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(path)
@@ -31,7 +31,7 @@ func TestSyncWritesManagedBlock(t *testing.T) {
 	if !strings.Contains(text, beginMarker) || !strings.Contains(text, endMarker) {
 		t.Fatal("managed markers missing")
 	}
-	if !strings.Contains(text, "command=\"/usr/local/bin/agent-remote-attach --session sess_1 --device dev_1\"") {
+	if !strings.Contains(text, "command=\"/usr/local/bin/agent-remote-attach --config /etc/agent-remote-node/config.json --session sess_1 --device dev_1\"") {
 		t.Fatalf("forced command missing: %s", text)
 	}
 	if strings.Contains(text, "no-pty") {
@@ -39,5 +39,15 @@ func TestSyncWritesManagedBlock(t *testing.T) {
 	}
 	if !strings.Contains(text, "no-agent-forwarding,no-X11-forwarding,no-port-forwarding") {
 		t.Fatal("forwarding restrictions missing")
+	}
+}
+
+func TestRenderEntryQuotesCustomConfigPath(t *testing.T) {
+	line := RenderEntry("agent-remote-attach", "/custom config/config.json", Entry{
+		PublicKey:     "ssh-ed25519 public-key",
+		ForcedCommand: "agent-remote-attach --binding account-1 --device device-1",
+	})
+	if !strings.Contains(line, "agent-remote-attach --config '/custom config/config.json' --binding account-1") {
+		t.Fatalf("config path missing from forced command: %s", line)
 	}
 }

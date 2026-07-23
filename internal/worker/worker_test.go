@@ -174,6 +174,7 @@ func TestWorkerSyncSSHKeysWritesAuthorizedKeys(t *testing.T) {
 		NodeToken:             "node_token",
 		SSHAuthorizedKeysPath: authorizedKeysPath,
 		AttachBinaryPath:      "/usr/local/bin/agent-remote-attach",
+		SourcePath:            "/etc/agent-remote-node/config.json",
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 	if err := w.PollOnce(context.Background()); err != nil {
@@ -186,7 +187,7 @@ func TestWorkerSyncSSHKeysWritesAuthorizedKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), "/usr/local/bin/agent-remote-attach --session sess_1 --device dev_1") {
+	if !strings.Contains(string(data), "/usr/local/bin/agent-remote-attach --config /etc/agent-remote-node/config.json --session sess_1 --device dev_1") {
 		t.Fatalf("authorized_keys missing forced command: %s", string(data))
 	}
 }

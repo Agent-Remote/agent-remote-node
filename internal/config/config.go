@@ -17,6 +17,7 @@ var DefaultVersion = "0.0.4-fix.3"
 
 // Config contains local node runtime settings.
 type Config struct {
+	SourcePath               string   `json:"-"`
 	ServerURL                string   `json:"server_url"`
 	NodeID                   string   `json:"node_id"`
 	NodeToken                string   `json:"node_token"`
@@ -182,6 +183,7 @@ func Load(path string) (Config, error) {
 		return Config{}, err
 	}
 	cfg = cfg.WithDefaults()
+	cfg.SourcePath = path
 	return cfg, cfg.Validate(false)
 }
 

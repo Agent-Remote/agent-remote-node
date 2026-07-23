@@ -177,7 +177,7 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 		if payload.AuthorizedKeysPath != nil && *payload.AuthorizedKeysPath != "" {
 			path = *payload.AuthorizedKeysPath
 		}
-		if err := sshkeys.Sync(path, w.cfg.AttachBinaryPath, payload); err != nil {
+		if err := sshkeys.Sync(path, w.cfg.AttachBinaryPath, w.cfg.SourcePath, payload); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "synced", "authorized_keys_path": path}, nil
@@ -191,7 +191,7 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 			return nil, err
 		}
 		if len(sshPayload.SSHKeys) > 0 {
-			if err := sshkeys.Sync(w.cfg.SSHAuthorizedKeysPath, w.cfg.AttachBinaryPath, sshPayload); err != nil {
+			if err := sshkeys.Sync(w.cfg.SSHAuthorizedKeysPath, w.cfg.AttachBinaryPath, w.cfg.SourcePath, sshPayload); err != nil {
 				return nil, err
 			}
 		}

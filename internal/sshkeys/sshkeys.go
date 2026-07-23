@@ -42,7 +42,7 @@ func DecodePayload(payload map[string]any) (SyncPayload, error) {
 }
 
 // Sync writes the managed authorized_keys block.
-func Sync(path string, attachBinary string, payload SyncPayload) error {
+func Sync(path string, attachBinary string, attachConfig string, payload SyncPayload) error {
 	if path == "" {
 		return fmt.Errorf("authorized_keys path is required")
 	}
@@ -60,7 +60,7 @@ func Sync(path string, attachBinary string, payload SyncPayload) error {
 	var block bytes.Buffer
 	block.WriteString(beginMarker + "\n")
 	for _, key := range payload.SSHKeys {
-		line := RenderEntry(attachBinary, key)
+		line := RenderEntry(attachBinary, attachConfig, key)
 		if line != "" {
 			block.WriteString(line + "\n")
 		}
@@ -76,7 +76,7 @@ func Sync(path string, attachBinary string, payload SyncPayload) error {
 }
 
 // RenderEntry renders one forced-command authorized_keys line.
-func RenderEntry(attachBinary string, key Entry) string {
+func RenderEntry(attachBinary string, attachConfig string, key Entry) string {
 	publicKey := strings.TrimSpace(key.PublicKey)
 	if publicKey == "" {
 		return ""
@@ -85,16 +85,33 @@ func RenderEntry(attachBinary string, key Entry) string {
 	command = strings.ReplaceAll(command, "\"", "\\\"")
 	return fmt.Sprintf(
 		"command=\"%s\",no-agent-forwarding,no-X11-forwarding,no-port-forwarding %s",
-		commandWithBinary(attachBinary, command),
+		commandWithBinary(attachBinary, attachConfig, command),
 		publicKey,
 	)
 }
 
-func commandWithBinary(attachBinary string, forcedCommand string) string {
-	if strings.HasPrefix(forcedCommand, "agent-remote-attach ") && attachBinary != "agent-remote-attach" {
-		return attachBinary + strings.TrimPrefix(forcedCommand, "agent-remote-attach")
+func commandWithBinary(attachBinary string, attachConfig string, forcedCommand string) string {
+	if strings.HasPrefix(forcedCommand, "agent-remote-attach ") &&
+		(attachBinary != "agent-remote-attach" || attachConfig != "") {
+		command := shellWord(attachBinary)
+		if attachConfig != "" {
+			command += " --config " + shellWord(attachConfig)
+		}
+		return command + strings.TrimPrefix(forcedCommand, "agent-remote-attach")
 	}
 	return forcedCommand
+}
+
+func shellWord(value string) string {
+	if value != "" && strings.IndexFunc(value, func(character rune) bool {
+		return !((character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("/._-:", character))
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func stripManagedBlock(input string) string {
