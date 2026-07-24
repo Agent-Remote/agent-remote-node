@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +162,30 @@ func TestClaudeVerifierMatchesAuthFiles(t *testing.T) {
 	matches, ok := result.Metadata["matched_paths"].([]string)
 	if !ok || len(matches) != 1 || matches[0] != ".claude/credentials.json" {
 		t.Fatalf("unexpected matches: %#v", result.Metadata["matched_paths"])
+	}
+}
+
+func TestClaudeVerifierReportsAuthPathInspectionErrors(t *testing.T) {
+	root := t.TempDir()
+	accountPath := filepath.Join(root, "user_1", "accounts", "account_1")
+	configPath := filepath.Join(accountPath, ".claude")
+	if err := os.MkdirAll(configPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credentialPath := filepath.Join(configPath, ".credentials.json")
+	if err := os.Symlink(".credentials.json", credentialPath); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Verify(root, VerifyPayload{
+		ToolAccountID:     "account_1",
+		ToolType:          "claude",
+		UserID:            "user_1",
+		Verifier:          "claude",
+		AccountRemotePath: accountPath,
+	})
+	if err == nil || !strings.Contains(err.Error(), "inspect Claude auth path .claude/.credentials.json") {
+		t.Fatalf("expected auth inspection error, got %v", err)
 	}
 }
 

@@ -191,6 +191,19 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	if !found {
 		t.Fatalf("managed temp directory was not bound: %#v", args)
 	}
+	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude", "/home/runtime/.claude")
+	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude.json", "/home/runtime/.claude/.claude.json")
+	assertArgumentSequence(t, args, "--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude")
+}
+
+func assertArgumentSequence(t *testing.T, args []string, expected ...string) {
+	t.Helper()
+	for index := 0; index+len(expected) <= len(args); index++ {
+		if slices.Equal(args[index:index+len(expected)], expected) {
+			return
+		}
+	}
+	t.Fatalf("expected argument sequence %#v in %#v", expected, args)
 }
 
 func TestGrantSpecAccessAddsTraverseACLToStateParents(t *testing.T) {
@@ -237,7 +250,7 @@ func TestGrantManagedTraverseAddsOnlyManagedParentDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := strings.Join([]string{
-		"-m", "u:ar-u-test:--x", "/var/lib/agent-remote", "/var/lib/agent-remote/users",
+		"-m", "u:ar-u-test:--x,u:agent-remote:--x", "/var/lib/agent-remote", "/var/lib/agent-remote/users",
 		"/var/lib/agent-remote/users/user_1", "/var/lib/agent-remote/users/user_1/tool-accounts",
 		"/var/lib/agent-remote/users/user_1/tool-accounts/claude", "",
 	}, "\n")

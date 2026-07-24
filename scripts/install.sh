@@ -709,6 +709,8 @@ install_packaged() {
 
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
+    run_as_root install -d -m 0710 -o root -g "$USER_NAME" "$DATA_DIR/users"
+    run_as_root setfacl -m "u:$USER_NAME:--x" "$DATA_DIR/users"
     if [ ! -f "$CONFIG_DIR/config.json" ]; then
       run_as_root install -m 0600 -o "$USER_NAME" -g "$USER_NAME" "$package_dir/config.example.json" "$CONFIG_DIR/config.json"
     fi

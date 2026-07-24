@@ -280,7 +280,10 @@ func Verify(root string, payload VerifyPayload) (VerifyResult, error) {
 	if payload.Verifier != "claude" || payload.ToolType != "claude" {
 		return VerifyResult{}, fmt.Errorf("unsupported verifier %s for tool %s", payload.Verifier, payload.ToolType)
 	}
-	matches := existingClaudeAuthPaths(accountPath)
+	matches, err := existingClaudeAuthPaths(accountPath)
+	if err != nil {
+		return VerifyResult{}, err
+	}
 	result := VerifyResult{
 		Verified:          len(matches) > 0,
 		ToolAccountID:     payload.ToolAccountID,
@@ -456,7 +459,7 @@ func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func existingClaudeAuthPaths(accountPath string) []string {
+func existingClaudeAuthPaths(accountPath string) ([]string, error) {
 	candidates := []string{
 		".agent-remote-claude-auth.json",
 		filepath.Join(".claude", ".credentials.json"),
@@ -465,19 +468,29 @@ func existingClaudeAuthPaths(accountPath string) []string {
 	}
 	matches := make([]string, 0)
 	for _, relativePath := range candidates {
-		if hasAuthLikeFile(filepath.Join(accountPath, relativePath)) {
+		matched, err := hasAuthLikeFile(filepath.Join(accountPath, relativePath))
+		if err != nil {
+			return nil, fmt.Errorf("inspect Claude auth path %s: %w", relativePath, err)
+		}
+		if matched {
 			matches = append(matches, relativePath)
 		}
 	}
-	return matches
+	return matches, nil
 }
 
-func hasAuthLikeFile(path string) bool {
+func hasAuthLikeFile(path string) (bool, error) {
 	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
 	}
-	return info.Size() > 4
+	if err != nil {
+		return false, err
+	}
+	if info.IsDir() {
+		return false, nil
+	}
+	return info.Size() > 4, nil
 }
 
 func resolveAccountPath(root string, userID string, toolType string, toolAccountID string, remotePath string) (string, error) {

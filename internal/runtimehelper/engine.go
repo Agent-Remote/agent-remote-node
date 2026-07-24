@@ -1221,7 +1221,8 @@ func (e Engine) grantManagedTraverse(path string, runtimeUser string) error {
 			targets = append(targets, parent)
 		}
 	}
-	args := append([]string{"-m", "u:" + runtimeUser + ":--x"}, targets...)
+	access := "u:" + runtimeUser + ":--x,u:" + e.config.NodeUser + ":--x"
+	args := append([]string{"-m", access}, targets...)
 	if output, err := exec.Command(e.config.SetfaclPath, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("grant managed path traverse access: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -1811,14 +1812,16 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		"--bind", spec.WorkspacePath, "/workspace",
 		"--bind", spec.AccountPath, "/account",
 		"--bind", filepath.Join(spec.SessionRoot, "tmp"), "/tmp",
+		"--bind", filepath.Join(spec.AccountPath, ".claude"), "/home/runtime/.claude",
 		"--bind", filepath.Join(spec.AccountPath, ".claude.json"), "/home/runtime/.claude.json",
+		"--bind", filepath.Join(spec.AccountPath, ".claude.json"), "/home/runtime/.claude/.claude.json",
 		"--ro-bind", filepath.Join("/usr/share/zoneinfo", spec.Timezone), "/etc/localtime",
 		"--ro-bind", filepath.Join(spec.SessionRoot, "timezone"), "/etc/timezone",
 		"--ro-bind", filepath.Join(spec.SessionRoot, "resolv.conf"), "/etc/resolv.conf",
 		"--setenv", "HOME", "/home/runtime",
 		"--setenv", "TMPDIR", "/tmp",
 		"--setenv", "XDG_CACHE_HOME", "/tmp/xdg-cache",
-		"--setenv", "CLAUDE_CONFIG_DIR", "/account/.claude",
+		"--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude",
 		"--setenv", "TZ", spec.Timezone,
 		"--setenv", "LANG", spec.Locale,
 		"--setenv", "LC_ALL", spec.Locale,
