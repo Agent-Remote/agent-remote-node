@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.11 - 2026-07-24
+
+- fix: honor claude binding command (1ee52f3)
+
 ## v0.0.4-fix.10 - 2026-07-24
 
 - fix: persist Claude account authentication (bfc7168)
