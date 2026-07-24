@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.14 - 2026-07-24
+
+- fix: improve remote tmux display (0b9cda8)
+
 ## v0.0.4-fix.13 - 2026-07-24
 
 - fix: keep synced workspaces ACL-free (be7979a)

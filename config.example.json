@@ -2,7 +2,7 @@
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_replace_me",
-  "version": "0.0.4-fix.13",
+  "version": "0.0.4-fix.14",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
