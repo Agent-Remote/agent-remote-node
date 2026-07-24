@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
+	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
 	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
@@ -1720,11 +1721,14 @@ func SuperviseSpec(config EngineConfig, specPath string) error {
 		return err
 	}
 	command := strings.Join([]string{shellQuote(config.RuntimeBinaryPath), "exec", "--spec", shellQuote(specPath)}, " ")
-	cmd := exec.Command(config.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "new-session", "-d", "-s", spec.TmuxSessionName, command)
+	cmd := exec.Command(config.TmuxBinaryPath, tmuxsession.NewSessionArgs(spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
 	cmd.Dir = spec.WorkspacePath
 	cmd.Env = replaceEnvironment(os.Environ(), "SHELL", "/bin/sh")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux start failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if err := tmuxsession.Configure(config.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
+		return err
 	}
 	for {
 		if exec.Command(config.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName).Run() != nil {
@@ -1781,6 +1785,9 @@ func AttachSession(config EngineConfig, sessionID string) error {
 	}
 	binary, err := exec.LookPath(config.TmuxBinaryPath)
 	if err != nil {
+		return err
+	}
+	if err := tmuxsession.Configure(binary, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
 		return err
 	}
 	args := []string{binary, "-S", spec.TmuxSocketPath, "attach-session", "-t", spec.TmuxSessionName}

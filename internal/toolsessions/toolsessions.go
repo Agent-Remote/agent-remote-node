@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
 const controlPlaneRoot = "/var/lib/agent-remote/users"
@@ -274,9 +276,12 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		return false, err
 	}
 	if err := exec.Command(tmuxBinary, "has-session", "-t", payload.TmuxSessionName).Run(); err == nil {
+		if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
+			return false, err
+		}
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, "new-session", "-d", "-s", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))
+	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs("", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))...)
 	cmd.Dir = workspacePath
 	cmd.Env = append(os.Environ(),
 		"AGENT_REMOTE_WORKSPACE_PATH="+workspacePath,
@@ -288,6 +293,9 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		"LC_ALL="+payload.Locale,
 	)
 	if err := cmd.Run(); err != nil {
+		return false, err
+	}
+	if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
 		return false, err
 	}
 	return true, nil

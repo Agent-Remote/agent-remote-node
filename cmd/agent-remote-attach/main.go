@@ -12,6 +12,7 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
+	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
 func main() {
@@ -85,7 +86,7 @@ func run(args []string) error {
 		tmuxSessionName = response.Data.TmuxSessionName
 	}
 	argsForTmux := []string{"attach-session", "-t", tmuxSessionName}
-	command := "tmux"
+	command := cfg.TmuxBinaryPath
 	if runtimeBackend == "native" {
 		command = "sudo"
 		argsForTmux = []string{"-n", cfg.RuntimeBinaryPath, "attach", "--session", runtimeSessionID}
@@ -93,6 +94,11 @@ func run(args []string) error {
 	if *dryRun {
 		fmt.Printf("%s %s\n", command, strings.Join(argsForTmux, " "))
 		return nil
+	}
+	if runtimeBackend != "native" {
+		if err := tmuxsession.Configure(cfg.TmuxBinaryPath, "", tmuxSessionName); err != nil {
+			return err
+		}
 	}
 	cmd := exec.Command(command, argsForTmux...)
 	cmd.Stdin = os.Stdin
