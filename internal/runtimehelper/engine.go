@@ -258,22 +258,7 @@ func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
-	identity, err := e.ensureIdentity(decoded.UserID)
-	if err != nil {
-		return nil, err
-	}
-	if err := e.clearDataACL(result.RemotePath); err != nil {
-		return nil, err
-	}
-	if err := filepath.WalkDir(result.RemotePath, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := os.Lchown(path, identity.UID, identity.GID); err != nil {
-			return err
-		}
-		return normalizeWorkspaceMode(path, entry)
-	}); err != nil {
+	if err := e.prepareSyncedWorkspace(decoded.UserID, result.RemotePath); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -696,7 +681,10 @@ func (e Engine) startSession(ctx context.Context, payload map[string]any) (map[s
 	}
 	workspacePath := filepath.Join(e.config.WorkspaceRoot, userID, "workspaces", workspaceID, "files")
 	accountPath := filepath.Join(e.config.AccountRoot, userID, "tool-accounts", "claude", accountID)
-	if err := e.prepareOwnedDirectories(userID, workspacePath, accountPath, filepath.Join(accountPath, ".claude")); err != nil {
+	if err := e.prepareSyncedWorkspace(userID, workspacePath); err != nil {
+		return nil, err
+	}
+	if err := e.prepareOwnedDirectories(userID, accountPath, filepath.Join(accountPath, ".claude")); err != nil {
 		return nil, err
 	}
 	argv := textList(payload["argv"])
@@ -1209,6 +1197,64 @@ func (e Engine) prepareOwnedDirectories(userID string, paths ...string) error {
 		}
 	}
 	return nil
+}
+
+func (e Engine) preparePrivateDirectories(userID string, paths ...string) error {
+	identity, err := e.ensureIdentity(userID)
+	if err != nil {
+		return err
+	}
+	for _, path := range paths {
+		if !pathInside(e.config.WorkspaceRoot, path) && !pathInside(e.config.AccountRoot, path) {
+			return fmt.Errorf("runtime path is outside managed roots: %s", path)
+		}
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return err
+		}
+		if runtime.GOOS == "linux" {
+			if err := os.Chown(path, identity.UID, identity.GID); err != nil {
+				return err
+			}
+			if err := os.Chmod(path, 0o700); err != nil {
+				return err
+			}
+			if err := e.grantManagedTraverse(path, identity.Username); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (e Engine) prepareSyncedWorkspace(userID string, path string) error {
+	if !pathInside(e.config.WorkspaceRoot, path) {
+		return fmt.Errorf("workspace path is outside managed root: %s", path)
+	}
+	identity, err := e.ensureIdentity(userID)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(path, 0o770); err != nil {
+		return err
+	}
+	if runtime.GOOS != "linux" {
+		return nil
+	}
+	if err := e.clearDataACL(path); err != nil {
+		return err
+	}
+	if err := filepath.WalkDir(path, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := os.Lchown(current, identity.UID, identity.GID); err != nil {
+			return err
+		}
+		return normalizeWorkspaceMode(current, entry)
+	}); err != nil {
+		return err
+	}
+	return e.grantManagedTraverse(path, identity.Username)
 }
 
 func (e Engine) grantManagedTraverse(path string, runtimeUser string) error {
@@ -1761,7 +1807,7 @@ func SyncCommand(config EngineConfig, userID string, command string) error {
 	userRoot := filepath.Join(config.WorkspaceRoot, userID)
 	syncHome := filepath.Join(userRoot, ".sync-home")
 	syncTemp := filepath.Join(userRoot, ".sync-tmp")
-	if err := engine.prepareOwnedDirectories(userID, userRoot, syncHome, syncTemp); err != nil {
+	if err := engine.preparePrivateDirectories(userID, userRoot, syncHome, syncTemp); err != nil {
 		return err
 	}
 	args := []string{
