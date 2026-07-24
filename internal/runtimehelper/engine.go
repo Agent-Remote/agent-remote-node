@@ -970,10 +970,17 @@ func escapeGitConfigValue(value string) string {
 func writeRuntimeIdentityFiles(sessionRoot string, identity runtimeIdentity) error {
 	passwd := fmt.Sprintf("%s:x:%d:%d:agent-remote runtime:/home/runtime:/usr/sbin/nologin\n", identity.Username, identity.UID, identity.GID)
 	group := fmt.Sprintf("%s:x:%d:\n", identity.Username, identity.GID)
-	if err := os.WriteFile(filepath.Join(sessionRoot, "passwd"), []byte(passwd), 0o644); err != nil {
+	if err := writeRuntimeIdentityFile(filepath.Join(sessionRoot, "passwd"), passwd); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(sessionRoot, "group"), []byte(group), 0o644)
+	return writeRuntimeIdentityFile(filepath.Join(sessionRoot, "group"), group)
+}
+
+func writeRuntimeIdentityFile(path string, contents string) error {
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o644)
 }
 
 func (e Engine) grantSpecAccess(spec SessionSpec) error {

@@ -247,6 +247,37 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock")
 }
 
+func TestRuntimeIdentityFilesRemainReadableWithRestrictiveExistingModes(t *testing.T) {
+	sessionRoot := t.TempDir()
+	for _, name := range []string{"passwd", "group"} {
+		if err := os.WriteFile(filepath.Join(sessionRoot, name), []byte("stale\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	identity := runtimeIdentity{Username: "ar-u-test", UID: 996, GID: 994}
+	if err := writeRuntimeIdentityFiles(sessionRoot, identity); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, name := range []string{"passwd", "group"} {
+		info, err := os.Stat(filepath.Join(sessionRoot, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o644 {
+			t.Fatalf("%s mode = %o, want 644", name, info.Mode().Perm())
+		}
+	}
+	passwd, err := os.ReadFile(filepath.Join(sessionRoot, "passwd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(passwd) != "ar-u-test:x:996:994:agent-remote runtime:/home/runtime:/usr/sbin/nologin\n" {
+		t.Fatalf("unexpected passwd contents: %q", passwd)
+	}
+}
+
 func TestRenderGitConfigQuotesIdentityValues(t *testing.T) {
 	config, err := renderGitConfig(map[string]any{
 		"user_name":  `A "Quoted" User`,
