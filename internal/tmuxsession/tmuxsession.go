@@ -24,6 +24,14 @@ func NewSessionArgs(socketPath string, sessionName string, command string) []str
 	)
 }
 
+// AttachArgs makes the newly attached terminal the only client for the
+// session. This prevents a disconnected or background terminal from keeping
+// a full-screen application at an obsolete size when users switch terminals.
+func AttachArgs(socketPath string, sessionName string) []string {
+	args := socketArgs(socketPath)
+	return append(args, "attach-session", "-d", "-t", sessionName)
+}
+
 // Configure removes tmux chrome and makes the session follow the most recent
 // terminal client, which keeps full-screen agents visually native over SSH.
 func Configure(binary string, socketPath string, sessionName string) error {
@@ -31,6 +39,7 @@ func Configure(binary string, socketPath string, sessionName string) error {
 		{"set-option", "-t", sessionName, "status", "off"},
 		{"set-option", "-t", sessionName, "focus-events", "on"},
 		{"set-window-option", "-t", sessionName, "window-size", "latest"},
+		{"set-window-option", "-t", sessionName, "aggressive-resize", "on"},
 	}
 	for _, command := range commands {
 		args := append(socketArgs(socketPath), command...)

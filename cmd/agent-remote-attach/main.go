@@ -85,7 +85,7 @@ func run(args []string) error {
 		runtimeSessionID = response.Data.SessionID
 		tmuxSessionName = response.Data.TmuxSessionName
 	}
-	argsForTmux := []string{"attach-session", "-t", tmuxSessionName}
+	argsForTmux := tmuxsession.AttachArgs("", tmuxSessionName)
 	command := cfg.TmuxBinaryPath
 	if runtimeBackend == "native" {
 		command = "sudo"

@@ -31,6 +31,25 @@ func TestNewSessionArgsWithoutSocket(t *testing.T) {
 	}
 }
 
+func TestAttachArgs(t *testing.T) {
+	want := []string{
+		"-S", "/run/agent/tmux.sock",
+		"attach-session", "-d", "-t", "agent-session",
+	}
+	got := AttachArgs("/run/agent/tmux.sock", "agent-session")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AttachArgs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestAttachArgsWithoutSocket(t *testing.T) {
+	want := []string{"attach-session", "-d", "-t", "agent-session"}
+	got := AttachArgs("", "agent-session")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AttachArgs() = %#v, want %#v", got, want)
+	}
+}
+
 func TestConfigure(t *testing.T) {
 	dir := t.TempDir()
 	logPath := filepath.Join(dir, "commands.log")
@@ -52,6 +71,7 @@ func TestConfigure(t *testing.T) {
 		"-S /run/agent/tmux.sock set-option -t agent-session status off",
 		"-S /run/agent/tmux.sock set-option -t agent-session focus-events on",
 		"-S /run/agent/tmux.sock set-window-option -t agent-session window-size latest",
+		"-S /run/agent/tmux.sock set-window-option -t agent-session aggressive-resize on",
 		"-S /run/agent/tmux.sock set-option -s terminal-features xterm*:RGB",
 	}
 	got := strings.Split(strings.TrimSpace(string(data)), "\n")

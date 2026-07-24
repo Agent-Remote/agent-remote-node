@@ -1790,7 +1790,7 @@ func AttachSession(config EngineConfig, sessionID string) error {
 	if err := tmuxsession.Configure(binary, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
 		return err
 	}
-	args := []string{binary, "-S", spec.TmuxSocketPath, "attach-session", "-t", spec.TmuxSessionName}
+	args := append([]string{binary}, tmuxsession.AttachArgs(spec.TmuxSocketPath, spec.TmuxSessionName)...)
 	return syscall.Exec(binary, args, os.Environ())
 }
 
