@@ -3,6 +3,8 @@ package runtimehelper
 import (
 	"context"
 	"encoding/base64"
+	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -209,13 +211,15 @@ func TestClaudeBindingArgvRejectsInvalidTemplateCommand(t *testing.T) {
 
 func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	spec := SessionSpec{
-		RuntimeRoot:    "/runtime",
-		WorkspacePath:  "/workspaces/user/workspace",
-		AccountPath:    "/accounts/user/account",
-		SessionRoot:    "/runtime-state/session",
-		Timezone:       "UTC",
-		Locale:         "en_US.UTF-8",
-		RuntimeCommand: "/opt/agent-remote/runtime/bin/claude",
+		RuntimeRoot:                    "/runtime",
+		WorkspacePath:                  "/workspaces/user/workspace",
+		AccountPath:                    "/accounts/user/account",
+		DeveloperCredentialProfilePath: "/accounts/user/developer-profile",
+		SSHAgentDirectory:              "/runtime-state/session/ssh-agent",
+		SessionRoot:                    "/runtime-state/session",
+		Timezone:                       "UTC",
+		Locale:                         "en_US.UTF-8",
+		RuntimeCommand:                 "/opt/agent-remote/runtime/bin/claude",
 	}
 	args := bubblewrapArgs(EngineConfig{}, spec)
 	if slices.Contains(args, "--tmpfs") {
@@ -234,6 +238,81 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude", "/home/runtime/.claude")
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude.json", "/home/runtime/.claude/.claude.json")
 	assertArgumentSequence(t, args, "--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude")
+	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/passwd", "/etc/passwd")
+	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/group", "/etc/group")
+	assertArgumentSequence(t, args, "--bind", "/accounts/user/developer-profile", "/developer-profile")
+	assertArgumentSequence(t, args, "--setenv", "GIT_CONFIG_GLOBAL", "/developer-profile/home/.gitconfig")
+	assertArgumentSequence(t, args, "--setenv", "GH_CONFIG_DIR", "/developer-profile/gh")
+	assertArgumentSequence(t, args, "--bind", "/runtime-state/session/ssh-agent", "/run/agent-remote/ssh-agent")
+	assertArgumentSequence(t, args, "--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock")
+}
+
+func TestRenderGitConfigQuotesIdentityValues(t *testing.T) {
+	config, err := renderGitConfig(map[string]any{
+		"user_name":  `A "Quoted" User`,
+		"user_email": `user\\alias@example.com`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{`name = "A \"Quoted\" User"`, `email = "user\\\\alias@example.com"`} {
+		if !strings.Contains(config, expected) {
+			t.Fatalf("git config is missing %q: %s", expected, config)
+		}
+	}
+	if _, err := renderGitConfig(map[string]any{"user_name": "unsafe\n[core]"}); err == nil {
+		t.Fatal("expected multiline Git identity to be rejected")
+	}
+}
+
+func TestSSHAgentProxyForwardsUnixConnections(t *testing.T) {
+	testRoot, err := os.MkdirTemp("/tmp", "agent-remote-agent-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(testRoot) })
+	upstreamPath := filepath.Join(testRoot, "upstream.sock")
+	upstream, err := net.ListenUnix("unix", &net.UnixAddr{Name: upstreamPath, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		connection, acceptErr := upstream.AcceptUnix()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		request := make([]byte, 4)
+		if _, readErr := io.ReadFull(connection, request); readErr == nil && string(request) == "ping" {
+			_, _ = connection.Write([]byte("pong"))
+		}
+	}()
+
+	directory := filepath.Join(testRoot, "proxy")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	proxy, err := startSSHAgentProxy(directory, upstreamPath, os.Getuid(), os.Getgid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer proxy.Close()
+	client, err := net.Dial("unix", filepath.Join(directory, "agent.sock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(client, response); err != nil {
+		t.Fatal(err)
+	}
+	if string(response) != "pong" {
+		t.Fatalf("unexpected proxy response %q", response)
+	}
 }
 
 func assertArgumentSequence(t *testing.T, args []string, expected ...string) {

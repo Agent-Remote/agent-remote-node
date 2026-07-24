@@ -135,6 +135,7 @@ type VerifyAttachResponse struct {
 		ContainerID       *string `json:"container_id"`
 		RuntimeBackend    string  `json:"runtime_backend"`
 		RuntimeResourceID *string `json:"runtime_resource_id"`
+		ForwardSSHAgent   bool    `json:"forward_ssh_agent"`
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 }

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -532,6 +533,9 @@ func (e Engine) probe() (map[string]any, error) {
 		"umount":          commandAvailable(e.config.UmountPath),
 		"mountpoint":      commandAvailable(e.config.MountpointPath),
 		"tmux":            commandAvailable(e.config.TmuxBinaryPath),
+		"git":             commandAvailable("git"),
+		"gh":              commandAvailable("gh"),
+		"ssh_client":      commandAvailable("ssh"),
 		"claude_runtime":  executableExists(e.config.ClaudeRuntimePath),
 		"locale":          localeAvailable("en_US.UTF-8"),
 		"network_ns":      pathExists("/proc/self/ns/net"),
@@ -761,27 +765,31 @@ func (e Engine) inspectSession(payload map[string]any) (map[string]any, error) {
 
 // SessionSpec is the root-validated execution manifest consumed by unprivileged subcommands.
 type SessionSpec struct {
-	Version          int           `json:"version"`
-	Kind             string        `json:"kind"`
-	SessionID        string        `json:"session_id"`
-	UserID           string        `json:"user_id"`
-	Username         string        `json:"username"`
-	WorkspacePath    string        `json:"workspace_path"`
-	AccountPath      string        `json:"account_path"`
-	SessionRoot      string        `json:"session_root"`
-	RuntimeRoot      string        `json:"runtime_root"`
-	RuntimeCommand   string        `json:"runtime_command"`
-	Argv             []string      `json:"argv"`
-	Timezone         string        `json:"timezone"`
-	Locale           string        `json:"locale"`
-	TmuxSessionName  string        `json:"tmux_session_name"`
-	TmuxSocketPath   string        `json:"tmux_socket_path"`
-	UnitName         string        `json:"unit_name"`
-	NetworkNamespace string        `json:"network_namespace"`
-	CreatedAt        string        `json:"created_at"`
-	RuntimeUID       int           `json:"runtime_uid"`
-	RuntimeGID       int           `json:"runtime_gid"`
-	Policy           RuntimePolicy `json:"policy"`
+	Version                        int           `json:"version"`
+	Kind                           string        `json:"kind"`
+	SessionID                      string        `json:"session_id"`
+	UserID                         string        `json:"user_id"`
+	Username                       string        `json:"username"`
+	WorkspacePath                  string        `json:"workspace_path"`
+	AccountPath                    string        `json:"account_path"`
+	DeveloperCredentialProfilePath string        `json:"developer_credential_profile_path,omitempty"`
+	GitHubCLIMode                  string        `json:"github_cli_mode,omitempty"`
+	SSHMode                        string        `json:"ssh_mode,omitempty"`
+	SSHAgentDirectory              string        `json:"ssh_agent_directory,omitempty"`
+	SessionRoot                    string        `json:"session_root"`
+	RuntimeRoot                    string        `json:"runtime_root"`
+	RuntimeCommand                 string        `json:"runtime_command"`
+	Argv                           []string      `json:"argv"`
+	Timezone                       string        `json:"timezone"`
+	Locale                         string        `json:"locale"`
+	TmuxSessionName                string        `json:"tmux_session_name"`
+	TmuxSocketPath                 string        `json:"tmux_socket_path"`
+	UnitName                       string        `json:"unit_name"`
+	NetworkNamespace               string        `json:"network_namespace"`
+	CreatedAt                      string        `json:"created_at"`
+	RuntimeUID                     int           `json:"runtime_uid"`
+	RuntimeGID                     int           `json:"runtime_gid"`
+	Policy                         RuntimePolicy `json:"policy"`
 }
 
 // RuntimePolicy contains root-validated per-session resource and network limits.
@@ -819,6 +827,20 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 			return SessionSpec{}, err
 		}
 	}
+	developerProfilePath, githubCLIMode, sshMode, err := e.prepareDeveloperCredentialProfile(userID, payload)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	sshAgentDirectory := ""
+	if sshMode == "agent_forwarding" {
+		sshAgentDirectory = filepath.Join(sessionRoot, "ssh-agent")
+		if err := ensureRootDirectory(sshAgentDirectory, 0o711); err != nil {
+			return SessionSpec{}, err
+		}
+	}
+	if err := writeRuntimeIdentityFiles(sessionRoot, identity); err != nil {
+		return SessionSpec{}, err
+	}
 	timezone := optionalText(payload, "timezone", "UTC")
 	locale := optionalText(payload, "locale", "en_US.UTF-8")
 	if !safeTimezone(timezone) || !safeLocale(locale) || !localeAvailable(locale) {
@@ -834,27 +856,31 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		return SessionSpec{}, err
 	}
 	spec := SessionSpec{
-		Version:          ProtocolVersion,
-		Kind:             kind,
-		SessionID:        sessionID,
-		UserID:           userID,
-		Username:         identity.Username,
-		WorkspacePath:    workspacePath,
-		AccountPath:      accountPath,
-		SessionRoot:      sessionRoot,
-		RuntimeRoot:      runtimeRoot,
-		RuntimeCommand:   "/opt/agent-remote/runtime/bin/claude",
-		Argv:             argv,
-		Timezone:         timezone,
-		Locale:           locale,
-		TmuxSessionName:  tmuxName,
-		TmuxSocketPath:   filepath.Join(tmuxRoot, "tmux.sock"),
-		UnitName:         "agent-remote-session-" + digest + ".service",
-		NetworkNamespace: "ar-" + shortDigest(sessionID, 10),
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
-		RuntimeUID:       identity.UID,
-		RuntimeGID:       identity.GID,
-		Policy:           policy,
+		Version:                        ProtocolVersion,
+		Kind:                           kind,
+		SessionID:                      sessionID,
+		UserID:                         userID,
+		Username:                       identity.Username,
+		WorkspacePath:                  workspacePath,
+		AccountPath:                    accountPath,
+		DeveloperCredentialProfilePath: developerProfilePath,
+		GitHubCLIMode:                  githubCLIMode,
+		SSHMode:                        sshMode,
+		SSHAgentDirectory:              sshAgentDirectory,
+		SessionRoot:                    sessionRoot,
+		RuntimeRoot:                    runtimeRoot,
+		RuntimeCommand:                 "/opt/agent-remote/runtime/bin/claude",
+		Argv:                           argv,
+		Timezone:                       timezone,
+		Locale:                         locale,
+		TmuxSessionName:                tmuxName,
+		TmuxSocketPath:                 filepath.Join(tmuxRoot, "tmux.sock"),
+		UnitName:                       "agent-remote-session-" + digest + ".service",
+		NetworkNamespace:               "ar-" + shortDigest(sessionID, 10),
+		CreatedAt:                      time.Now().UTC().Format(time.RFC3339),
+		RuntimeUID:                     identity.UID,
+		RuntimeGID:                     identity.GID,
+		Policy:                         policy,
 	}
 	if err := e.saveSpec(spec); err != nil {
 		return SessionSpec{}, err
@@ -863,6 +889,91 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		return SessionSpec{}, err
 	}
 	return spec, nil
+}
+
+func (e Engine) prepareDeveloperCredentialProfile(userID string, payload map[string]any) (string, string, string, error) {
+	raw, ok := payload["developer_credentials"].(map[string]any)
+	if !ok {
+		if payload["developer_credentials"] == nil {
+			return "", "", "", nil
+		}
+		return "", "", "", errors.New("developer_credentials is invalid")
+	}
+	profileID, _ := raw["profile_id"].(string)
+	if err := validateID(profileID, "developer_credentials.profile_id"); err != nil {
+		return "", "", "", err
+	}
+	githubCLIMode, _ := raw["gh_mode"].(string)
+	if githubCLIMode != "remote_login" && githubCLIMode != "import_token" && githubCLIMode != "disabled" {
+		return "", "", "", errors.New("developer_credentials.gh_mode is invalid")
+	}
+	sshMode, _ := raw["ssh_mode"].(string)
+	if sshMode != "agent_forwarding" && sshMode != "deploy_key" && sshMode != "disabled" {
+		return "", "", "", errors.New("developer_credentials.ssh_mode is invalid")
+	}
+	profilePath := filepath.Join(e.config.AccountRoot, userID, "developer-credential-profiles", profileID)
+	if declared, _ := payload["developer_credential_profile_path"].(string); declared != "" && filepath.Clean(declared) != profilePath {
+		return "", "", "", errors.New("developer credential profile path does not match managed path")
+	}
+	paths := []string{profilePath, filepath.Join(profilePath, "home"), filepath.Join(profilePath, "gh"), filepath.Join(profilePath, ".ssh")}
+	if err := e.preparePrivateDirectories(userID, paths...); err != nil {
+		return "", "", "", err
+	}
+	gitIdentity, _ := raw["git_identity"].(map[string]any)
+	gitConfig, err := renderGitConfig(gitIdentity)
+	if err != nil {
+		return "", "", "", err
+	}
+	identity, err := e.ensureIdentity(userID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if err := writeOwnedFile(filepath.Join(profilePath, "home", ".gitconfig"), []byte(gitConfig), 0o600, identity); err != nil {
+		return "", "", "", err
+	}
+	return profilePath, githubCLIMode, sshMode, nil
+}
+
+func renderGitConfig(identity map[string]any) (string, error) {
+	name, _ := identity["user_name"].(string)
+	email, _ := identity["user_email"].(string)
+	if err := validateGitIdentityValue(name); err != nil {
+		return "", fmt.Errorf("git user name is invalid: %w", err)
+	}
+	if err := validateGitIdentityValue(email); err != nil {
+		return "", fmt.Errorf("git user email is invalid: %w", err)
+	}
+	if name == "" && email == "" {
+		return "", nil
+	}
+	lines := []string{"[user]"}
+	if name != "" {
+		lines = append(lines, "\tname = \""+escapeGitConfigValue(name)+"\"")
+	}
+	if email != "" {
+		lines = append(lines, "\temail = \""+escapeGitConfigValue(email)+"\"")
+	}
+	return strings.Join(lines, "\n") + "\n", nil
+}
+
+func validateGitIdentityValue(value string) error {
+	if len(value) > 320 || strings.ContainsAny(value, "\x00\r\n") {
+		return errors.New("value contains unsupported characters")
+	}
+	return nil
+}
+
+func escapeGitConfigValue(value string) string {
+	return strings.NewReplacer("\\", "\\\\", "\"", "\\\"").Replace(value)
+}
+
+func writeRuntimeIdentityFiles(sessionRoot string, identity runtimeIdentity) error {
+	passwd := fmt.Sprintf("%s:x:%d:%d:agent-remote runtime:/home/runtime:/usr/sbin/nologin\n", identity.Username, identity.UID, identity.GID)
+	group := fmt.Sprintf("%s:x:%d:\n", identity.Username, identity.GID)
+	if err := os.WriteFile(filepath.Join(sessionRoot, "passwd"), []byte(passwd), 0o644); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(sessionRoot, "group"), []byte(group), 0o644)
 }
 
 func (e Engine) grantSpecAccess(spec SessionSpec) error {
@@ -1599,6 +1710,19 @@ func ensureOwnedFile(path string, content []byte, mode os.FileMode, identity run
 	return nil
 }
 
+func writeOwnedFile(path string, content []byte, mode os.FileMode, identity runtimeIdentity) error {
+	if err := os.WriteFile(path, content, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	if runtime.GOOS == "linux" {
+		return os.Chown(path, identity.UID, identity.GID)
+	}
+	return nil
+}
+
 func ensureRootDirectory(path string, mode os.FileMode) error {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -1750,7 +1874,7 @@ func replaceEnvironment(environ []string, key string, value string) []string {
 }
 
 // AttachSession drops privileges to the runtime user and attaches its tmux socket.
-func AttachSession(config EngineConfig, sessionID string) error {
+func AttachSession(config EngineConfig, sessionID string, sshAgentSocket string) error {
 	config = config.WithDefaults()
 	if os.Geteuid() != 0 {
 		return errors.New("native attach requires root")
@@ -1774,14 +1898,19 @@ func AttachSession(config EngineConfig, sessionID string) error {
 	if err != nil {
 		return err
 	}
-	if err := syscall.Setgroups([]int{gid}); err != nil {
-		return err
-	}
-	if err := syscall.Setgid(gid); err != nil {
-		return err
-	}
-	if err := syscall.Setuid(uid); err != nil {
-		return err
+	var proxy *sshAgentProxy
+	if sshAgentSocket != "" {
+		if spec.SSHMode != "agent_forwarding" || spec.SSHAgentDirectory == "" {
+			return errors.New("SSH agent forwarding is not enabled for this session")
+		}
+		if err := validateForwardedSSHAgentSocket(sshAgentSocket); err != nil {
+			return err
+		}
+		proxy, err = startSSHAgentProxy(spec.SSHAgentDirectory, sshAgentSocket, uid, gid)
+		if err != nil {
+			return err
+		}
+		defer proxy.Close()
 	}
 	binary, err := exec.LookPath(config.TmuxBinaryPath)
 	if err != nil {
@@ -1790,8 +1919,120 @@ func AttachSession(config EngineConfig, sessionID string) error {
 	if err := tmuxsession.Configure(binary, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
 		return err
 	}
-	args := append([]string{binary}, tmuxsession.AttachArgs(spec.TmuxSocketPath, spec.TmuxSessionName)...)
-	return syscall.Exec(binary, args, os.Environ())
+	cmd := exec.Command(binary, tmuxsession.AttachArgs(spec.TmuxSocketPath, spec.TmuxSessionName)...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = os.Environ()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+		Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{uint32(gid)},
+	}}
+	return cmd.Run()
+}
+
+type sshAgentProxy struct {
+	listener   *net.UnixListener
+	directory  string
+	socketPath string
+	stablePath string
+	upstream   string
+}
+
+func startSSHAgentProxy(directory string, upstream string, uid int, gid int) (*sshAgentProxy, error) {
+	socketPath := filepath.Join(directory, fmt.Sprintf("a.%d", os.Getpid()))
+	stablePath := filepath.Join(directory, "agent.sock")
+	_ = os.Remove(socketPath)
+	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: socketPath, Net: "unix"})
+	if err != nil {
+		return nil, err
+	}
+	listener.SetUnlinkOnClose(false)
+	proxy := &sshAgentProxy{
+		listener: listener, directory: directory, socketPath: socketPath,
+		stablePath: stablePath, upstream: upstream,
+	}
+	if err := os.Chmod(socketPath, 0o600); err != nil {
+		proxy.Close()
+		return nil, err
+	}
+	if runtime.GOOS == "linux" {
+		if err := os.Chown(socketPath, uid, gid); err != nil {
+			proxy.Close()
+			return nil, err
+		}
+	}
+	temporaryLink := filepath.Join(directory, fmt.Sprintf(".l.%d", os.Getpid()))
+	_ = os.Remove(temporaryLink)
+	if err := os.Symlink(filepath.Base(socketPath), temporaryLink); err != nil {
+		proxy.Close()
+		return nil, err
+	}
+	if err := os.Rename(temporaryLink, stablePath); err != nil {
+		_ = os.Remove(temporaryLink)
+		proxy.Close()
+		return nil, err
+	}
+	go proxy.serve()
+	return proxy, nil
+}
+
+func (p *sshAgentProxy) serve() {
+	for {
+		client, err := p.listener.AcceptUnix()
+		if err != nil {
+			return
+		}
+		go p.forward(client)
+	}
+}
+
+func (p *sshAgentProxy) forward(client *net.UnixConn) {
+	defer client.Close()
+	upstream, err := net.Dial("unix", p.upstream)
+	if err != nil {
+		return
+	}
+	defer upstream.Close()
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(upstream, client)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(client, upstream)
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+func (p *sshAgentProxy) Close() error {
+	err := p.listener.Close()
+	if target, readErr := os.Readlink(p.stablePath); readErr == nil && target == filepath.Base(p.socketPath) {
+		_ = os.Remove(p.stablePath)
+	}
+	_ = os.Remove(p.socketPath)
+	return err
+}
+
+func validateForwardedSSHAgentSocket(path string) error {
+	if path == "" || !filepath.IsAbs(path) || filepath.Clean(path) != path || len(path) > 4096 {
+		return errors.New("forwarded SSH agent socket path is invalid")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect forwarded SSH agent socket: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return errors.New("forwarded SSH agent path is not a Unix socket")
+	}
+	if runtime.GOOS == "linux" {
+		sudoUID, parseErr := strconv.Atoi(os.Getenv("SUDO_UID"))
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if parseErr != nil || !ok || int(stat.Uid) != sudoUID {
+			return errors.New("forwarded SSH agent socket owner does not match the SSH gateway user")
+		}
+	}
+	return nil
 }
 
 // SyncCommand executes an SSH transport command inside the verified user's filesystem sandbox.
@@ -1910,6 +2151,15 @@ func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) 
 		spec.Username != "ar-u-"+shortDigest(spec.UserID, 12) {
 		return SessionSpec{}, errors.New("spec contains unmanaged paths")
 	}
+	if spec.DeveloperCredentialProfilePath != "" {
+		profileRoot := filepath.Join(config.AccountRoot, spec.UserID, "developer-credential-profiles")
+		if !pathInside(profileRoot, spec.DeveloperCredentialProfilePath) {
+			return SessionSpec{}, errors.New("developer credential profile path is outside managed root")
+		}
+	}
+	if spec.SSHAgentDirectory != "" && spec.SSHAgentDirectory != filepath.Join(spec.SessionRoot, "ssh-agent") {
+		return SessionSpec{}, errors.New("SSH agent directory is outside session state")
+	}
 	return spec, nil
 }
 
@@ -1919,6 +2169,13 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		if pathExists(path) {
 			args = append(args, "--ro-bind", path, path)
 		}
+	}
+	args = append(args,
+		"--ro-bind", filepath.Join(spec.SessionRoot, "passwd"), "/etc/passwd",
+		"--ro-bind", filepath.Join(spec.SessionRoot, "group"), "/etc/group",
+	)
+	if pathExists("/etc/nsswitch.conf") {
+		args = append(args, "--ro-bind", "/etc/nsswitch.conf", "/etc/nsswitch.conf")
 	}
 	args = append(args,
 		"--ro-bind", spec.RuntimeRoot, "/opt/agent-remote/runtime",
@@ -1939,14 +2196,30 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		"--setenv", "LANG", spec.Locale,
 		"--setenv", "LC_ALL", spec.Locale,
 		"--setenv", "LANGUAGE", spec.Locale,
-		"--chdir", "/workspace",
-		"--", spec.RuntimeCommand,
 	)
+	if spec.DeveloperCredentialProfilePath != "" {
+		args = append(args,
+			"--dir", "/developer-profile", "--dir", "/home/runtime/.ssh",
+			"--bind", spec.DeveloperCredentialProfilePath, "/developer-profile",
+			"--bind", filepath.Join(spec.DeveloperCredentialProfilePath, ".ssh"), "/home/runtime/.ssh",
+			"--setenv", "GIT_CONFIG_GLOBAL", "/developer-profile/home/.gitconfig",
+			"--setenv", "GH_CONFIG_DIR", "/developer-profile/gh",
+			"--setenv", "AGENT_REMOTE_DEVELOPER_CREDENTIAL_PROFILE_PATH", "/developer-profile",
+		)
+	}
+	if spec.SSHAgentDirectory != "" {
+		args = append(args,
+			"--dir", "/run", "--dir", "/run/agent-remote", "--dir", "/run/agent-remote/ssh-agent",
+			"--bind", spec.SSHAgentDirectory, "/run/agent-remote/ssh-agent",
+			"--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock",
+		)
+	}
 	for _, path := range []string{"/etc/ssl", "/etc/pki"} {
 		if pathExists(path) {
-			args = append(args[:len(args)-2], append([]string{"--ro-bind", path, path}, args[len(args)-2:]...)...)
+			args = append(args, "--ro-bind", path, path)
 		}
 	}
+	args = append(args, "--chdir", "/workspace", "--", spec.RuntimeCommand)
 	return append(args, spec.Argv...)
 }
 

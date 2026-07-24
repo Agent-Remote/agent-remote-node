@@ -37,8 +37,11 @@ func TestSyncWritesManagedBlock(t *testing.T) {
 	if strings.Contains(text, "no-pty") {
 		t.Fatal("interactive attach must permit a PTY")
 	}
-	if !strings.Contains(text, "no-agent-forwarding,no-X11-forwarding,no-port-forwarding") {
+	if !strings.Contains(text, "no-X11-forwarding,no-port-forwarding,no-user-rc") {
 		t.Fatal("forwarding restrictions missing")
+	}
+	if strings.Contains(text, "no-agent-forwarding") {
+		t.Fatal("SSH agent forwarding must remain available to the verified forced command")
 	}
 }
 

@@ -399,7 +399,7 @@ install_system_dependencies() {
   run_as_root apt-get update
   if backend_enabled native; then
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
-      acl bubblewrap ca-certificates curl iproute2 locales nftables openssh-server procps tar tmux util-linux wireguard-tools
+      acl bubblewrap ca-certificates curl gh git iproute2 locales nftables openssh-client openssh-server procps tar tmux util-linux wireguard-tools
   else
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends wireguard-tools
   fi
@@ -647,6 +647,7 @@ Match User $USER_NAME
     AuthenticationMethods publickey
     PasswordAuthentication no
     KbdInteractiveAuthentication no
+    AllowAgentForwarding yes
     AllowTcpForwarding no
     X11Forwarding no
     PermitTunnel no

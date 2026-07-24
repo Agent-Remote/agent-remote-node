@@ -51,6 +51,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-
 
 `create_binding_session` and `create_tool_session` use the backend pinned by the control plane. Docker Sandbox remains supported. Native sessions run the managed Claude binary under a per-user UID with systemd cgroup limits, Bubblewrap filesystem isolation, a dedicated network namespace, nftables egress filtering, a quota-limited temporary filesystem, and a per-session tmux socket. Docker and browser operations also pass through the root helper; the node worker is not a member of the Docker group.
 
+Native developer credential profiles provide persistent Git and GitHub CLI configuration directories. SSH private keys remain on the client: only an authorized `ssh -A` attach is bridged through a session-local Unix socket, and only while that connection is active. The gateway continues to deny TCP forwarding, X11 forwarding, and user SSH rc execution.
+
 Native account binding requires a registered device token and an active SSH key. Binding attach uses the same forced-command gateway as normal sessions and is re-authorized by the control plane on every connection.
 
 `create_browser_session` node tasks start a temporary Kasm Chrome container by default. The browser runtime receives timezone, locale, launch URL, incognito Chrome arguments, and a temporary VNC password. It does not mount workspace or tool-account directories. `stop_browser_session` removes the container and the temporary profile directory under `browser_root`.

@@ -72,13 +72,18 @@ func attach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	sessionID := fs.String("session", "", "session ID")
 	stateRoot := fs.String("state-root", "/var/lib/agent-remote-runtime", "runtime state root")
+	sshAgentSocket := fs.String("ssh-agent-sock", "", "verified forwarded SSH agent socket")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *sessionID == "" {
 		return errors.New("session is required")
 	}
-	return runtimehelper.AttachSession(runtimehelper.EngineConfig{StateRoot: *stateRoot}, *sessionID)
+	return runtimehelper.AttachSession(
+		runtimehelper.EngineConfig{StateRoot: *stateRoot},
+		*sessionID,
+		*sshAgentSocket,
+	)
 }
 
 func serve(args []string) error {

@@ -84,7 +84,7 @@ func RenderEntry(attachBinary string, attachConfig string, key Entry) string {
 	command := strings.ReplaceAll(key.ForcedCommand, "\\", "\\\\")
 	command = strings.ReplaceAll(command, "\"", "\\\"")
 	return fmt.Sprintf(
-		"command=\"%s\",no-agent-forwarding,no-X11-forwarding,no-port-forwarding %s",
+		"command=\"%s\",no-X11-forwarding,no-port-forwarding,no-user-rc %s",
 		commandWithBinary(attachBinary, attachConfig, command),
 		publicKey,
 	)

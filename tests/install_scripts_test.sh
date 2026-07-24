@@ -21,8 +21,13 @@ sha256_file() {
 bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" "$ROOT/scripts/build-release.sh"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--registration-token' || fail "one-command help is incomplete"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
+grep -q 'AllowAgentForwarding yes' "$ROOT/scripts/install.sh" || fail "SSH agent forwarding is not enabled for the forced-command gateway"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
   fail "dependency installation may upgrade existing packages"
+for package in git gh openssh-client; do
+  grep -Eq "^[[:space:]].*${package}([[:space:]]|$)" "$ROOT/scripts/install.sh" || \
+    fail "native developer dependency ${package} is not installed"
+done
 grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
 grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
 grep -q 'systemctl restart agent-remote-runtime.service' "$ROOT/scripts/install.sh" || \

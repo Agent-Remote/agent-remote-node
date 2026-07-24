@@ -64,6 +64,7 @@ func run(args []string) error {
 	}
 	client := api.NewClient(cfg.ServerURL, cfg.NodeToken)
 	var runtimeBackend, runtimeSessionID, tmuxSessionName string
+	var forwardSSHAgent bool
 	if targetKind == "binding" {
 		response, err := client.VerifyBindingAttach(context.Background(), api.VerifyBindingAttachRequest{
 			NodeID: cfg.NodeID, ToolAccountID: targetID, DeviceID: *deviceID,
@@ -84,12 +85,18 @@ func run(args []string) error {
 		runtimeBackend = response.Data.RuntimeBackend
 		runtimeSessionID = response.Data.SessionID
 		tmuxSessionName = response.Data.TmuxSessionName
+		forwardSSHAgent = response.Data.ForwardSSHAgent
 	}
 	argsForTmux := tmuxsession.AttachArgs("", tmuxSessionName)
 	command := cfg.TmuxBinaryPath
 	if runtimeBackend == "native" {
 		command = "sudo"
 		argsForTmux = []string{"-n", cfg.RuntimeBinaryPath, "attach", "--session", runtimeSessionID}
+		if forwardSSHAgent {
+			if socket := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); socket != "" {
+				argsForTmux = append(argsForTmux, "--ssh-agent-sock", socket)
+			}
+		}
 	}
 	if *dryRun {
 		fmt.Printf("%s %s\n", command, strings.Join(argsForTmux, " "))

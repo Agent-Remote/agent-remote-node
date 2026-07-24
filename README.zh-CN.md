@@ -51,6 +51,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-
 
 `create_binding_session` 和 `create_tool_session` 使用控制面固定的 backend。Docker Sandbox 继续兼容；Native session 使用受管 Claude 二进制、独立 Linux UID、systemd cgroup 限额、Bubblewrap 文件隔离、独立 network namespace、nftables 出口规则、带容量上限的临时目录和独立 tmux socket。Docker 和浏览器操作同样经过 root helper，node worker 不加入 Docker 组。
 
+Native developer credential profile 提供持久 Git 和 GitHub CLI 配置目录。SSH 私钥始终留在客户端：仅获授权的 `ssh -A` attach 会在连接存活期间通过 session 级 Unix socket 代理到 runtime。gateway 仍禁止 TCP 转发、X11 转发和用户 SSH rc。
+
 Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑定 attach 与普通 session 共用 forced-command gateway，并在每次连接时重新向控制面鉴权。
 
 `create_browser_session` 节点任务默认启动临时 Kasm Chrome 容器。浏览器运行时会接收时区、locale、启动 URL、incognito Chrome 参数和临时 VNC 密码。它不会挂载 workspace 或工具账户目录。`stop_browser_session` 会删除容器以及 `browser_root` 下的临时 profile 目录。
