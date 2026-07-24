@@ -262,15 +262,18 @@ func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error)
 	if err != nil {
 		return nil, err
 	}
+	if err := e.clearDataACL(result.RemotePath); err != nil {
+		return nil, err
+	}
 	if err := filepath.WalkDir(result.RemotePath, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		return os.Lchown(path, identity.UID, identity.GID)
+		if err := os.Lchown(path, identity.UID, identity.GID); err != nil {
+			return err
+		}
+		return normalizeWorkspaceMode(path, entry)
 	}); err != nil {
-		return nil, err
-	}
-	if err := e.applyDataACL(result.RemotePath, identity.Username); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -1243,6 +1246,36 @@ func (e Engine) applyDataACL(path string, runtimeUser string) error {
 		return fmt.Errorf("setfacl default failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func (e Engine) clearDataACL(path string) error {
+	for _, args := range [][]string{{"-R", "-b", path}, {"-R", "-k", path}} {
+		if output, err := exec.Command(e.config.SetfaclPath, args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("clear workspace ACL failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	return nil
+}
+
+func normalizeWorkspaceMode(path string, entry os.DirEntry) error {
+	if entry.Type()&os.ModeSymlink != 0 {
+		return nil
+	}
+	if entry.IsDir() {
+		return os.Chmod(path, 0o770)
+	}
+	info, err := entry.Info()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	mode := os.FileMode(0o660)
+	if info.Mode().Perm()&0o100 != 0 {
+		mode = 0o770
+	}
+	return os.Chmod(path, mode)
 }
 
 func (e Engine) specPath(sessionID string) string {

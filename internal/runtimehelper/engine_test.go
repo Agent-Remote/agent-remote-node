@@ -299,6 +299,66 @@ func TestGrantManagedTraverseAddsOnlyManagedParentDirectories(t *testing.T) {
 	}
 }
 
+func TestNormalizeWorkspaceModePreservesOnlyOwnerExecutableState(t *testing.T) {
+	root := t.TempDir()
+	normalPath := filepath.Join(root, "normal.txt")
+	executablePath := filepath.Join(root, "script.sh")
+	if err := os.WriteFile(normalPath, []byte("normal"), 0o670); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(executablePath, []byte("script"), 0o760); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{root, normalPath, executablePath} {
+		entry, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := normalizeWorkspaceMode(path, fileInfoDirEntry{entry}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertMode := func(path string, want os.FileMode) {
+		t.Helper()
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm(); got != want {
+			t.Fatalf("unexpected mode for %s: got %o, want %o", path, got, want)
+		}
+	}
+	assertMode(root, 0o770)
+	assertMode(normalPath, 0o660)
+	assertMode(executablePath, 0o770)
+}
+
+func TestClearDataACLRemovesAccessAndDefaultEntries(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "setfacl.log")
+	setfaclPath := writeTestCommand(t, "setfacl", `printf '%s\n' "$*" >> "$ACL_LOG"`)
+	t.Setenv("ACL_LOG", logPath)
+	engine := NewEngine(EngineConfig{SetfaclPath: setfaclPath})
+	if err := engine.clearDataACL("/workspace"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(data), "-R -b /workspace\n-R -k /workspace\n"; got != want {
+		t.Fatalf("unexpected setfacl calls: got %q, want %q", got, want)
+	}
+}
+
+type fileInfoDirEntry struct {
+	os.FileInfo
+}
+
+func (entry fileInfoDirEntry) Type() os.FileMode          { return entry.Mode().Type() }
+func (entry fileInfoDirEntry) Info() (os.FileInfo, error) { return entry.FileInfo, nil }
+func (entry fileInfoDirEntry) Name() string               { return entry.FileInfo.Name() }
+func (entry fileInfoDirEntry) IsDir() bool                { return entry.FileInfo.IsDir() }
+
 func TestWaitForSessionReadyRequiresStableTmuxSession(t *testing.T) {
 	binDir := t.TempDir()
 	systemctlPath := filepath.Join(binDir, "systemctl")
