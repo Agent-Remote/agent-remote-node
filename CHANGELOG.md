@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.13 - 2026-07-24
+
+- fix: keep synced workspaces ACL-free (be7979a)
+
 ## v0.0.4-fix.12 - 2026-07-24
 
 - fix: preserve workspace file modes (3637039)
