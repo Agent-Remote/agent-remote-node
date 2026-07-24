@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.10 - 2026-07-24
+
+- fix: persist Claude account authentication (bfc7168)
+
 ## v0.0.4-fix.9 - 2026-07-24
 
 - fix: make worker loops resilient (9163f5c)
