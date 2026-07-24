@@ -643,7 +643,11 @@ func (e Engine) prepareAccount(ctx context.Context, payload map[string]any) (map
 	if err := ensureOwnedFile(filepath.Join(accountPath, ".claude.json"), []byte("{}\n"), 0o600, e.identity(userID)); err != nil {
 		return nil, err
 	}
-	spec, err := e.buildSpec(payload, bindingID, userID, accountID, workspacePath, accountPath, []string{"auth", "login"}, "binding")
+	argv, err := claudeBindingArgv(payload)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := e.buildSpec(payload, bindingID, userID, accountID, workspacePath, accountPath, argv, "binding")
 	if err != nil {
 		return nil, err
 	}
@@ -1355,6 +1359,29 @@ func textList(value any) []string {
 		}
 	}
 	return result
+}
+
+func claudeBindingArgv(payload map[string]any) ([]string, error) {
+	template, ok := payload["template"].(map[string]any)
+	if !ok {
+		return nil, errors.New("template is required")
+	}
+	rawCommand, ok := template["command"].([]any)
+	if !ok || len(rawCommand) == 0 {
+		return nil, errors.New("template command is required")
+	}
+	command := make([]string, len(rawCommand))
+	for index, value := range rawCommand {
+		argument, ok := value.(string)
+		if !ok || argument == "" || strings.ContainsRune(argument, '\x00') {
+			return nil, errors.New("template command is invalid")
+		}
+		command[index] = argument
+	}
+	if command[0] != "claude" {
+		return nil, errors.New("template command must use claude")
+	}
+	return command[1:], nil
 }
 
 func parseRuntimePolicy(value any) (RuntimePolicy, error) {

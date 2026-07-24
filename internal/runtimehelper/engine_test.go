@@ -167,6 +167,46 @@ func TestParseRuntimePolicyRejectsPrivilegeExpansion(t *testing.T) {
 	}
 }
 
+func TestClaudeBindingArgvUsesTemplateCommand(t *testing.T) {
+	tests := []struct {
+		name    string
+		command []any
+		want    []string
+	}{
+		{name: "full onboarding", command: []any{"claude"}, want: []string{}},
+		{name: "arguments", command: []any{"claude", "--model", "opus"}, want: []string{"--model", "opus"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := claudeBindingArgv(map[string]any{
+				"template": map[string]any{"command": test.command},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(got, test.want) {
+				t.Fatalf("unexpected binding arguments: got %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestClaudeBindingArgvRejectsInvalidTemplateCommand(t *testing.T) {
+	tests := []map[string]any{
+		{},
+		{"template": map[string]any{}},
+		{"template": map[string]any{"command": []any{}}},
+		{"template": map[string]any{"command": []any{"bash"}}},
+		{"template": map[string]any{"command": []any{"claude", 1}}},
+		{"template": map[string]any{"command": []any{"claude", "bad\x00argument"}}},
+	}
+	for _, payload := range tests {
+		if _, err := claudeBindingArgv(payload); err == nil {
+			t.Fatalf("expected payload to be rejected: %#v", payload)
+		}
+	}
+}
+
 func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	spec := SessionSpec{
 		RuntimeRoot:    "/runtime",
