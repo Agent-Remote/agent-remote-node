@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.12 - 2026-07-24
+
+- fix: preserve workspace file modes (3637039)
+
 ## v0.0.4-fix.11 - 2026-07-24
 
 - fix: honor claude binding command (1ee52f3)
