@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.16 - 2026-07-24
+
+- fix: enable native developer credentials (617e03c)
+
 ## v0.0.4-fix.15 - 2026-07-24
 
 - fix: adapt tmux to the active terminal (b1b60b5)
