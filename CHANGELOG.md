@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.15 - 2026-07-24
+
+- fix: adapt tmux to the active terminal (b1b60b5)
+
 ## v0.0.4-fix.14 - 2026-07-24
 
 - fix: improve remote tmux display (0b9cda8)
