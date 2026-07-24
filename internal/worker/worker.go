@@ -2,8 +2,11 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"slices"
+	"sync"
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
@@ -32,20 +35,6 @@ func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker
 
 // Heartbeat sends a single heartbeat.
 func (w Worker) Heartbeat(ctx context.Context) error {
-	if w.cfg.WireGuardPublicKey != "" {
-		peers, err := w.client.ListWireGuardPeers(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
-			ctx,
-			fmt.Sprintf("wireguard-sync-%d", time.Now().UnixNano()),
-			"wireguard_sync",
-			map[string]any{"peers": peers.Data.Items},
-		); err != nil {
-			return err
-		}
-	}
 	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
 	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
@@ -59,18 +48,36 @@ func (w Worker) Heartbeat(ctx context.Context) error {
 	})
 }
 
+func (w Worker) syncWireGuardPeers(ctx context.Context) error {
+	if w.cfg.WireGuardPublicKey == "" {
+		return nil
+	}
+	peers, err := w.client.ListWireGuardPeers(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
+		ctx,
+		fmt.Sprintf("wireguard-sync-%d", time.Now().UnixNano()),
+		"wireguard_sync",
+		map[string]any{"peers": peers.Data.Items},
+	)
+	return err
+}
+
 // PollOnce leases and executes one batch of tasks.
 func (w Worker) PollOnce(ctx context.Context) error {
 	response, err := w.client.PollTasks(ctx)
 	if err != nil {
 		return err
 	}
+	var taskErrors []error
 	for _, task := range response.Data.Tasks {
 		if err := w.executeTask(ctx, task); err != nil {
-			return err
+			taskErrors = append(taskErrors, fmt.Errorf("task %s: %w", task.TaskID, err))
 		}
 	}
-	return nil
+	return errors.Join(taskErrors...)
 }
 
 // Reconcile submits a basic node snapshot.
@@ -101,31 +108,98 @@ func (w Worker) Reconcile(ctx context.Context) error {
 
 // Run starts the long-running node loop.
 func (w Worker) Run(ctx context.Context) error {
-	heartbeatTicker := time.NewTicker(time.Duration(w.cfg.HeartbeatIntervalSeconds) * time.Second)
-	pollTicker := time.NewTicker(time.Duration(w.cfg.PollIntervalSeconds) * time.Second)
-	defer heartbeatTicker.Stop()
-	defer pollTicker.Stop()
+	heartbeatInterval := time.Duration(w.cfg.HeartbeatIntervalSeconds) * time.Second
+	pollInterval := time.Duration(w.cfg.PollIntervalSeconds) * time.Second
+	return w.run(ctx, heartbeatInterval, pollInterval)
+}
 
-	if err := w.Heartbeat(ctx); err != nil {
-		return err
+func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollInterval time.Duration) error {
+	var loops sync.WaitGroup
+	startLoop := func(name string, interval time.Duration, stopAfterSuccess bool, operation func(context.Context) error) {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			runOperationLoop(ctx, name, interval, stopAfterSuccess, operation)
+		}()
 	}
-	if err := w.Reconcile(ctx); err != nil {
-		return err
+
+	startLoop("heartbeat", heartbeatInterval, false, w.Heartbeat)
+	startLoop("task poll", pollInterval, false, w.PollOnce)
+	startLoop("reconciliation", heartbeatInterval, true, w.Reconcile)
+	if w.cfg.WireGuardPublicKey != "" {
+		startLoop("WireGuard peer sync", heartbeatInterval, false, w.syncWireGuardPeers)
 	}
+
+	<-ctx.Done()
+	loops.Wait()
+	return ctx.Err()
+}
+
+func runOperationLoop(
+	ctx context.Context,
+	name string,
+	interval time.Duration,
+	stopAfterSuccess bool,
+	operation func(context.Context) error,
+) {
+	const initialRetryDelay = time.Second
+	const maximumRetryDelay = 30 * time.Second
+
+	delay := time.Duration(0)
+	failures := 0
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-heartbeatTicker.C:
-			if err := w.Heartbeat(ctx); err != nil {
-				return err
-			}
-		case <-pollTicker.C:
-			if err := w.PollOnce(ctx); err != nil {
-				return err
-			}
+		if !waitFor(ctx, delay) {
+			return
 		}
+
+		err := operation(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			if failures > 0 {
+				log.Printf("%s recovered after %d failure(s)", name, failures)
+			}
+			if stopAfterSuccess {
+				return
+			}
+			failures = 0
+			delay = interval
+			continue
+		}
+
+		failures++
+		delay = retryDelay(failures, interval, initialRetryDelay, maximumRetryDelay)
+		log.Printf("%s failed (attempt %d); retrying in %s: %v", name, failures, delay, err)
 	}
+}
+
+func waitFor(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return ctx.Err() == nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+func retryDelay(failures int, interval time.Duration, initial time.Duration, maximum time.Duration) time.Duration {
+	delay := initial
+	for attempt := 1; attempt < failures && delay < maximum; attempt++ {
+		delay *= 2
+	}
+	if delay > maximum {
+		delay = maximum
+	}
+	if interval > 0 && delay > interval {
+		delay = interval
+	}
+	return delay
 }
 
 func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {

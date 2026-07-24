@@ -9,13 +9,140 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
+
+func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var heartbeats atomic.Int32
+	pollRelease := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/heartbeat":
+			w.WriteHeader(http.StatusOK)
+			if heartbeats.Add(1) == 3 {
+				close(pollRelease)
+				cancel()
+			}
+		case "/api/v1/node-api/tasks/poll":
+			<-pollRelease
+		case "/api/v1/node-api/reconcile":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		RuntimeSocketPath: t.TempDir() + "/missing.sock",
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+
+	if err := w.run(ctx, 10*time.Millisecond, 10*time.Millisecond); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if got := heartbeats.Load(); got < 3 {
+		t.Fatalf("expected heartbeats to continue during blocked polling, got %d", got)
+	}
+}
+
+func TestRunOperationLoopRetriesAfterFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var attempts atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runOperationLoop(ctx, "test operation", 5*time.Millisecond, false, func(context.Context) error {
+			attempt := attempts.Add(1)
+			if attempt <= 2 {
+				return errors.New("temporary failure")
+			}
+			cancel()
+			return nil
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("operation loop did not recover")
+	}
+	if got := attempts.Load(); got != 3 {
+		t.Fatalf("expected three attempts, got %d", got)
+	}
+}
+
+func TestRetryDelayIsExponentialAndBounded(t *testing.T) {
+	for _, test := range []struct {
+		failures int
+		want     time.Duration
+	}{
+		{failures: 1, want: time.Second},
+		{failures: 2, want: 2 * time.Second},
+		{failures: 3, want: 4 * time.Second},
+		{failures: 8, want: 30 * time.Second},
+	} {
+		if got := retryDelay(test.failures, time.Minute, time.Second, 30*time.Second); got != test.want {
+			t.Fatalf("failure %d: expected %s, got %s", test.failures, test.want, got)
+		}
+	}
+	if got := retryDelay(4, 5*time.Second, time.Second, 30*time.Second); got != 5*time.Second {
+		t.Fatalf("expected interval cap, got %s", got)
+	}
+}
+
+func TestHeartbeatDoesNotDependOnWireGuardSync(t *testing.T) {
+	var heartbeatCalls atomic.Int32
+	var peerCalls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/heartbeat":
+			heartbeatCalls.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/wireguard/peers":
+			peerCalls.Add(1)
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	cfg := config.Config{
+		NodeID:             "node_1",
+		ServerURL:          server.URL,
+		NodeToken:          "node_token",
+		WireGuardPublicKey: "configured",
+		RuntimeSocketPath:  t.TempDir() + "/missing.sock",
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), nil)
+	if err := w.Heartbeat(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.syncWireGuardPeers(context.Background()); err == nil {
+		t.Fatal("expected WireGuard sync failure")
+	}
+	if heartbeatCalls.Load() != 1 || peerCalls.Load() != 1 {
+		t.Fatalf("unexpected request counts: heartbeat=%d peers=%d", heartbeatCalls.Load(), peerCalls.Load())
+	}
+}
 
 func TestWorkerRejectsUnknownTask(t *testing.T) {
 	w := Worker{cfg: config.Config{}.WithDefaults()}
@@ -121,6 +248,60 @@ func TestWorkerPollOnceCompletesTask(t *testing.T) {
 	}
 	if !completed {
 		t.Fatal("expected task completion")
+	}
+}
+
+func TestWorkerPollOnceContinuesAfterTaskError(t *testing.T) {
+	var secondTaskCompleted atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/tasks/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"tasks": []map[string]any{
+						{
+							"task_id": "task_failing", "node_id": "node_1", "task_type": "reconcile_state",
+							"idempotency_key": "task_failing", "payload": map[string]any{},
+						},
+						{
+							"task_id": "task_succeeding", "node_id": "node_1", "task_type": "reconcile_state",
+							"idempotency_key": "task_succeeding", "payload": map[string]any{},
+						},
+					},
+				},
+				"request_id": "req_test",
+			})
+		case "/api/v1/node-api/tasks/task_failing/start":
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+		case "/api/v1/node-api/tasks/task_succeeding/start":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/tasks/task_succeeding/complete":
+			secondTaskCompleted.Store(true)
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		RuntimeSocketPath: t.TempDir() + "/missing.sock",
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+
+	err = w.PollOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "task task_failing") {
+		t.Fatalf("expected first task error, got %v", err)
+	}
+	if !secondTaskCompleted.Load() {
+		t.Fatal("expected the second task to complete")
 	}
 }
 
