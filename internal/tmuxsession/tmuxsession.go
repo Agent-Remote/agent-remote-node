@@ -29,17 +29,20 @@ func NewSessionArgs(socketPath string, sessionName string, command string) []str
 // a full-screen application at an obsolete size when users switch terminals.
 func AttachArgs(socketPath string, sessionName string) []string {
 	args := socketArgs(socketPath)
-	return append(args, "attach-session", "-d", "-t", sessionName)
+	return append(args, "attach-session", "-d", "-f", "!ignore-size", "-t", sessionName)
 }
 
 // Configure removes tmux chrome and makes the session follow the most recent
 // terminal client, which keeps full-screen agents visually native over SSH.
 func Configure(binary string, socketPath string, sessionName string) error {
+	resizeHook := "resize-window -x \"#{client_width}\" -y \"#{client_height}\"; refresh-client -t \"#{client_name}\""
 	commands := [][]string{
 		{"set-option", "-t", sessionName, "status", "off"},
 		{"set-option", "-t", sessionName, "focus-events", "on"},
 		{"set-window-option", "-t", sessionName, "window-size", "latest"},
 		{"set-window-option", "-t", sessionName, "aggressive-resize", "on"},
+		{"set-hook", "-t", sessionName, "client-attached", resizeHook},
+		{"set-hook", "-t", sessionName, "client-resized", resizeHook},
 	}
 	for _, command := range commands {
 		args := append(socketArgs(socketPath), command...)
