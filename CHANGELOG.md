@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.18 - 2026-07-25
+
+- fix: resize tmux to the active client (3bf29d5)
+
 ## v0.0.4-fix.17 - 2026-07-24
 
 - fix: make runtime identity files readable (9bd0767)
