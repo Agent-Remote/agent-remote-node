@@ -3,6 +3,7 @@ package runtimehelper
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -94,6 +95,60 @@ func TestCleanupResourcesIsIdempotentForMissingSession(t *testing.T) {
 	}
 	if result["cleaned_count"] != 1 {
 		t.Fatalf("unexpected cleanup result: %#v", result)
+	}
+}
+
+func TestSessionProcessExitRequiresSameBootMarker(t *testing.T) {
+	sessionRoot := t.TempDir()
+	spec := SessionSpec{SessionRoot: sessionRoot, BootID: "boot-1"}
+	if err := os.WriteFile(processExitMarkerPath(spec), []byte("boot-1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !sessionProcessExited(spec, false, "boot-1") {
+		t.Fatal("same-boot process exit marker was not detected")
+	}
+	if sessionProcessExited(spec, true, "boot-1") {
+		t.Fatal("active session must not be reported as exited")
+	}
+	if sessionProcessExited(spec, false, "boot-2") {
+		t.Fatal("marker from a previous boot must not be treated as a normal exit")
+	}
+}
+
+func TestDockerSessionProcessExitRequiresSameBoot(t *testing.T) {
+	spec := DockerSessionSpec{BootID: "boot-1"}
+	if !dockerSessionProcessExited(spec, false, "boot-1") {
+		t.Fatal("same-boot Docker process exit was not detected")
+	}
+	if dockerSessionProcessExited(spec, true, "boot-1") {
+		t.Fatal("active Docker session must not be reported as exited")
+	}
+	if dockerSessionProcessExited(spec, false, "boot-2") {
+		t.Fatal("Docker session from a previous boot must not be treated as a normal exit")
+	}
+}
+
+func TestDockerSessionSpecRoundTripAndRemoval(t *testing.T) {
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
+	spec := DockerSessionSpec{
+		SessionID: "session_1", TmuxSessionName: "ar-claude-test",
+		SandboxName: "agent-remote-claude-test", BootID: "boot-1",
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := engine.loadDockerSessionSpec(spec.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded != spec {
+		t.Fatalf("unexpected Docker session spec: %#v", loaded)
+	}
+	if err := engine.removeDockerSessionSpec(spec.SessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.loadDockerSessionSpec(spec.SessionID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected removed Docker session spec, got %v", err)
 	}
 }
 

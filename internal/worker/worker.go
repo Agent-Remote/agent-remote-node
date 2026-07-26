@@ -84,7 +84,7 @@ func (w Worker) PollOnce(ctx context.Context) error {
 func (w Worker) Reconcile(ctx context.Context) error {
 	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
 	sessions := []any{}
-	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") {
+	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") || slices.Contains(w.cfg.AllowedRuntimeBackends, "docker_sandbox") {
 		result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
 			ctx, fmt.Sprintf("reconcile-%d", time.Now().UnixNano()), "list_sessions", map[string]any{},
 		)
@@ -125,7 +125,7 @@ func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollIn
 
 	startLoop("heartbeat", heartbeatInterval, false, w.Heartbeat)
 	startLoop("task poll", pollInterval, false, w.PollOnce)
-	startLoop("reconciliation", heartbeatInterval, true, w.Reconcile)
+	startLoop("reconciliation", heartbeatInterval, false, w.Reconcile)
 	if w.cfg.WireGuardPublicKey != "" {
 		startLoop("WireGuard peer sync", heartbeatInterval, false, w.syncWireGuardPeers)
 	}

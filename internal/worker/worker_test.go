@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -22,7 +24,30 @@ import (
 func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	runtimeSocketPath := filepath.Join(os.TempDir(), fmt.Sprintf("ar-runtime-%d.sock", time.Now().UnixNano()))
+	runtimeListener, err := net.Listen("unix", runtimeSocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeListener.Close()
+	defer os.Remove(runtimeSocketPath)
+	go func() {
+		for {
+			connection, acceptErr := runtimeListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var request runtimehelper.Request
+			_ = json.NewDecoder(connection).Decode(&request)
+			_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
+				Version: runtimehelper.ProtocolVersion, OK: true,
+				Result: map[string]any{"sessions": []any{}},
+			})
+			_ = connection.Close()
+		}
+	}()
 	var heartbeats atomic.Int32
+	var reconciliations atomic.Int32
 	pollRelease := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -35,6 +60,7 @@ func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
 		case "/api/v1/node-api/tasks/poll":
 			<-pollRelease
 		case "/api/v1/node-api/reconcile":
+			reconciliations.Add(1)
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -50,7 +76,7 @@ func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
 		NodeID:            "node_1",
 		ServerURL:         server.URL,
 		NodeToken:         "node_token",
-		RuntimeSocketPath: t.TempDir() + "/missing.sock",
+		RuntimeSocketPath: runtimeSocketPath,
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 
@@ -59,6 +85,9 @@ func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
 	}
 	if got := heartbeats.Load(); got < 3 {
 		t.Fatalf("expected heartbeats to continue during blocked polling, got %d", got)
+	}
+	if got := reconciliations.Load(); got < 2 {
+		t.Fatalf("expected reconciliation to remain periodic, got %d", got)
 	}
 }
 

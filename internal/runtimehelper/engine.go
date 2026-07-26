@@ -296,6 +296,17 @@ func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	spec := DockerSessionSpec{
+		SessionID: decoded.SessionID, TmuxSessionName: result.TmuxSessionName,
+		SandboxName: result.SandboxName, BootID: currentBootID(),
+	}
+	if err := e.saveDockerSessionSpec(spec); err != nil {
+		_, _ = toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, toolsessions.StopPayload{
+			SessionID: decoded.SessionID, TmuxSessionName: result.TmuxSessionName,
+			SandboxName: result.SandboxName, RuntimeBackend: "docker_sandbox",
+		})
+		return nil, err
+	}
 	return map[string]any{
 		"status": result.Status, "session_id": result.SessionID, "tool_account_id": result.ToolAccountID,
 		"tool_type": result.ToolType, "workspace_remote_path": result.WorkspaceRemotePath,
@@ -313,6 +324,9 @@ func (e Engine) dockerStopSession(payload map[string]any) (map[string]any, error
 	}
 	result, err := toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
 	if err != nil {
+		return nil, err
+	}
+	if err := e.removeDockerSessionSpec(decoded.SessionID); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -458,15 +472,13 @@ func (e Engine) applyAccountBackendOwnership(userID string, accountPath string, 
 }
 
 func (e Engine) listSessions() (map[string]any, error) {
+	sessions := []map[string]any{}
+	bootID := currentBootID()
 	root := filepath.Join(e.config.StateRoot, "sessions")
 	entries, err := os.ReadDir(root)
-	if errors.Is(err, os.ErrNotExist) {
-		return map[string]any{"sessions": []map[string]any{}}, nil
-	}
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	sessions := make([]map[string]any, 0, len(entries))
 	for _, entry := range entries {
 		if !entry.IsDir() || validateID(entry.Name(), "session_id") != nil {
 			continue
@@ -476,12 +488,126 @@ func (e Engine) listSessions() (map[string]any, error) {
 			continue
 		}
 		active := exec.Command("systemctl", "is-active", "--quiet", spec.UnitName).Run() == nil
-		sessions = append(sessions, map[string]any{
+		summary := map[string]any{
 			"session_id": spec.SessionID, "runtime_backend": "native",
 			"runtime_resource_id": spec.UnitName, "active": active,
-		})
+		}
+		if sessionProcessExited(spec, active, bootID) {
+			summary["exit_reason"] = "process_exited"
+		}
+		sessions = append(sessions, summary)
+	}
+	dockerRoot := filepath.Join(e.config.StateRoot, "docker-sessions")
+	dockerEntries, err := os.ReadDir(dockerRoot)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	for _, entry := range dockerEntries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		sessionID := strings.TrimSuffix(entry.Name(), ".json")
+		spec, loadErr := e.loadDockerSessionSpec(sessionID)
+		if loadErr != nil {
+			continue
+		}
+		active := exec.Command(e.config.TmuxBinaryPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil
+		summary := map[string]any{
+			"session_id": spec.SessionID, "runtime_backend": "docker_sandbox",
+			"runtime_resource_id": spec.SandboxName, "active": active,
+		}
+		if dockerSessionProcessExited(spec, active, bootID) {
+			summary["exit_reason"] = "process_exited"
+		}
+		sessions = append(sessions, summary)
 	}
 	return map[string]any{"sessions": sessions}, nil
+}
+
+func currentBootID() string {
+	data, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+func processExitMarkerPath(spec SessionSpec) string {
+	return filepath.Join(spec.SessionRoot, "process-exited")
+}
+
+func sessionProcessExited(spec SessionSpec, active bool, bootID string) bool {
+	if active || bootID == "" || spec.BootID != bootID {
+		return false
+	}
+	data, err := os.ReadFile(processExitMarkerPath(spec))
+	return err == nil && strings.TrimSpace(string(data)) == bootID
+}
+
+// DockerSessionSpec records enough local state to reconcile a tmux-held Docker session.
+type DockerSessionSpec struct {
+	SessionID       string `json:"session_id"`
+	TmuxSessionName string `json:"tmux_session_name"`
+	SandboxName     string `json:"sandbox_name"`
+	BootID          string `json:"boot_id,omitempty"`
+}
+
+func (e Engine) dockerSessionSpecPath(sessionID string) string {
+	return filepath.Join(e.config.StateRoot, "docker-sessions", sessionID+".json")
+}
+
+func (e Engine) saveDockerSessionSpec(spec DockerSessionSpec) error {
+	if validateID(spec.SessionID, "session_id") != nil ||
+		validateName(spec.TmuxSessionName, "tmux_session_name") != nil ||
+		validateName(spec.SandboxName, "sandbox_name") != nil {
+		return errors.New("Docker session spec identity is invalid")
+	}
+	root := filepath.Join(e.config.StateRoot, "docker-sessions")
+	if err := ensureRootDirectory(root, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(spec, "", "  ")
+	if err != nil {
+		return err
+	}
+	path := e.dockerSessionSpecPath(spec.SessionID)
+	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func (e Engine) loadDockerSessionSpec(sessionID string) (DockerSessionSpec, error) {
+	if err := validateID(sessionID, "session_id"); err != nil {
+		return DockerSessionSpec{}, err
+	}
+	data, err := os.ReadFile(e.dockerSessionSpecPath(sessionID))
+	if err != nil {
+		return DockerSessionSpec{}, err
+	}
+	var spec DockerSessionSpec
+	if err := json.Unmarshal(data, &spec); err != nil {
+		return DockerSessionSpec{}, err
+	}
+	if spec.SessionID != sessionID || validateName(spec.TmuxSessionName, "tmux_session_name") != nil || validateName(spec.SandboxName, "sandbox_name") != nil {
+		return DockerSessionSpec{}, errors.New("Docker session spec identity is invalid")
+	}
+	return spec, nil
+}
+
+func (e Engine) removeDockerSessionSpec(sessionID string) error {
+	if err := validateID(sessionID, "session_id"); err != nil {
+		return err
+	}
+	err := os.Remove(e.dockerSessionSpecPath(sessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+func dockerSessionProcessExited(spec DockerSessionSpec, active bool, bootID string) bool {
+	return !active && bootID != "" && spec.BootID == bootID
 }
 
 func (e Engine) cleanupResources(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -791,6 +917,7 @@ type SessionSpec struct {
 	UnitName                       string        `json:"unit_name"`
 	NetworkNamespace               string        `json:"network_namespace"`
 	CreatedAt                      string        `json:"created_at"`
+	BootID                         string        `json:"boot_id,omitempty"`
 	RuntimeUID                     int           `json:"runtime_uid"`
 	RuntimeGID                     int           `json:"runtime_gid"`
 	Policy                         RuntimePolicy `json:"policy"`
@@ -845,6 +972,9 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 	if err := writeRuntimeIdentityFiles(sessionRoot, identity); err != nil {
 		return SessionSpec{}, err
 	}
+	if err := writeOwnedFile(filepath.Join(sessionRoot, "process-exited"), nil, 0o600, identity); err != nil {
+		return SessionSpec{}, err
+	}
 	timezone := optionalText(payload, "timezone", "UTC")
 	locale := optionalText(payload, "locale", "en_US.UTF-8")
 	if !safeTimezone(timezone) || !safeLocale(locale) || !localeAvailable(locale) {
@@ -882,6 +1012,7 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		UnitName:                       "agent-remote-session-" + digest + ".service",
 		NetworkNamespace:               "ar-" + shortDigest(sessionID, 10),
 		CreatedAt:                      time.Now().UTC().Format(time.RFC3339),
+		BootID:                         currentBootID(),
 		RuntimeUID:                     identity.UID,
 		RuntimeGID:                     identity.GID,
 		Policy:                         policy,
@@ -1867,6 +1998,11 @@ func SuperviseSpec(config EngineConfig, specPath string) error {
 	}
 	for {
 		if exec.Command(config.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName).Run() != nil {
+			if spec.BootID != "" {
+				if err := os.WriteFile(processExitMarkerPath(spec), []byte(spec.BootID+"\n"), 0o600); err != nil {
+					return fmt.Errorf("record runtime process exit: %w", err)
+				}
+			}
 			return nil
 		}
 		time.Sleep(2 * time.Second)
