@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.21 - 2026-07-26
+
+- test: support unprivileged Linux CI (e592961)
+
 ## v0.0.4-fix.20 - 2026-07-26
 
 - fix: stop exited claude sessions (de9b615)
