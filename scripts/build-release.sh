@@ -41,6 +41,7 @@ EOF
   mkdir -p "$work/scripts"
   install -m 0755 scripts/install.sh "$work/scripts/install.sh"
   install -m 0755 scripts/install-claude-runtime.sh "$work/scripts/install-claude-runtime.sh"
+  install -m 0755 scripts/install-nodejs-runtime.sh "$work/scripts/install-nodejs-runtime.sh"
   install -m 0755 scripts/install.sh "$work/install.sh"
   tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
 done

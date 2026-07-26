@@ -238,6 +238,7 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude", "/home/runtime/.claude")
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude.json", "/home/runtime/.claude/.claude.json")
 	assertArgumentSequence(t, args, "--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude")
+	assertArgumentSequence(t, args, "--setenv", "PATH", "/opt/agent-remote/runtime/bin:/usr/local/bin:/usr/bin:/bin")
 	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/passwd", "/etc/passwd")
 	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/group", "/etc/group")
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/developer-profile", "/developer-profile")

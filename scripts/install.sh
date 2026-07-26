@@ -19,6 +19,7 @@ CREATE_USER="${CREATE_USER:-1}"
 USE_SUDO="${USE_SUDO:-auto}"
 INSTALL_DEPENDENCIES="${INSTALL_DEPENDENCIES:-1}"
 INSTALL_CLAUDE="${INSTALL_CLAUDE:-1}"
+INSTALL_NODEJS="${INSTALL_NODEJS:-1}"
 START_SERVICES="${START_SERVICES:-1}"
 STRICT_PREREQUISITES="${STRICT_PREREQUISITES:-1}"
 SERVER_URL="${AGENT_REMOTE_SERVER_URL:-}"
@@ -32,6 +33,10 @@ CLAUDE_VERSION="${CLAUDE_VERSION:-}"
 CLAUDE_SOURCE="${CLAUDE_SOURCE:-}"
 CLAUDE_SHA256="${CLAUDE_SHA256:-}"
 CLAUDE_RUNTIME_ROOT="${CLAUDE_RUNTIME_ROOT:-/opt/agent-remote/runtimes/claude}"
+NODEJS_CHANNEL="${NODEJS_CHANNEL:-22}"
+NODEJS_VERSION="${NODEJS_VERSION:-}"
+NODEJS_SOURCE="${NODEJS_SOURCE:-}"
+NODEJS_SHA256="${NODEJS_SHA256:-}"
 WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
 WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
 WIREGUARD_ENDPOINT="${AGENT_REMOTE_WIREGUARD_ENDPOINT:-}"
@@ -99,8 +104,13 @@ Options:
   --claude-version VALUE  Pin an official Claude version, or use with --claude-source.
   --claude-source PATH    Pinned Claude executable path or URL.
   --claude-sha256 HASH    Required checksum for --claude-source.
+  --nodejs-channel MAJOR  Official Node.js release line. Default: 22.
+  --nodejs-version VALUE  Pin an official Node.js version, or use with --nodejs-source.
+  --nodejs-source PATH    Pinned Node.js .tar.gz archive path or URL.
+  --nodejs-sha256 HASH    Required checksum for --nodejs-source.
   --no-dependencies       Do not install native runtime OS packages.
   --no-claude             Do not install the managed Claude runtime.
+  --no-nodejs             Do not install the managed Node.js runtime.
   --no-start              Install and register without starting services.
   --no-systemd            Do not install the systemd unit.
   --no-user               Do not create or modify a system user.
@@ -132,8 +142,13 @@ Environment:
   CLAUDE_VERSION             Same as --claude-version.
   CLAUDE_SOURCE              Same as --claude-source.
   CLAUDE_SHA256              Same as --claude-sha256.
+  NODEJS_CHANNEL           Same as --nodejs-channel.
+  NODEJS_VERSION           Same as --nodejs-version.
+  NODEJS_SOURCE            Same as --nodejs-source.
+  NODEJS_SHA256            Same as --nodejs-sha256.
   INSTALL_DEPENDENCIES=0     Same as --no-dependencies.
   INSTALL_CLAUDE=0           Same as --no-claude.
+  INSTALL_NODEJS=0           Same as --no-nodejs.
   START_SERVICES=0           Same as --no-start.
   INSTALL_SYSTEMD=0          Same as --no-systemd.
   CREATE_USER=0              Same as --no-user.
@@ -240,12 +255,32 @@ while [ "$#" -gt 0 ]; do
       CLAUDE_SHA256="${2:?--claude-sha256 requires a value}"
       shift 2
       ;;
+    --nodejs-channel)
+      NODEJS_CHANNEL="${2:?--nodejs-channel requires a value}"
+      shift 2
+      ;;
+    --nodejs-version)
+      NODEJS_VERSION="${2:?--nodejs-version requires a value}"
+      shift 2
+      ;;
+    --nodejs-source)
+      NODEJS_SOURCE="${2:?--nodejs-source requires a value}"
+      shift 2
+      ;;
+    --nodejs-sha256)
+      NODEJS_SHA256="${2:?--nodejs-sha256 requires a value}"
+      shift 2
+      ;;
     --no-dependencies)
       INSTALL_DEPENDENCIES=0
       shift
       ;;
     --no-claude)
       INSTALL_CLAUDE=0
+      shift
+      ;;
+    --no-nodejs)
+      INSTALL_NODEJS=0
       shift
       ;;
     --no-start)
@@ -294,6 +329,14 @@ validate_options() {
     echo "--claude-source, --claude-version, and --claude-sha256 must be provided together" >&2
     exit 2
   fi
+  if { [ -n "$NODEJS_SOURCE" ] && { [ -z "$NODEJS_VERSION" ] || [ -z "$NODEJS_SHA256" ]; }; } || \
+     { [ -z "$NODEJS_SOURCE" ] && [ -n "$NODEJS_SHA256" ]; }; then
+    echo "--nodejs-source, --nodejs-version, and --nodejs-sha256 must be provided together" >&2
+    exit 2
+  fi
+  case "$NODEJS_CHANNEL" in
+    ''|*[!0-9]*) echo "--nodejs-channel must be a major version" >&2; exit 2 ;;
+  esac
   IFS=, read -r -a backends <<< "$RUNTIME_BACKENDS"
   if [ "${#backends[@]}" -eq 0 ]; then
     echo "at least one runtime backend is required" >&2
@@ -399,7 +442,10 @@ install_system_dependencies() {
   run_as_root apt-get update
   if backend_enabled native; then
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
-      acl bubblewrap ca-certificates curl gh git iproute2 locales nftables openssh-client openssh-server procps tar tmux util-linux wireguard-tools
+      acl bash bubblewrap build-essential bzip2 ca-certificates coreutils curl diffutils dnsutils file findutils \
+      gawk gh git git-lfs grep gzip iproute2 jq less locales lsof netcat-openbsd nftables openssh-client \
+      openssh-server patch pkg-config procps psmisc python3 python3-pip python3-venv ripgrep rsync sed sqlite3 \
+      strace tar tmux tree unzip util-linux wget which wireguard-tools xz-utils zip
   else
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends wireguard-tools
   fi
@@ -672,6 +718,7 @@ install_packaged() {
   require_file "$package_dir/agent-remote-runtime"
   require_file "$package_dir/config.example.json"
   require_file "$package_dir/scripts/install-claude-runtime.sh"
+  require_file "$package_dir/scripts/install-nodejs-runtime.sh"
   if [ "$VERSION" = "latest" ] && [ -f "$package_dir/VERSION" ]; then
     VERSION="$(tr -d '[:space:]' < "$package_dir/VERSION")"
   fi
@@ -707,6 +754,7 @@ install_packaged() {
   run_as_root install -m 0755 "$package_dir/agent-remote-runtime" "$PREFIX/bin/agent-remote-runtime"
   run_as_root install -d -m 0755 "$PREFIX/lib/agent-remote-node"
   run_as_root install -m 0755 "$package_dir/scripts/install-claude-runtime.sh" "$PREFIX/lib/agent-remote-node/install-claude-runtime.sh"
+  run_as_root install -m 0755 "$package_dir/scripts/install-nodejs-runtime.sh" "$PREFIX/lib/agent-remote-node/install-nodejs-runtime.sh"
 
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
@@ -794,6 +842,28 @@ install_managed_claude() {
   fi
   if [ ! -x "$CLAUDE_RUNTIME_ROOT/current/bin/claude" ]; then
     echo "managed Claude runtime is required for the native backend" >&2
+    exit 1
+  fi
+}
+
+install_managed_nodejs() {
+  if ! backend_enabled native; then
+    return
+  fi
+  if [ "$INSTALL_NODEJS" = "1" ]; then
+    local installer args
+    installer="$PREFIX/lib/agent-remote-node/install-nodejs-runtime.sh"
+    args=(--runtime-root "$CLAUDE_RUNTIME_ROOT" --channel "$NODEJS_CHANNEL")
+    if [ -n "$NODEJS_VERSION" ]; then
+      args+=(--version "$NODEJS_VERSION")
+    fi
+    if [ -n "$NODEJS_SOURCE" ]; then
+      args+=(--source "$NODEJS_SOURCE" --sha256 "$NODEJS_SHA256")
+    fi
+    run_as_root "$installer" "${args[@]}"
+  fi
+  if [ ! -x "$CLAUDE_RUNTIME_ROOT/current/bin/node" ]; then
+    echo "managed Node.js runtime is required for the native backend" >&2
     exit 1
   fi
 }
@@ -919,6 +989,7 @@ else
   download_and_install
 fi
 install_managed_claude
+install_managed_nodejs
 register_node
 configure_wireguard
 start_and_verify
@@ -931,6 +1002,7 @@ if [ "$INSTALL_SYSTEMD" = "1" ] && [ "$(uname -s)" = "Linux" ]; then
 fi
 if backend_enabled native; then
   echo "  Claude: $CLAUDE_RUNTIME_ROOT/current/bin/claude"
+  echo "  Node.js: $CLAUDE_RUNTIME_ROOT/current/bin/node"
 fi
 if [ "$NODE_READY" = "1" ] && [ "$START_SERVICES" = "1" ]; then
   echo "  services: active"

@@ -107,9 +107,11 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-该命令只补装缺失的 Native Runtime 依赖，不会升级已经安装的系统包；随后启用 IPv4 forwarding 和 user namespace、配置受限 SSH gateway、通过 Anthropic 官方 installer 下载 Claude Code `stable` 并记录版本与 SHA256、注册节点、启动两个 systemd 服务，最后验证 runtime probe 和控制面 heartbeat。默认 backend 是 `native`，不需要 KVM 或 Docker。可以直接使用 root 执行，也可以使用具备 `sudo` 权限的普通用户执行；安装器只对系统操作提权。
+该命令只补装缺失的 Native Runtime 依赖，不会升级已经安装的系统包；随后启用 IPv4 forwarding 和 user namespace、配置受限 SSH gateway、通过 Anthropic 官方 installer 下载 Claude Code `stable`，并把经过 SHA256 校验的最新 Node.js 22 及 `npm`、`npx` 安装到同一个只读受管 runtime。安装器记录两个 runtime 的版本与校验和，然后注册节点、启动两个 systemd 服务，最后验证 runtime probe 和控制面 heartbeat。默认 backend 是 `native`，不需要 KVM 或 Docker。可以直接使用 root 执行，也可以使用具备 `sudo` 权限的普通用户执行；安装器只对系统操作提权。
 
-命令可安全重复执行。再次执行会升级 node 和 Claude、刷新系统路径并复用已有 node token；只有明确需要替换注册信息时才添加 `--force-register`。
+默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
+
+命令可安全重复执行。再次执行会升级节点二进制、Claude 和所选 Node.js 发布线、刷新系统路径并复用已有 node token；只有明确需要替换注册信息时才添加 `--force-register`。
 
 安装指定 node 版本或固定官方 Claude 版本：
 
@@ -127,6 +129,12 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
 
 ```sh
 --claude-version <version> --claude-source <artifact-or-url> --claude-sha256 <sha256>
+```
+
+Node.js 默认安装经过校验的最新 22.x 版本。可用 `--nodejs-version` 固定官方版本，或同时提供下面三个参数固定自备归档：
+
+```sh
+--nodejs-version <version> --nodejs-source <archive-or-url> --nodejs-sha256 <sha256>
 ```
 
 如果主机不满足 Linux 5.15+、systemd 249+、cgroup v2、Bubblewrap user namespace 或 locale 要求，安装器会在启用 worker 前明确失败。只安装文件、不注册和启动时，省略三个控制面参数并添加 `--no-start`。如需同时兼容 Docker Sandbox，使用 `--runtime-backends native,docker_sandbox`；主机必须已经安装带 `docker sandbox` 命令的 Docker CLI。

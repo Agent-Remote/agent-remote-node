@@ -18,15 +18,17 @@ sha256_file() {
   fi
 }
 
-bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" "$ROOT/scripts/build-release.sh"
+bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" \
+  "$ROOT/scripts/install-nodejs-runtime.sh" "$ROOT/scripts/build-release.sh"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--registration-token' || fail "one-command help is incomplete"
+"$ROOT/scripts/install.sh" --help | grep -q -- '--nodejs-version' || fail "Node.js install help is incomplete"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
 grep -q 'AllowAgentForwarding yes' "$ROOT/scripts/install.sh" || fail "SSH agent forwarding is not enabled for the forced-command gateway"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
   fail "dependency installation may upgrade existing packages"
-for package in git gh openssh-client; do
+for package in build-essential file git gh jq openssh-client python3 ripgrep rsync sqlite3 tree unzip wget zip; do
   grep -Eq "^[[:space:]].*${package}([[:space:]]|$)" "$ROOT/scripts/install.sh" || \
-    fail "native developer dependency ${package} is not installed"
+    fail "native developer dependency ${package} is not installed by default"
 done
 grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
 grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
@@ -132,13 +134,40 @@ ALLOW_NON_ROOT=1 "$ROOT/scripts/install-claude-runtime.sh" \
   --channel stable --installer-source "$fake_official_installer" --runtime-root "$official_root" >/dev/null
 [ "$(cat "$official_root/current/VERSION")" = "8.8.8" ] || fail "official Claude version was not detected"
 
+fake_node_tree="$WORK/node-v22.99.0-linux-x64"
+mkdir -p "$fake_node_tree/bin" "$fake_node_tree/lib/node_modules/npm/bin"
+cat > "$fake_node_tree/bin/node" <<'EOF'
+#!/bin/sh
+echo "v22.99.0"
+EOF
+chmod 0755 "$fake_node_tree/bin/node"
+cat > "$fake_node_tree/lib/node_modules/npm/bin/npm-cli.js" <<'EOF'
+#!/usr/bin/env node
+console.log("10.99.0")
+EOF
+cp "$fake_node_tree/lib/node_modules/npm/bin/npm-cli.js" "$fake_node_tree/lib/node_modules/npm/bin/npx-cli.js"
+chmod 0755 "$fake_node_tree/lib/node_modules/npm/bin/npm-cli.js" "$fake_node_tree/lib/node_modules/npm/bin/npx-cli.js"
+fake_node_archive="$WORK/node-v22.99.0-linux-x64.tar.gz"
+tar -C "$WORK" -czf "$fake_node_archive" "$(basename "$fake_node_tree")"
+node_checksum="$(sha256_file "$fake_node_archive")"
+ALLOW_NON_ROOT=1 NODEJS_OS_OVERRIDE=Linux NODEJS_ARCH_OVERRIDE=x86_64 \
+  "$ROOT/scripts/install-nodejs-runtime.sh" \
+  --version 22.99.0 --source "$fake_node_archive" --sha256 "$node_checksum" \
+  --runtime-root "$runtime_root" >/dev/null
+[ -x "$runtime_root/current/bin/node" ] || fail "pinned Node.js executable was not installed"
+[ -x "$runtime_root/current/bin/npm" ] || fail "npm was not installed"
+[ -x "$runtime_root/current/bin/npx" ] || fail "npx was not installed"
+[ "$(cat "$runtime_root/current/NODE_VERSION")" = "22.99.0" ] || fail "pinned Node.js version metadata is wrong"
+grep -q "$node_checksum" "$runtime_root/current/NODE_SHA256SUMS" || fail "pinned Node.js checksum metadata is wrong"
+
 package="$WORK/package"
 mkdir -p "$package/scripts"
 cp "$ROOT/scripts/install.sh" "$package/install.sh"
 cp "$ROOT/scripts/install-claude-runtime.sh" "$package/scripts/install-claude-runtime.sh"
+cp "$ROOT/scripts/install-nodejs-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
 cp "$ROOT/config.example.json" "$package/config.example.json"
 printf '7.7.7\n' > "$package/VERSION"
-chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh"
+chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
 
 cat > "$package/agent-remote-node" <<'EOF'
 #!/bin/sh
@@ -173,15 +202,18 @@ data_dir="$WORK/data"
 managed_claude="$WORK/managed-claude"
 export FAKE_NODE_LOG="$WORK/node.log"
 ALLOW_NON_ROOT=1 STRICT_PREREQUISITES=0 INSTALL_DEPENDENCIES=0 \
+NODEJS_OS_OVERRIDE=Linux NODEJS_ARCH_OVERRIDE=x86_64 \
 CLAUDE_RUNTIME_ROOT="$managed_claude" \
   "$package/install.sh" \
   --prefix "$prefix" --config-dir "$config_dir" --state-dir "$state_dir" --data-dir "$data_dir" \
   --server-url https://control.example --node-id node_1 --registration-token registration_test \
   --claude-version 9.9.9 --claude-source "$fake_claude" --claude-sha256 "$checksum" \
+  --nodejs-version 22.99.0 --nodejs-source "$fake_node_archive" --nodejs-sha256 "$node_checksum" \
   --no-user --no-sudo --no-systemd --no-start >/dev/null
 
 [ -x "$prefix/bin/agent-remote-node" ] || fail "node binary was not installed"
 [ -x "$managed_claude/current/bin/claude" ] || fail "one-command flow did not install Claude"
+[ -x "$managed_claude/current/bin/node" ] || fail "one-command flow did not install Node.js"
 grep -q -- '--runtime-backends native' "$FAKE_NODE_LOG" || fail "native backend was not registered"
 grep -q -- '--system-install' "$FAKE_NODE_LOG" || fail "system install layout was not registered"
 grep -q -- "--claude-runtime-path $managed_claude/current/bin/claude" "$FAKE_NODE_LOG" || \
@@ -198,6 +230,7 @@ for packaged_file in \
   agent-remote-runtime \
   install.sh \
   scripts/install-claude-runtime.sh \
+  scripts/install-nodejs-runtime.sh \
   systemd/agent-remote-node.service \
   systemd/agent-remote-runtime.service \
   systemd/agent-remote-runtime.sudoers; do

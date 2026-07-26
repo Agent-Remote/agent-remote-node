@@ -537,6 +537,7 @@ func (e Engine) probe() (map[string]any, error) {
 		"gh":              commandAvailable("gh"),
 		"ssh_client":      commandAvailable("ssh"),
 		"claude_runtime":  executableExists(e.config.ClaudeRuntimePath),
+		"nodejs_runtime":  executableExists(filepath.Join(filepath.Dir(e.config.ClaudeRuntimePath), "node")),
 		"locale":          localeAvailable("en_US.UTF-8"),
 		"network_ns":      pathExists("/proc/self/ns/net"),
 		"tun":             pathExists("/dev/net/tun"),
@@ -593,7 +594,10 @@ func dependencyDetails(config EngineConfig) map[string]string {
 		}
 	}
 	runtimeRoot := filepath.Dir(filepath.Dir(config.ClaudeRuntimePath))
-	for key, name := range map[string]string{"claude_version": "VERSION", "claude_checksum": "SHA256SUMS"} {
+	for key, name := range map[string]string{
+		"claude_version": "VERSION", "claude_checksum": "SHA256SUMS",
+		"nodejs_version": "NODE_VERSION", "nodejs_checksum": "NODE_SHA256SUMS",
+	} {
 		if data, err := os.ReadFile(filepath.Join(runtimeRoot, name)); err == nil {
 			details[key] = strings.TrimSpace(string(data))
 		}
@@ -2199,6 +2203,7 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		"--setenv", "TMPDIR", "/tmp",
 		"--setenv", "XDG_CACHE_HOME", "/tmp/xdg-cache",
 		"--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude",
+		"--setenv", "PATH", "/opt/agent-remote/runtime/bin:/usr/local/bin:/usr/bin:/bin",
 		"--setenv", "TZ", spec.Timezone,
 		"--setenv", "LANG", spec.Locale,
 		"--setenv", "LC_ALL", spec.Locale,

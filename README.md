@@ -107,9 +107,11 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-This installs missing native runtime dependencies without upgrading packages that are already installed, enables IPv4 forwarding and user namespaces, configures the restricted SSH gateway, downloads Claude Code `stable` through Anthropic's official installer, records its version and SHA256 in the managed runtime, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. The default backend is `native`, so KVM and Docker are not required. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
+This installs missing native runtime dependencies without upgrading packages that are already installed, enables IPv4 forwarding and user namespaces, configures the restricted SSH gateway, downloads Claude Code `stable` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. It records both runtime versions and SHA256 checksums, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. The default backend is `native`, so KVM and Docker are not required. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
 
-The command is idempotent. Re-running it upgrades binaries and Claude, refreshes the system layout, and reuses the existing node token. Add `--force-register` only when intentionally replacing the node registration.
+The default native dependency set also provides a consistent AI development baseline on minimal VPS images: standard shell/text/file utilities, `rg`, `jq`, Git/Git LFS/GitHub CLI, archive tools, `rsync`, Python 3 with pip and venv, SQLite, a C/C++ build toolchain, and common process/network/DNS diagnostics. These host tools are exposed read-only inside Native sessions and do not grant additional privileges.
+
+The command is idempotent. Re-running it upgrades the node binaries, Claude, and the selected Node.js release line, refreshes the system layout, and reuses the existing node token. Add `--force-register` only when intentionally replacing the node registration.
 
 Install a specific node release or pin the official Claude version:
 
@@ -127,6 +129,12 @@ For a supply-chain-pinned Claude artifact, add all three options:
 
 ```sh
 --claude-version <version> --claude-source <artifact-or-url> --claude-sha256 <sha256>
+```
+
+Node.js defaults to the latest verified release in the 22.x line. Pin an official version with `--nodejs-version`, or pin a supplied archive with all three options:
+
+```sh
+--nodejs-version <version> --nodejs-source <archive-or-url> --nodejs-sha256 <sha256>
 ```
 
 The installer fails before enabling the worker when the host does not satisfy Linux 5.15+, systemd 249+, cgroup v2, Bubblewrap user namespaces, or the required locale. To install files without registration or startup, omit the three control-plane options and add `--no-start`. To retain Docker Sandbox compatibility, use `--runtime-backends native,docker_sandbox`; this requires an already installed Docker CLI that provides `docker sandbox`.
