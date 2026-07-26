@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"syscall"
@@ -129,6 +130,9 @@ func TestDockerSessionProcessExitRequiresSameBoot(t *testing.T) {
 }
 
 func TestDockerSessionSpecRoundTripAndRemoval(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
 	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
 	spec := DockerSessionSpec{
 		SessionID: "session_1", TmuxSessionName: "ar-claude-test",
