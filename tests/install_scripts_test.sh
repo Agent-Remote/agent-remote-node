@@ -26,6 +26,12 @@ grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not
 grep -q 'AllowAgentForwarding yes' "$ROOT/scripts/install.sh" || fail "SSH agent forwarding is not enabled for the forced-command gateway"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
   fail "dependency installation may upgrade existing packages"
+grep -q 'apt-get install -y --reinstall --no-upgrade.*gawk' "$ROOT/scripts/install.sh" || \
+  fail "installer does not repair a broken awk package"
+grep -q 'update-alternatives --set awk /usr/bin/gawk' "$ROOT/scripts/install.sh" || \
+  fail "installer does not repair the awk alternatives link"
+grep -Eq '^[[:space:]]+verify_ai_tooling$' "$ROOT/scripts/install.sh" || \
+  fail "installed AI development commands are not verified"
 for package in build-essential file git gh jq openssh-client python3 ripgrep rsync sqlite3 tree unzip wget zip; do
   grep -Eq "^[[:space:]].*${package}([[:space:]]|$)" "$ROOT/scripts/install.sh" || \
     fail "native developer dependency ${package} is not installed by default"

@@ -405,6 +405,37 @@ run_as_service_user() {
   fi
 }
 
+repair_awk() {
+  if awk 'BEGIN { exit 0 }' </dev/null >/dev/null 2>&1; then
+    return
+  fi
+  echo "Repairing unavailable awk command"
+  run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --reinstall --no-upgrade --no-install-recommends gawk
+  if command -v update-alternatives >/dev/null 2>&1 && [ -x /usr/bin/gawk ]; then
+    run_as_root update-alternatives --install /usr/bin/awk awk /usr/bin/gawk 10
+    run_as_root update-alternatives --set awk /usr/bin/gawk
+  fi
+  if ! awk 'BEGIN { exit 0 }' </dev/null >/dev/null 2>&1; then
+    echo "awk remains unavailable after reinstalling gawk" >&2
+    exit 1
+  fi
+}
+
+verify_ai_tooling() {
+  local command missing=()
+  repair_awk
+  for command in bash cc curl dig file find git git-lfs gh gzip ip jq lsof make nc patch python3 rg rsync sed \
+    sqlite3 ssh strace tar tree unzip wget which xz zip; do
+    if ! command -v "$command" >/dev/null 2>&1; then
+      missing+=("$command")
+    fi
+  done
+  if [ "${#missing[@]}" -gt 0 ]; then
+    echo "AI development command baseline is incomplete: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
 install_system_dependencies() {
   if [ "$INSTALL_DEPENDENCIES" != "1" ]; then
     return
@@ -452,6 +483,7 @@ install_system_dependencies() {
   if ! backend_enabled native; then
     return
   fi
+  verify_ai_tooling
   if ! locale -a | tr '[:upper:]' '[:lower:]' | grep -Eq '^en_us\.(utf-?8|utf8)$'; then
     run_as_root locale-gen en_US.UTF-8
   fi
