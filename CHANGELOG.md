@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.19 - 2026-07-26
+
+- feat: install Node.js and AI tooling (87528d6)
+
 ## v0.0.4-fix.18 - 2026-07-25
 
 - fix: resize tmux to the active client (3bf29d5)
