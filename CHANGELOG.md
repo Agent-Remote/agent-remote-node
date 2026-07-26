@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.4-fix.20 - 2026-07-26
+
+- fix: stop exited claude sessions (de9b615)
+- fix: repair managed AI tool installation (fad8d07)
+
 ## v0.0.4-fix.19 - 2026-07-26
 
 - feat: install Node.js and AI tooling (87528d6)
