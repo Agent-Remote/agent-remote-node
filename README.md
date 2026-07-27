@@ -1,5 +1,7 @@
 # agent-remote-node
 
+<p align="center"><img src="assets/agent-remote-icon.svg" alt="Agent Remote icon" width="80" height="80"></p>
+
 English | [中文](README.zh-CN.md)
 
 Node-side runtime for agent-remote.

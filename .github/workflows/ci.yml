@@ -12,7 +12,4 @@ jobs:
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
-      - run: gofmt -w cmd internal
-      - run: git diff --exit-code
-      - run: go test ./...
-      - run: tests/install_scripts_test.sh
+      - run: scripts/run-quality-checks.sh
