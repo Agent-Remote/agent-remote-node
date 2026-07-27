@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5 - 2026-07-27
+
+- feat: add branding and repository quality gates (01d0b54)
+- docs: refresh third-party notices (c503035)
+
 ## v0.0.4-fix.21 - 2026-07-26
 
 - test: support unprivileged Linux CI (e592961)
