@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.5 - 2026-07-28
+
+- fix: start terminal agents at the attached client size (9de94e3)
+
 ## v0.0.5-fix.4 - 2026-07-28
 
 - fix: install the latest managed Claude runtime (38e92f6)
