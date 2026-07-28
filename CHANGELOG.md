@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.4 - 2026-07-28
+
+- fix: install the latest managed Claude runtime (38e92f6)
+
 ## v0.0.5-fix.3 - 2026-07-28
 
 - fix: make tmux resizing follow the active client (b4c628f)
