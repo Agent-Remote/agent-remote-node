@@ -2,6 +2,12 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.6 - 2026-07-28
+
+- fix: signal resized process groups on linux (cd1a64a)
+- test: make resize signal check portable (c8c71c0)
+- fix: notify terminal agents after client resize (076771b)
+
 ## v0.0.5-fix.5 - 2026-07-28
 
 - fix: start terminal agents at the attached client size (9de94e3)

@@ -68,7 +68,7 @@ Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑�
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.0.5-fix.5",
+  "version": "0.0.5-fix.6",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -150,7 +150,7 @@ Node.js 默认安装经过校验的最新 22.x 版本。可用 `--nodejs-version
 ## 发布打包
 
 ```sh
-VERSION=0.0.5-fix.5 scripts/build-release.sh
+VERSION=0.0.5-fix.6 scripts/build-release.sh
 ```
 
 发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。
