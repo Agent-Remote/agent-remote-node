@@ -288,16 +288,17 @@ func TestResizeNotificationRefreshesEntireClient(t *testing.T) {
 	}
 	for _, want := range []string{
 		"@agent-remote-resize-token",
-		"sleep 1",
-		"pane_current_command",
+		"sleep 0.2",
+		"pgrep -P",
 		"claude|claude-*",
-		"@agent-remote-last-redraw",
-		"@agent-remote-last-redraw-size",
-		"send-keys -t '#{pane_id}' C-l",
+		"ps -o pgid=",
 	} {
 		if !strings.Contains(command, want) {
 			t.Fatalf("resize command does not contain %q: %s", want, command)
 		}
+	}
+	if strings.Contains(command, "send-keys") {
+		t.Fatalf("resize command injects input into the application: %s", command)
 	}
 }
 

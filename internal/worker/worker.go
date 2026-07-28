@@ -125,7 +125,7 @@ func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollIn
 
 	startLoop("heartbeat", heartbeatInterval, false, w.Heartbeat)
 	startLoop("task poll", pollInterval, false, w.PollOnce)
-	startLoop("reconciliation", heartbeatInterval, false, w.Reconcile)
+	startLoop("reconciliation", pollInterval, false, w.Reconcile)
 	if w.cfg.WireGuardPublicKey != "" {
 		startLoop("WireGuard peer sync", heartbeatInterval, false, w.syncWireGuardPeers)
 	}

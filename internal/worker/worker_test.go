@@ -91,6 +91,75 @@ func TestWorkerRunKeepsHeartbeatIndependentFromBlockedPoll(t *testing.T) {
 	}
 }
 
+func TestWorkerRunReconcilesAtPollInterval(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runtimeSocketPath := filepath.Join(os.TempDir(), fmt.Sprintf("ar-runtime-%d.sock", time.Now().UnixNano()))
+	runtimeListener, err := net.Listen("unix", runtimeSocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeListener.Close()
+	defer os.Remove(runtimeSocketPath)
+	go func() {
+		for {
+			connection, acceptErr := runtimeListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var request runtimehelper.Request
+			_ = json.NewDecoder(connection).Decode(&request)
+			_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
+				Version: runtimehelper.ProtocolVersion, OK: true,
+				Result: map[string]any{"sessions": []any{}},
+			})
+			_ = connection.Close()
+		}
+	}()
+
+	var heartbeats atomic.Int32
+	var reconciliations atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/heartbeat":
+			heartbeats.Add(1)
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/tasks/poll":
+			w.WriteHeader(http.StatusOK)
+		case "/api/v1/node-api/reconcile":
+			if reconciliations.Add(1) == 3 {
+				cancel()
+			}
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID:            "node_1",
+		ServerURL:         server.URL,
+		NodeToken:         "node_token",
+		RuntimeSocketPath: runtimeSocketPath,
+	}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+
+	if err := w.run(ctx, time.Second, 10*time.Millisecond); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation, got %v", err)
+	}
+	if got := reconciliations.Load(); got != 3 {
+		t.Fatalf("expected three reconciliations, got %d", got)
+	}
+	if got := heartbeats.Load(); got != 1 {
+		t.Fatalf("reconciliation used heartbeat interval: heartbeat calls=%d", got)
+	}
+}
+
 func TestRunOperationLoopRetriesAfterFailure(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
