@@ -47,7 +47,7 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
 go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-id> --device <device-id> --dry-run
 ```
 
-`install-ssh` prepares the managed `authorized_keys` file. Runtime SSH keys are written by the `sync_ssh_keys` node task with forced-command restrictions.
+`install-ssh` prepares the managed `authorized_keys` file. Runtime SSH keys are written atomically by the `sync_ssh_keys` node task with forced-command restrictions. Each task replaces only the named device's managed keys, preserving other devices while removing stale keys after rotation.
 
 `prepare_workspace` tasks install the device's stable SSH gateway key and ask the privileged runtime helper to create the workspace as the control-plane user's Linux UID. Mutagen commands are re-authorized by device and node, then run without network access in a Bubblewrap view containing only that user's data.
 

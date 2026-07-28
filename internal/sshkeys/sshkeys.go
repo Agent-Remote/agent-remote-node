@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
 const beginMarker = "# BEGIN agent-remote managed keys"
 const endMarker = "# END agent-remote managed keys"
+const deviceBeginPrefix = "# BEGIN agent-remote device "
+const deviceEndPrefix = "# END agent-remote device "
 
 // Entry describes one managed authorized_keys entry.
 type Entry struct {
@@ -46,6 +49,9 @@ func Sync(path string, attachBinary string, attachConfig string, payload SyncPay
 	if path == "" {
 		return fmt.Errorf("authorized_keys path is required")
 	}
+	if !validDeviceID(payload.DeviceID) {
+		return fmt.Errorf("device ID is required and must contain only safe identifier characters")
+	}
 	if attachBinary == "" {
 		attachBinary = "agent-remote-attach"
 	}
@@ -56,14 +62,34 @@ func Sync(path string, attachBinary string, attachConfig string, payload SyncPay
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	base := stripManagedBlock(string(existing))
-	var block bytes.Buffer
-	block.WriteString(beginMarker + "\n")
+	base, managed := splitManagedBlock(string(existing))
+	devices := parseManagedDevices(managed)
+	entries := make([]string, 0, len(payload.SSHKeys))
 	for _, key := range payload.SSHKeys {
 		line := RenderEntry(attachBinary, attachConfig, key)
 		if line != "" {
+			entries = append(entries, line)
+		}
+	}
+	if len(entries) == 0 {
+		delete(devices, payload.DeviceID)
+	} else {
+		devices[payload.DeviceID] = entries
+	}
+
+	var block bytes.Buffer
+	block.WriteString(beginMarker + "\n")
+	deviceIDs := make([]string, 0, len(devices))
+	for deviceID := range devices {
+		deviceIDs = append(deviceIDs, deviceID)
+	}
+	sort.Strings(deviceIDs)
+	for _, deviceID := range deviceIDs {
+		block.WriteString(deviceBeginPrefix + deviceID + "\n")
+		for _, line := range devices[deviceID] {
 			block.WriteString(line + "\n")
 		}
+		block.WriteString(deviceEndPrefix + deviceID + "\n")
 	}
 	block.WriteString(endMarker + "\n")
 	var output string
@@ -72,7 +98,7 @@ func Sync(path string, attachBinary string, attachConfig string, payload SyncPay
 	} else {
 		output = strings.TrimRight(base, "\n") + "\n" + block.String()
 	}
-	return os.WriteFile(path, []byte(output), 0o600)
+	return writeFileAtomic(path, []byte(output))
 }
 
 // RenderEntry renders one forced-command authorized_keys line.
@@ -114,15 +140,101 @@ func shellWord(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
-func stripManagedBlock(input string) string {
+func splitManagedBlock(input string) (string, string) {
 	start := strings.Index(input, beginMarker)
 	if start < 0 {
-		return input
+		return input, ""
 	}
-	end := strings.Index(input[start:], endMarker)
+	managedStart := start + len(beginMarker)
+	end := strings.Index(input[managedStart:], endMarker)
 	if end < 0 {
-		return strings.TrimRight(input[:start], "\n") + "\n"
+		return strings.TrimRight(input[:start], "\n") + "\n", input[managedStart:]
 	}
-	end += start + len(endMarker)
-	return strings.TrimRight(input[:start]+input[end:], "\n") + "\n"
+	managedEnd := managedStart + end
+	blockEnd := managedEnd + len(endMarker)
+	base := strings.TrimRight(input[:start]+input[blockEnd:], "\n") + "\n"
+	return base, input[managedStart:managedEnd]
+}
+
+func parseManagedDevices(managed string) map[string][]string {
+	devices := map[string][]string{}
+	activeDevice := ""
+	for _, rawLine := range strings.Split(managed, "\n") {
+		line := strings.TrimSpace(rawLine)
+		if strings.HasPrefix(line, deviceBeginPrefix) {
+			candidate := strings.TrimSpace(strings.TrimPrefix(line, deviceBeginPrefix))
+			if validDeviceID(candidate) {
+				activeDevice = candidate
+			}
+			continue
+		}
+		if strings.HasPrefix(line, deviceEndPrefix) {
+			activeDevice = ""
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		deviceID := activeDevice
+		if deviceID == "" {
+			deviceID = deviceIDFromEntry(line)
+		}
+		if validDeviceID(deviceID) {
+			devices[deviceID] = append(devices[deviceID], line)
+		}
+	}
+	return devices
+}
+
+func deviceIDFromEntry(line string) string {
+	const flag = " --device "
+	start := strings.Index(line, flag)
+	if start < 0 {
+		return ""
+	}
+	value := line[start+len(flag):]
+	if end := strings.IndexAny(value, " \t\""); end >= 0 {
+		value = value[:end]
+	}
+	return value
+}
+
+func validDeviceID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if !((character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			strings.ContainsRune("._:-", character)) {
+			return false
+		}
+	}
+	return true
+}
+
+func writeFileAtomic(path string, data []byte) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".authorized_keys-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, path)
 }

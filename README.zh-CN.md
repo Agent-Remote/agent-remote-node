@@ -47,7 +47,7 @@ go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> -
 go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-id> --device <device-id> --dry-run
 ```
 
-`install-ssh` 会准备受管 `authorized_keys` 文件。运行时 SSH key 由带 forced-command 限制的 `sync_ssh_keys` 节点任务写入。
+`install-ssh` 会准备受管 `authorized_keys` 文件。运行时 SSH key 由带 forced-command 限制的 `sync_ssh_keys` 节点任务原子写入；每个任务只替换指定设备的受管 key，在保留其他设备的同时清理该设备轮换前的旧 key。
 
 `prepare_workspace` 会安装设备的稳定 SSH gateway key，并由特权 runtime helper 使用控制面用户对应的 Linux UID 创建 workspace。Mutagen 命令每次按设备和节点重新鉴权，随后在无网络且只能看到该用户数据的 Bubblewrap 环境中运行。
 
