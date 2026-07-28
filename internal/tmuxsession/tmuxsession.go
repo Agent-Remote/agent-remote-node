@@ -90,7 +90,7 @@ func resizeShellCommand(binary string, socketPath string) string {
 		"pgrp=$(ps -o tpgid= -p #{pane_pid} | tr -d ' ')",
 		"case \"$pgrp\" in ''|*[!0-9]*) exit 0 ;; esac",
 		"[ \"$pgrp\" -gt 0 ] || exit 0",
-		"kill -WINCH -- \"-$pgrp\" 2>/dev/null || true",
+		"/bin/kill -WINCH -- \"-$pgrp\" 2>/dev/null || true",
 		"sleep 0.05",
 		strings.Join(tmux, " "),
 	}, "; ")
