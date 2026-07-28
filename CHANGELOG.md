@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.9 - 2026-07-28
+
+- fix: refresh resized and exited claude sessions (85b0d2e)
+
 ## v0.0.5-fix.8 - 2026-07-28
 
 - fix: redraw claude after terminal resize (b6101c8)
