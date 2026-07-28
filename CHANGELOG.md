@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.1 - 2026-07-28
+
+- fix: preserve multi-device SSH keys (b8d34ec)
+
 ## v0.0.5 - 2026-07-27
 
 - feat: add branding and repository quality gates (01d0b54)
