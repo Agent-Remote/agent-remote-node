@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,6 +15,40 @@ import (
 	"syscall"
 	"testing"
 )
+
+func TestInitializeGitIndexFromHead(t *testing.T) {
+	workspacePath := t.TempDir()
+	runTestGit(t, workspacePath, "init")
+	if err := os.WriteFile(filepath.Join(workspacePath, "tracked.txt"), []byte("content\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runTestGit(t, workspacePath, "add", "tracked.txt")
+	runTestGit(t, workspacePath, "-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+	indexPath := filepath.Join(workspacePath, ".git", "index")
+	if err := os.Remove(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := initializeGitIndex(workspacePath, runtimeIdentity{UID: os.Geteuid(), GID: os.Getegid()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(indexPath); err != nil {
+		t.Fatal(err)
+	}
+	output := runTestGit(t, workspacePath, "status", "--porcelain")
+	if strings.TrimSpace(output) != "" {
+		t.Fatalf("rebuilt index must match HEAD: %s", output)
+	}
+}
+
+func runTestGit(t *testing.T, workspacePath string, args ...string) string {
+	t.Helper()
+	command := exec.Command("git", append([]string{"-C", workspacePath}, args...)...)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v failed: %v: %s", args, err, output)
+	}
+	return string(output)
+}
 
 func TestWireGuardSyncUsesValidatedRootOwnedConfig(t *testing.T) {
 	stateRoot := t.TempDir()

@@ -400,6 +400,31 @@ func ensureGitReady(workspacePath string) error {
 	if len(locks) > 0 {
 		return fmt.Errorf("workspace Git metadata has active lock files: %s", strings.Join(locks, ", "))
 	}
+	return ensureIndependentGitIndex(workspacePath)
+}
+
+func ensureIndependentGitIndex(workspacePath string) error {
+	indexPath := filepath.Join(workspacePath, ".git", "index")
+	if _, err := os.Stat(indexPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	runGit := func(args ...string) error {
+		base := []string{"-c", "core.fsmonitor=false", "-C", workspacePath}
+		cmd := exec.Command("git", append(base, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		return cmd.Run()
+	}
+	if err := runGit("rev-parse", "--verify", "--quiet", "HEAD^{tree}"); err == nil {
+		if err := runGit("read-tree", "--reset", "HEAD"); err != nil {
+			return fmt.Errorf("initialize workspace Git index from HEAD: %w", err)
+		}
+		return nil
+	}
+	if err := runGit("read-tree", "--empty"); err != nil {
+		return fmt.Errorf("initialize empty workspace Git index: %w", err)
+	}
 	return nil
 }
 

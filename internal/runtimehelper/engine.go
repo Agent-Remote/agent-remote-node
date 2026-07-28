@@ -819,6 +819,9 @@ func (e Engine) startSession(ctx context.Context, payload map[string]any) (map[s
 	if err := e.prepareSyncedWorkspace(userID, workspacePath); err != nil {
 		return nil, err
 	}
+	if err := e.ensureIndependentGitIndex(userID, workspacePath); err != nil {
+		return nil, err
+	}
 	if err := e.prepareOwnedDirectories(userID, accountPath, filepath.Join(accountPath, ".claude")); err != nil {
 		return nil, err
 	}
@@ -1509,6 +1512,51 @@ func (e Engine) prepareSyncedWorkspace(userID string, path string) error {
 		return err
 	}
 	return e.grantManagedTraverse(path, identity.Username)
+}
+
+func (e Engine) ensureIndependentGitIndex(userID string, path string) error {
+	gitPath := filepath.Join(path, ".git")
+	info, err := os.Stat(gitPath)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && !info.IsDir()) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(gitPath, "index")); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	identity, err := e.ensureIdentity(userID)
+	if err != nil {
+		return err
+	}
+	return initializeGitIndex(path, identity)
+}
+
+func initializeGitIndex(path string, identity runtimeIdentity) error {
+	runGit := func(args ...string) error {
+		base := []string{"-c", "core.fsmonitor=false", "-C", path}
+		cmd := exec.Command("git", append(base, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if runtime.GOOS == "linux" && os.Geteuid() == 0 {
+			cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+				Uid: uint32(identity.UID), Gid: uint32(identity.GID), Groups: []uint32{uint32(identity.GID)},
+			}}
+		}
+		return cmd.Run()
+	}
+	if err := runGit("rev-parse", "--verify", "--quiet", "HEAD^{tree}"); err == nil {
+		if err := runGit("read-tree", "--reset", "HEAD"); err != nil {
+			return fmt.Errorf("initialize workspace Git index from HEAD: %w", err)
+		}
+		return nil
+	}
+	if err := runGit("read-tree", "--empty"); err != nil {
+		return fmt.Errorf("initialize empty workspace Git index: %w", err)
+	}
+	return nil
 }
 
 func (e Engine) grantManagedTraverse(path string, runtimeUser string) error {
