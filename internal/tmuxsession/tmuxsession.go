@@ -84,15 +84,41 @@ func resizeShellCommand(binary string, socketPath string) string {
 	if socketPath != "" {
 		tmux = append(tmux, "-S", shellQuote(socketPath))
 	}
-	tmux = append(tmux, "refresh-client", "-t", shellQuote("#{client_name}"))
+	tmuxPrefix := strings.Join(tmux, " ")
+	sessionTarget := shellQuote("#{session_id}")
+	paneTarget := shellQuote("#{pane_id}")
+	clientTarget := shellQuote("#{client_name}")
+	tokenOption := "@agent-remote-resize-token"
+	redrawOption := "@agent-remote-last-redraw"
+	sizeOption := "@agent-remote-last-redraw-size"
+	// Claude 2.x can miss a full redraw after SIGWINCH. Coalesce resize
+	// bursts and rate-limit Ctrl+L because an immediate second press clears.
 	script := strings.Join([]string{
-		"sleep 0.15",
+		"token=$$",
+		tmuxPrefix + " set-option -q -t " + sessionTarget + " " + tokenOption + " \"$token\"",
+		"sleep 1",
+		"[ \"$(" + tmuxPrefix + " show-option -qv -t " + sessionTarget + " " + tokenOption + ")\" = \"$token\" ] || exit 0",
 		"pgrp=$(ps -o tpgid= -p #{pane_pid} | tr -d ' ')",
 		"case \"$pgrp\" in ''|*[!0-9]*) exit 0 ;; esac",
 		"[ \"$pgrp\" -gt 0 ] || exit 0",
 		"/bin/kill -WINCH -- \"-$pgrp\" 2>/dev/null || true",
 		"sleep 0.05",
-		strings.Join(tmux, " "),
+		tmuxPrefix + " refresh-client -t " + clientTarget,
+		"pane_command=$(" + tmuxPrefix + " display-message -p -t " + paneTarget + " " + shellQuote("#{pane_current_command}") + ")",
+		"case \"$pane_command\" in claude|claude-*) ;; *) exit 0 ;; esac",
+		"now=$(date +%s)",
+		"last=$(" + tmuxPrefix + " show-option -qv -t " + sessionTarget + " " + redrawOption + ")",
+		"case \"$last\" in ''|*[!0-9]*) last=0 ;; esac",
+		"delay=$((3 - now + last))",
+		"if [ \"$delay\" -gt 0 ]; then sleep \"$delay\"; fi",
+		"[ \"$(" + tmuxPrefix + " show-option -qv -t " + sessionTarget + " " + tokenOption + ")\" = \"$token\" ] || exit 0",
+		"size=$(" + tmuxPrefix + " display-message -p -t " + clientTarget + " " + shellQuote("#{client_width}x#{client_height}") + ")",
+		"last_size=$(" + tmuxPrefix + " show-option -qv -t " + sessionTarget + " " + sizeOption + ")",
+		"[ \"$size\" != \"$last_size\" ] || exit 0",
+		"now=$(date +%s)",
+		tmuxPrefix + " set-option -q -t " + sessionTarget + " " + redrawOption + " \"$now\"",
+		tmuxPrefix + " set-option -q -t " + sessionTarget + " " + sizeOption + " \"$size\"",
+		tmuxPrefix + " send-keys -t " + paneTarget + " C-l",
 	}, "; ")
 	return script
 }

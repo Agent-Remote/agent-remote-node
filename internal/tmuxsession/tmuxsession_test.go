@@ -286,6 +286,19 @@ func TestResizeNotificationRefreshesEntireClient(t *testing.T) {
 	if strings.Contains(command, "refresh-client -S") {
 		t.Fatalf("resize command only refreshes the status line: %s", command)
 	}
+	for _, want := range []string{
+		"@agent-remote-resize-token",
+		"sleep 1",
+		"pane_current_command",
+		"claude|claude-*",
+		"@agent-remote-last-redraw",
+		"@agent-remote-last-redraw-size",
+		"send-keys -t '#{pane_id}' C-l",
+	} {
+		if !strings.Contains(command, want) {
+			t.Fatalf("resize command does not contain %q: %s", want, command)
+		}
+	}
 }
 
 func waitForWindowSize(t *testing.T, binary string, socketPath string, want string) {
