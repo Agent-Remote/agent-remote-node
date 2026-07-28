@@ -109,7 +109,7 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-该命令只补装缺失的 Native Runtime 依赖，不会升级已经安装的系统包；随后启用 IPv4 forwarding 和 user namespace、配置受限 SSH gateway、通过 Anthropic 官方 installer 下载 Claude Code `stable`，并把经过 SHA256 校验的最新 Node.js 22 及 `npm`、`npx` 安装到同一个只读受管 runtime。安装器记录两个 runtime 的版本与校验和，然后注册节点、启动两个 systemd 服务，最后验证 runtime probe 和控制面 heartbeat。默认 backend 是 `native`，不需要 KVM 或 Docker。可以直接使用 root 执行，也可以使用具备 `sudo` 权限的普通用户执行；安装器只对系统操作提权。
+该命令只补装缺失的 Native Runtime 依赖，不会升级已经安装的系统包；随后启用 IPv4 forwarding 和 user namespace、配置受限 SSH gateway、通过 Anthropic 官方 installer 下载 Claude Code `latest`，并把经过 SHA256 校验的最新 Node.js 22 及 `npm`、`npx` 安装到同一个只读受管 runtime。安装器记录两个 runtime 的版本与校验和，然后注册节点、启动两个 systemd 服务，最后验证 runtime probe 和控制面 heartbeat。默认 backend 是 `native`，不需要 KVM 或 Docker。可以直接使用 root 执行，也可以使用具备 `sudo` 权限的普通用户执行；安装器只对系统操作提权。
 
 默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。安装器会在装包后逐项验证命令，并通过重装 `gawk` 修复损坏的 `awk` alternatives 链。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
 

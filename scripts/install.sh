@@ -28,7 +28,7 @@ REGISTRATION_TOKEN="${AGENT_REMOTE_REGISTRATION_TOKEN:-}"
 FORCE_REGISTER="${FORCE_REGISTER:-0}"
 NODE_READY=0
 RUNTIME_BACKENDS="${AGENT_REMOTE_RUNTIME_BACKENDS:-native}"
-CLAUDE_CHANNEL="${CLAUDE_CHANNEL:-stable}"
+CLAUDE_CHANNEL="${CLAUDE_CHANNEL:-latest}"
 CLAUDE_VERSION="${CLAUDE_VERSION:-}"
 CLAUDE_SOURCE="${CLAUDE_SOURCE:-}"
 CLAUDE_SHA256="${CLAUDE_SHA256:-}"
@@ -100,7 +100,7 @@ Options:
   --wireguard-address CIDR    Node tunnel address. Default: 10.77.0.1/24.
   --wireguard-endpoint HOST:PORT  Public UDP endpoint; inferred from server URL by default.
   --wireguard-listen-port PORT    UDP listen port. Default: 51820.
-  --claude-channel VALUE  Official Claude channel. Default: stable.
+  --claude-channel VALUE  Official Claude channel. Default: latest.
   --claude-version VALUE  Pin an official Claude version, or use with --claude-source.
   --claude-source PATH    Pinned Claude executable path or URL.
   --claude-sha256 HASH    Required checksum for --claude-source.

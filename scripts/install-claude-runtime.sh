@@ -4,7 +4,7 @@ set -euo pipefail
 VERSION="${CLAUDE_VERSION:-}"
 SOURCE="${CLAUDE_SOURCE:-}"
 CHECKSUM="${CLAUDE_SHA256:-}"
-CHANNEL="${CLAUDE_CHANNEL:-stable}"
+CHANNEL="${CLAUDE_CHANNEL:-latest}"
 INSTALLER_SOURCE="${CLAUDE_INSTALLER_SOURCE:-https://claude.ai/install.sh}"
 RUNTIME_ROOT="${RUNTIME_ROOT:-/opt/agent-remote/runtimes/claude}"
 ALLOW_NON_ROOT="${ALLOW_NON_ROOT:-0}"
@@ -16,7 +16,7 @@ usage:
   install-claude-runtime.sh --version VERSION --source PATH_OR_URL --sha256 CHECKSUM
 
 Options:
-  --channel VALUE          Official Claude installer channel. Default: stable.
+  --channel VALUE          Official Claude installer channel. Default: latest.
   --installer-source URL   Official installer URL override.
   --version VERSION        Required with --source; optional official version pin.
   --source PATH_OR_URL     Pre-downloaded Claude executable.

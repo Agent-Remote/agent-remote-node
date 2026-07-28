@@ -126,7 +126,7 @@ fake_official_installer="$WORK/official-install.sh"
 cat > "$fake_official_installer" <<'EOF'
 #!/bin/sh
 set -eu
-[ "$1" = "stable" ] || exit 9
+[ "$1" = "latest" ] || exit 9
 mkdir -p "$HOME/.local/bin"
 cat > "$HOME/.local/bin/claude" <<'INNER'
 #!/bin/sh
@@ -137,7 +137,7 @@ EOF
 chmod 0755 "$fake_official_installer"
 official_root="$WORK/official-runtime"
 ALLOW_NON_ROOT=1 "$ROOT/scripts/install-claude-runtime.sh" \
-  --channel stable --installer-source "$fake_official_installer" --runtime-root "$official_root" >/dev/null
+  --installer-source "$fake_official_installer" --runtime-root "$official_root" >/dev/null
 [ "$(cat "$official_root/current/VERSION")" = "8.8.8" ] || fail "official Claude version was not detected"
 
 fake_node_tree="$WORK/node-v22.99.0-linux-x64"
