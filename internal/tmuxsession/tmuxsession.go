@@ -84,7 +84,7 @@ func resizeShellCommand(binary string, socketPath string) string {
 	if socketPath != "" {
 		tmux = append(tmux, "-S", shellQuote(socketPath))
 	}
-	tmux = append(tmux, "refresh-client", "-S", "-t", shellQuote("#{client_name}"))
+	tmux = append(tmux, "refresh-client", "-t", shellQuote("#{client_name}"))
 	script := strings.Join([]string{
 		"sleep 0.15",
 		"pgrp=$(ps -o tpgid= -p #{pane_pid} | tr -d ' ')",

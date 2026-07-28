@@ -277,6 +277,17 @@ func TestResizeNotificationSignalsForegroundProcess(t *testing.T) {
 	waitForLineCount(t, signalPath, 1)
 }
 
+func TestResizeNotificationRefreshesEntireClient(t *testing.T) {
+	command := resizeShellCommand("/usr/bin/tmux", "/run/agent/tmux.sock")
+	want := "'/usr/bin/tmux' -S '/run/agent/tmux.sock' refresh-client -t '#{client_name}'"
+	if !strings.Contains(command, want) {
+		t.Fatalf("resize command does not refresh the entire client: %s", command)
+	}
+	if strings.Contains(command, "refresh-client -S") {
+		t.Fatalf("resize command only refreshes the status line: %s", command)
+	}
+}
+
 func waitForWindowSize(t *testing.T, binary string, socketPath string, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
