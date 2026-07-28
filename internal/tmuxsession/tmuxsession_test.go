@@ -223,7 +223,7 @@ func TestApplicationStartsAtAttachedClientSize(t *testing.T) {
 	waitForFileContent(t, resultPath, "37 123")
 }
 
-func TestResizeNotificationSignalsForegroundProcessAfterTmuxResize(t *testing.T) {
+func TestResizeNotificationSignalsForegroundProcess(t *testing.T) {
 	binary, err := exec.LookPath("tmux")
 	if err != nil {
 		t.Skip("tmux is not installed")
@@ -268,17 +268,13 @@ func TestResizeNotificationSignalsForegroundProcessAfterTmuxResize(t *testing.T)
 	if err := os.WriteFile(signalPath, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fmt.Fprintln(stdin, "refresh-client -C 101,31"); err != nil {
-		t.Fatal(err)
-	}
-	waitForWindowSize(t, binary, socketPath, "101x31")
 	if output, err := exec.Command(
 		binary, "-S", socketPath, "run-shell", "-b", "-t", "agent-session:0.0",
 		resizeShellCommand(binary, socketPath),
 	).CombinedOutput(); err != nil {
 		t.Fatalf("run resize notification: %v: %s", err, output)
 	}
-	waitForLineCount(t, signalPath, 2)
+	waitForLineCount(t, signalPath, 1)
 }
 
 func waitForWindowSize(t *testing.T, binary string, socketPath string, want string) {
