@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.3 - 2026-07-28
+
+- fix: make tmux resizing follow the active client (b4c628f)
+
 ## v0.0.5-fix.2 - 2026-07-28
 
 - fix: initialize independent workspace git indexes (9189447)
