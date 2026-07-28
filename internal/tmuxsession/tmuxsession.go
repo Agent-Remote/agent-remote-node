@@ -32,17 +32,19 @@ func AttachArgs(socketPath string, sessionName string) []string {
 	return append(args, "attach-session", "-d", "-f", "!ignore-size", "-t", sessionName)
 }
 
-// Configure removes tmux chrome and makes the session follow the most recent
+// Configure removes tmux chrome and makes the session follow its sole active
 // terminal client, which keeps full-screen agents visually native over SSH.
 func Configure(binary string, socketPath string, sessionName string) error {
-	resizeHook := "resize-window -x \"#{client_width}\" -y \"#{client_height}\"; refresh-client -t \"#{client_name}\""
 	commands := [][]string{
+		// Older releases installed explicit resize hooks. Remove them before
+		// changing the policy so transient zero-sized clients cannot force an
+		// invalid manual window size during a terminal resize.
+		{"set-hook", "-u", "-t", sessionName, "client-attached"},
+		{"set-hook", "-u", "-t", sessionName, "client-resized"},
 		{"set-option", "-t", sessionName, "status", "off"},
 		{"set-option", "-t", sessionName, "focus-events", "on"},
-		{"set-window-option", "-t", sessionName, "window-size", "latest"},
-		{"set-window-option", "-t", sessionName, "aggressive-resize", "on"},
-		{"set-hook", "-t", sessionName, "client-attached", resizeHook},
-		{"set-hook", "-t", sessionName, "client-resized", resizeHook},
+		{"set-window-option", "-t", sessionName, "aggressive-resize", "off"},
+		{"set-window-option", "-t", sessionName, "window-size", "largest"},
 	}
 	for _, command := range commands {
 		args := append(socketArgs(socketPath), command...)
