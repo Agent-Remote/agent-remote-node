@@ -281,7 +281,7 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		}
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs("", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))...)
+	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))...)
 	cmd.Dir = workspacePath
 	cmd.Env = append(os.Environ(),
 		"AGENT_REMOTE_WORKSPACE_PATH="+workspacePath,

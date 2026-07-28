@@ -2035,7 +2035,7 @@ func SuperviseSpec(config EngineConfig, specPath string) error {
 		return err
 	}
 	command := strings.Join([]string{shellQuote(config.RuntimeBinaryPath), "exec", "--spec", shellQuote(specPath)}, " ")
-	cmd := exec.Command(config.TmuxBinaryPath, tmuxsession.NewSessionArgs(spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
+	cmd := exec.Command(config.TmuxBinaryPath, tmuxsession.NewSessionArgs(config.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
 	cmd.Dir = spec.WorkspacePath
 	cmd.Env = replaceEnvironment(os.Environ(), "SHELL", "/bin/sh")
 	if output, err := cmd.CombinedOutput(); err != nil {

@@ -315,7 +315,7 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string
 		}
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs("", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, accountPath, payload)))...)
+	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, accountPath, payload)))...)
 	cmd.Dir = accountPath
 	cmd.Env = append(os.Environ(),
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,

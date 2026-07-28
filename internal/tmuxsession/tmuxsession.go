@@ -1,6 +1,7 @@
 package tmuxsession
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -11,16 +12,17 @@ const (
 	initialHeight = "48"
 )
 
-// NewSessionArgs gives detached terminal applications a useful canvas before
-// the first SSH client attaches. tmux will resize it to the latest client.
-func NewSessionArgs(socketPath string, sessionName string, command string) []string {
+// NewSessionArgs creates a detached session whose application starts after the
+// first client attaches. This lets terminal applications observe the client's
+// real dimensions instead of the detached session's fallback canvas.
+func NewSessionArgs(binary string, socketPath string, sessionName string, command string) []string {
 	args := socketArgs(socketPath)
 	return append(args,
 		"new-session", "-d",
 		"-x", initialWidth,
 		"-y", initialHeight,
 		"-s", sessionName,
-		command,
+		waitForClientCommand(binary, socketPath, sessionName, command),
 	)
 }
 
@@ -36,11 +38,11 @@ func AttachArgs(socketPath string, sessionName string) []string {
 // terminal client, which keeps full-screen agents visually native over SSH.
 func Configure(binary string, socketPath string, sessionName string) error {
 	commands := [][]string{
-		// Older releases installed explicit resize hooks. Remove them before
-		// changing the policy so transient zero-sized clients cannot force an
-		// invalid manual window size during a terminal resize.
-		{"set-hook", "-u", "-t", sessionName, "client-attached"},
-		{"set-hook", "-u", "-t", sessionName, "client-resized"},
+		// Do not manually resize the window from hooks: transient zero-sized
+		// clients can otherwise force an invalid window size. A client refresh
+		// is safe and clears stale terminal cells after the final resize event.
+		{"set-hook", "-t", sessionName, "client-attached", "wait-for -S " + clientReadyChannel(sessionName)},
+		{"set-hook", "-t", sessionName, "client-resized", "refresh-client -S"},
 		{"set-option", "-t", sessionName, "status", "off"},
 		{"set-option", "-t", sessionName, "focus-events", "on"},
 		{"set-window-option", "-t", sessionName, "aggressive-resize", "off"},
@@ -57,6 +59,24 @@ func Configure(binary string, socketPath string, sessionName string) error {
 	rgbArgs := append(socketArgs(socketPath), "set-option", "-s", "terminal-features", "xterm*:RGB")
 	_ = exec.Command(binary, rgbArgs...).Run()
 	return nil
+}
+
+func waitForClientCommand(binary string, socketPath string, sessionName string, command string) string {
+	parts := []string{shellQuote(binary)}
+	if socketPath != "" {
+		parts = append(parts, "-S", shellQuote(socketPath))
+	}
+	parts = append(parts, "wait-for", shellQuote(clientReadyChannel(sessionName)))
+	return strings.Join(parts, " ") + " && sleep 0.1 && exec " + command
+}
+
+func clientReadyChannel(sessionName string) string {
+	digest := sha256.Sum256([]byte(sessionName))
+	return fmt.Sprintf("agent-remote-client-%x", digest[:8])
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func socketArgs(socketPath string) []string {
