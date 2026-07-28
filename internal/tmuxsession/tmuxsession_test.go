@@ -74,7 +74,7 @@ func TestConfigure(t *testing.T) {
 	}
 	want := []string{
 		"-S /run/agent/tmux.sock set-hook -t agent-session client-attached wait-for -S " + clientReadyChannel("agent-session"),
-		"-S /run/agent/tmux.sock set-hook -t agent-session client-resized refresh-client -S",
+		"-S /run/agent/tmux.sock set-hook -t agent-session client-resized " + resizeHookCommand(binary, "/run/agent/tmux.sock"),
 		"-S /run/agent/tmux.sock set-option -t agent-session status off",
 		"-S /run/agent/tmux.sock set-option -t agent-session focus-events on",
 		"-S /run/agent/tmux.sock set-window-option -t agent-session aggressive-resize off",
@@ -223,6 +223,64 @@ func TestApplicationStartsAtAttachedClientSize(t *testing.T) {
 	waitForFileContent(t, resultPath, "37 123")
 }
 
+func TestResizeNotificationSignalsForegroundProcessAfterTmuxResize(t *testing.T) {
+	binary, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	socketDir, err := os.MkdirTemp("/tmp", "agent-remote-tmux-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "tmux.sock")
+	readyPath := filepath.Join(socketDir, "ready")
+	signalPath := filepath.Join(socketDir, "signals")
+	handler := fmt.Sprintf(
+		"trap 'echo winch >> %s' WINCH; : > %s; while :; do sleep 0.05; done",
+		shellQuote(signalPath), shellQuote(readyPath),
+	)
+	command := "sh -c " + shellQuote(handler)
+	if output, err := exec.Command(binary, NewSessionArgs(binary, socketPath, "agent-session", command)...).CombinedOutput(); err != nil {
+		t.Fatalf("start tmux: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		_ = exec.Command(binary, "-S", socketPath, "kill-server").Run()
+	})
+	if err := Configure(binary, socketPath, "agent-session"); err != nil {
+		t.Fatal(err)
+	}
+
+	client := exec.Command(binary, "-C", "-S", socketPath, "attach-session", "-d", "-f", "!ignore-size", "-t", "agent-session")
+	stdin, err := client.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = stdin.Close()
+		_ = client.Wait()
+	})
+	waitForFile(t, readyPath)
+	time.Sleep(300 * time.Millisecond)
+	if err := os.WriteFile(signalPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fmt.Fprintln(stdin, "refresh-client -C 101,31"); err != nil {
+		t.Fatal(err)
+	}
+	waitForWindowSize(t, binary, socketPath, "101x31")
+	if output, err := exec.Command(
+		binary, "-S", socketPath, "run-shell", "-b", "-t", "agent-session:0.0",
+		resizeShellCommand(binary, socketPath),
+	).CombinedOutput(); err != nil {
+		t.Fatalf("run resize notification: %v: %s", err, output)
+	}
+	waitForLineCount(t, signalPath, 2)
+}
+
 func waitForWindowSize(t *testing.T, binary string, socketPath string, want string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -255,4 +313,33 @@ func waitForFileContent(t *testing.T, path string, want string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("file content = %q, want %q", got, want)
+}
+
+func waitForFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("file was not created: %s", path)
+}
+
+func waitForLineCount(t *testing.T, path string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var got int
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil {
+			got = len(strings.Fields(string(data)))
+			if got >= want {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("signal count = %d, want at least %d", got, want)
 }

@@ -39,10 +39,10 @@ func AttachArgs(socketPath string, sessionName string) []string {
 func Configure(binary string, socketPath string, sessionName string) error {
 	commands := [][]string{
 		// Do not manually resize the window from hooks: transient zero-sized
-		// clients can otherwise force an invalid window size. A client refresh
-		// is safe and clears stale terminal cells after the final resize event.
+		// clients can otherwise force an invalid window size. Notify the pane's
+		// foreground process after tmux settles, then repaint the client.
 		{"set-hook", "-t", sessionName, "client-attached", "wait-for -S " + clientReadyChannel(sessionName)},
-		{"set-hook", "-t", sessionName, "client-resized", "refresh-client -S"},
+		{"set-hook", "-t", sessionName, "client-resized", resizeHookCommand(binary, socketPath)},
 		{"set-option", "-t", sessionName, "status", "off"},
 		{"set-option", "-t", sessionName, "focus-events", "on"},
 		{"set-window-option", "-t", sessionName, "aggressive-resize", "off"},
@@ -73,6 +73,28 @@ func waitForClientCommand(binary string, socketPath string, sessionName string, 
 func clientReadyChannel(sessionName string) string {
 	digest := sha256.Sum256([]byte(sessionName))
 	return fmt.Sprintf("agent-remote-client-%x", digest[:8])
+}
+
+func resizeHookCommand(binary string, socketPath string) string {
+	return "run-shell -b " + shellQuote(resizeShellCommand(binary, socketPath))
+}
+
+func resizeShellCommand(binary string, socketPath string) string {
+	tmux := []string{shellQuote(binary)}
+	if socketPath != "" {
+		tmux = append(tmux, "-S", shellQuote(socketPath))
+	}
+	tmux = append(tmux, "refresh-client", "-S", "-t", shellQuote("#{client_name}"))
+	script := strings.Join([]string{
+		"sleep 0.15",
+		"pgrp=$(ps -o tpgid= -p #{pane_pid} | tr -d ' ')",
+		"case \"$pgrp\" in ''|*[!0-9]*) exit 0 ;; esac",
+		"[ \"$pgrp\" -gt 0 ] || exit 0",
+		"kill -WINCH -- \"-$pgrp\" 2>/dev/null || true",
+		"sleep 0.05",
+		strings.Join(tmux, " "),
+	}, "; ")
+	return script
 }
 
 func shellQuote(value string) string {
