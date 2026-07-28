@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.2 - 2026-07-28
+
+- fix: initialize independent workspace git indexes (9189447)
+
 ## v0.0.5-fix.1 - 2026-07-28
 
 - fix: preserve multi-device SSH keys (b8d34ec)
