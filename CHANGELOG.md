@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.5-fix.7 - 2026-07-28
+
+- fix: repaint terminal clients after resize (8b1fe2f)
+
 ## v0.0.5-fix.6 - 2026-07-28
 
 - fix: signal resized process groups on linux (cd1a64a)
