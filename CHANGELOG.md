@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.6 - 2026-07-29
+
+- feat: add isolated session port forwarding gateway (a9dd571)
+- ci: add codecov reporting (84b2152)
+
 ## v0.0.5-fix.9 - 2026-07-28
 
 - fix: refresh resized and exited claude sessions (85b0d2e)
