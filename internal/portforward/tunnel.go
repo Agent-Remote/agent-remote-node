@@ -180,12 +180,13 @@ func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request)
 		http.Error(response, "invalid tunnel stream", http.StatusBadRequest)
 		return
 	}
+	if h.ctx.Err() != nil {
+		http.Error(response, "tunnel expired", http.StatusServiceUnavailable)
+		return
+	}
 	select {
 	case h.semaphore <- struct{}{}:
 		defer func() { <-h.semaphore }()
-	case <-h.ctx.Done():
-		http.Error(response, "tunnel expired", http.StatusServiceUnavailable)
-		return
 	default:
 		http.Error(response, "stream limit reached", http.StatusTooManyRequests)
 		return
