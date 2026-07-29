@@ -196,6 +196,15 @@ func TestStreamRequestRejectsDuplicateIdentityAndArbitraryHeaders(t *testing.T) 
 	}
 }
 
+func TestPublicErrorCodeUsesBoundedControlPlaneCodes(t *testing.T) {
+	if code := publicErrorCode(&api.HTTPError{StatusCode: http.StatusConflict, Code: "TUNNEL_EXPIRED"}); code != "TUNNEL_EXPIRED" {
+		t.Fatalf("unexpected typed error code %q", code)
+	}
+	if code := publicErrorCode(errors.New("private upstream details")); code != "CONTROL_PLANE_UNAVAILABLE" {
+		t.Fatalf("unexpected fallback error code %q", code)
+	}
+}
+
 func TestHandlerRejectsInvalidLimitedCancelledAndFailedStreams(t *testing.T) {
 	newHandler := func(ctx context.Context) handler {
 		return handler{

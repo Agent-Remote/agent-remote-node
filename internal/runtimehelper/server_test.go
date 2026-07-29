@@ -46,6 +46,21 @@ func TestServerExecutesValidProbeRequest(t *testing.T) {
 	}
 }
 
+func TestDuplicateKeyValidatorRejectsMalformedStructures(t *testing.T) {
+	for name, payload := range map[string][]byte{
+		"empty":             {},
+		"trailing object":   []byte(`{} {}`),
+		"incomplete object": []byte(`{"key":`),
+		"incomplete array":  []byte(`[{"key":1}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := rejectDuplicateJSONKeys(payload); err == nil {
+				t.Fatal("malformed JSON was accepted")
+			}
+		})
+	}
+}
+
 func roundTripHelperRequest(t *testing.T, payload []byte) Response {
 	t.Helper()
 	temporary, err := os.CreateTemp("", "agent-remote-runtime-*.sock")

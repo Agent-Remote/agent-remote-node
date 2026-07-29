@@ -68,3 +68,33 @@ func TestClientRejectsOversizedResponse(t *testing.T) {
 		t.Fatalf("expected response size error, got %v", err)
 	}
 }
+
+func TestPortForwardRenewReleaseAndUncodedHTTPError(t *testing.T) {
+	var methods []string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		methods = append(methods, request.Method+" "+request.URL.Path)
+		switch request.URL.Path {
+		case "/api/v1/node-api/port-forwards/forward-1/renew":
+			_, _ = io.WriteString(response, `{"data":{"forward_id":"forward-1","generation":1}}`)
+		case "/api/v1/node-api/port-forwards/forward-1/release":
+			response.WriteHeader(http.StatusNoContent)
+		default:
+			response.WriteHeader(http.StatusServiceUnavailable)
+		}
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "node-token")
+	if _, err := client.RenewPortForward(context.Background(), "forward-1", RenewPortForwardRequest{Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.ReleasePortForward(context.Background(), "forward-1", ReleasePortForwardRequest{Generation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := client.RedeemPortForward(context.Background(), RedeemPortForwardRequest{})
+	if err == nil || err.Error() != "server returned HTTP 503" {
+		t.Fatalf("unexpected uncoded HTTP error: %v", err)
+	}
+	if len(methods) != 3 {
+		t.Fatalf("unexpected requests: %v", methods)
+	}
+}
