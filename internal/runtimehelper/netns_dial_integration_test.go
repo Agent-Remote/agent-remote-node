@@ -28,6 +28,9 @@ func TestDialNetworkNamespaceLoopbackIntegration(t *testing.T) {
 	runNetnsCommand(t, "add", namespace)
 	defer exec.Command("ip", "netns", "delete", namespace).Run()
 	runNetnsCommand(t, "exec", namespace, "ip", "link", "set", "lo", "up")
+	for _, arguments := range namespaceFirewallCommands(SessionSpec{}) {
+		runNetnsCommand(t, append([]string{"exec", namespace, "nft"}, arguments...)...)
+	}
 
 	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

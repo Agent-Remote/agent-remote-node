@@ -1394,10 +1394,21 @@ func parseNFTForwardChains(data []byte) ([]nftForwardChain, error) {
 
 func (e Engine) applyNamespaceFirewall(ctx context.Context, spec SessionSpec) error {
 	namespace := spec.NetworkNamespace
+	for _, args := range namespaceFirewallCommands(spec) {
+		full := append([]string{"netns", "exec", namespace, e.config.NFTPath}, args...)
+		if err := runCommand(ctx, e.config.IPPath, full...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func namespaceFirewallCommands(spec SessionSpec) [][]string {
 	commands := [][]string{
 		{"add", "table", "inet", "agent_remote"},
 		{"add", "chain", "inet", "agent_remote", "output", "{", "type", "filter", "hook", "output", "priority", "0", ";", "policy", "drop", ";", "}"},
 		{"add", "rule", "inet", "agent_remote", "output", "ct", "state", "established,related", "accept"},
+		{"add", "rule", "inet", "agent_remote", "output", "oifname", "lo", "accept"},
 	}
 	denied := []string{"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8", "169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4"}
 	// Explicit administrator allow rules must precede the baseline private-range rejects.
@@ -1412,13 +1423,7 @@ func (e Engine) applyNamespaceFirewall(ctx context.Context, spec SessionSpec) er
 		[]string{"add", "rule", "inet", "agent_remote", "output", "ip6", "daddr", "::/0", "reject"},
 		[]string{"add", "rule", "inet", "agent_remote", "output", "ip", "daddr", "0.0.0.0/0", "accept"},
 	)
-	for _, args := range commands {
-		full := append([]string{"netns", "exec", namespace, e.config.NFTPath}, args...)
-		if err := runCommand(ctx, e.config.IPPath, full...); err != nil {
-			return err
-		}
-	}
-	return nil
+	return commands
 }
 
 type runtimeIdentity struct {

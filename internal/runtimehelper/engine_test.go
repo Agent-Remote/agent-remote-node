@@ -658,6 +658,22 @@ func TestParseNFTForwardChainsFindsIPv4Hooks(t *testing.T) {
 	}
 }
 
+func TestNamespaceFirewallAllowsSessionLoopbackBeforePrivateRejects(t *testing.T) {
+	commands := namespaceFirewallCommands(SessionSpec{})
+	loopbackAllow := []string{"add", "rule", "inet", "agent_remote", "output", "oifname", "lo", "accept"}
+	loopbackReject := []string{"add", "rule", "inet", "agent_remote", "output", "ip", "daddr", "127.0.0.0/8", "reject"}
+	privateReject := []string{"add", "rule", "inet", "agent_remote", "output", "ip", "daddr", "10.0.0.0/8", "reject"}
+	allowIndex := slices.IndexFunc(commands, func(command []string) bool { return slices.Equal(command, loopbackAllow) })
+	loopbackRejectIndex := slices.IndexFunc(commands, func(command []string) bool { return slices.Equal(command, loopbackReject) })
+	privateRejectIndex := slices.IndexFunc(commands, func(command []string) bool { return slices.Equal(command, privateReject) })
+	if allowIndex < 0 || loopbackRejectIndex < 0 || allowIndex >= loopbackRejectIndex {
+		t.Fatalf("session loopback must be allowed before private-range rejects: %#v", commands)
+	}
+	if privateRejectIndex < 0 {
+		t.Fatalf("private network rejects must remain enabled: %#v", commands)
+	}
+}
+
 func TestSaveSpecMetadataRemainsReadableWithRestrictiveUmask(t *testing.T) {
 	root := t.TempDir()
 	sessionRoot := filepath.Join(root, "sessions", "session_1")
