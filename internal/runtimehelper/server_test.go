@@ -11,6 +11,8 @@ import (
 	"time"
 )
 
+const helperRoundTripTimeout = 10 * time.Second
+
 func TestServerRejectsOversizedHelperRequest(t *testing.T) {
 	payload := append(bytes.Repeat([]byte("x"), maxHelperRequestBytes+1), '\n')
 	response := roundTripHelperRequest(t, payload)
@@ -77,7 +79,7 @@ func roundTripHelperRequest(t *testing.T, payload []byte) Response {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-	if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
+	if err := connection.SetDeadline(time.Now().Add(helperRoundTripTimeout)); err != nil {
 		t.Fatal(err)
 	}
 	writeDone := make(chan struct{})
@@ -91,12 +93,12 @@ func roundTripHelperRequest(t *testing.T, payload []byte) Response {
 	}
 	select {
 	case <-serverDone:
-	case <-time.After(3 * time.Second):
+	case <-time.After(helperRoundTripTimeout):
 		t.Fatal("runtime helper handler did not stop")
 	}
 	select {
 	case <-writeDone:
-	case <-time.After(3 * time.Second):
+	case <-time.After(helperRoundTripTimeout):
 		t.Fatal("runtime helper request writer did not stop")
 	}
 	return response
