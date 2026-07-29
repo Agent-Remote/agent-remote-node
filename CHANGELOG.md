@@ -2,6 +2,12 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.0.6-fix.1 - 2026-07-29
+
+- fix: allow native session loopback traffic (cd59700)
+- test: cover invalid forwarding lease expiry (8d578b9)
+- test: cover port forwarding failure contracts (693666e)
+
 ## v0.0.6 - 2026-07-29
 
 - fix: prioritize cancelled tunnel contexts (a819b1b)
