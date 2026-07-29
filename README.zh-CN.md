@@ -63,6 +63,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-
 
 Native developer credential profile 提供持久 Git 和 GitHub CLI 配置目录。SSH 私钥始终留在客户端：仅获授权的 `ssh -A` attach 会在连接存活期间通过 session 级 Unix socket 代理到 runtime。gateway 仍禁止 TCP 转发、X11 转发和用户 SSH rc。
 
+Session 端口转发使用独立的无 PTY forced command，不会开启 OpenSSH TCP forwarding。Node 兑换绑定设备和 SSH key 的一次性 token 后，一条 HTTP/2 隧道只承载一个已授权 runtime loopback 端口的 CONNECT stream。特权 Runtime Helper 自行解析受管 session network namespace，并仅通过 `SCM_RIGHTS` 返回已经连接的 socket FD；客户端不能提供 host、IP、PID、namespace path 或 container ID。当前 heartbeat 只为 Native Runtime 上报该能力；Docker Sandbox 在具备等价且可审计的 network namespace 路径前保持关闭。
+
 Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑定 attach 与普通 session 共用 forced-command gateway，并在每次连接时重新向控制面鉴权。
 
 `create_browser_session` 节点任务默认启动临时 Kasm Chrome 容器。浏览器运行时会接收时区、locale、启动 URL、incognito Chrome 参数和临时 VNC 密码。它不会挂载 workspace 或工具账户目录。`stop_browser_session` 会删除容器以及 `browser_root` 下的临时 profile 目录。
@@ -100,6 +102,8 @@ Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑�
 ```
 
 配置文件包含节点凭据，必须使用部署级文件权限保存。
+
+Session 转发不会创建公网 listener、Docker 端口发布、NAT 规则或动态 WireGuard ACL，现有受限 SSH 端口是唯一数据入口。启用控制面策略前必须先升级 Runtime Helper 和 Node 服务。
 
 `browser_public_base_url` 是可选项。为空时，节点会报告 KasmVNC 的本地 Docker 端口映射。在部署环境中，应将其设置为能访问浏览器容器 stream endpoint 的节点侧 HTTPS 反向代理 URL。
 

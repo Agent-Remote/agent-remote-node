@@ -59,6 +59,19 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string) api.R
 			capabilities.Backends = append(capabilities.Backends, backend)
 		}
 	}
+	if slices.Contains(capabilities.Backends, "native") && capabilities.Native["network_ns"] {
+		capabilities.SessionPortForwarding = api.SessionPortForwardingCapability{
+			Supported:        true,
+			ProtocolVersions: []int{1},
+			Backends:         []string{"native"},
+			MaxStreams:       128,
+		}
+	} else {
+		capabilities.SessionPortForwarding = api.SessionPortForwardingCapability{
+			ProtocolVersions: []int{},
+			Backends:         []string{},
+		}
+	}
 	return capabilities
 }
 

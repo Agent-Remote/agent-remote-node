@@ -2,16 +2,21 @@ package runtimehelper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 )
+
+const maxHelperRequestBytes = 1 << 20
 
 // Server exposes the privileged engine only on a root-owned Unix socket.
 type Server struct {
@@ -74,11 +79,30 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		_ = json.NewEncoder(connection).Encode(errorResponse("FORBIDDEN_PEER", "Runtime helper peer is not authorized."))
 		return
 	}
-	decoder := json.NewDecoder(bufio.NewReader(connection))
+	reader := bufio.NewReader(io.LimitReader(connection, maxHelperRequestBytes+1))
+	data, err := reader.ReadBytes('\n')
+	if err != nil || len(data) > maxHelperRequestBytes {
+		_ = json.NewEncoder(connection).Encode(errorResponse("INVALID_REQUEST", "Runtime helper request is invalid."))
+		return
+	}
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		_ = json.NewEncoder(connection).Encode(errorResponse("INVALID_REQUEST", "Runtime helper request is invalid."))
+		return
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	encoder := json.NewEncoder(connection)
 	var request Request
 	if err := decoder.Decode(&request); err != nil {
 		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request is invalid."))
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request has trailing data."))
+		return
+	}
+	if request.Operation == "dial_session_loopback" {
+		s.handleSessionLoopback(ctx, connection, request)
 		return
 	}
 	s.mu.Lock()
@@ -89,6 +113,95 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		return
 	}
 	_ = encoder.Encode(Response{Version: ProtocolVersion, OK: true, Result: result})
+}
+
+func rejectDuplicateJSONKeys(payload []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	if err := validateJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("JSON value has trailing data")
+	}
+	return nil
+}
+
+func validateJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("JSON object key is invalid")
+			}
+			if _, exists := seen[key]; exists {
+				return errors.New("JSON object contains a duplicate key")
+			}
+			seen[key] = struct{}{}
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("JSON object is incomplete")
+		}
+	case '[':
+		for decoder.More() {
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("JSON array is incomplete")
+		}
+	default:
+		return errors.New("JSON delimiter is invalid")
+	}
+	return nil
+}
+
+func (s *Server) handleSessionLoopback(ctx context.Context, connection net.Conn, request Request) {
+	unixConnection, ok := connection.(*net.UnixConn)
+	if !ok {
+		_ = json.NewEncoder(connection).Encode(errorResponse("INVALID_REQUEST", "Runtime helper requires a Unix connection."))
+		return
+	}
+	forwardedConnection, err := s.engine.DialSessionLoopback(ctx, request)
+	if err != nil {
+		_ = json.NewEncoder(connection).Encode(errorResponse(classifyError(err), publicError(err)))
+		return
+	}
+	defer forwardedConnection.Close()
+	file, err := forwardedConnection.File()
+	if err != nil {
+		_ = json.NewEncoder(connection).Encode(errorResponse("RUNTIME_FAILED", "Runtime connection could not be transferred."))
+		return
+	}
+	defer file.Close()
+	data, err := json.Marshal(Response{Version: ProtocolVersion, OK: true, Result: map[string]any{"connected": true}})
+	if err != nil {
+		return
+	}
+	data = append(data, '\n')
+	written, _, err := unixConnection.WriteMsgUnix(data, syscall.UnixRights(int(file.Fd())), nil)
+	if err != nil || written != len(data) {
+		return
+	}
 }
 
 func errorResponse(code string, message string) Response {

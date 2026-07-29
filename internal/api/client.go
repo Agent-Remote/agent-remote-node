@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
 )
+
+const maxResponseBodyBytes = 1 << 20
 
 // Client talks to agent-remote-server.
 type Client struct {
@@ -92,12 +95,21 @@ type RuntimeStatus struct {
 
 // RuntimeCapabilities describes independently detected node runtimes.
 type RuntimeCapabilities struct {
-	Backends      []string          `json:"backends"`
-	Native        map[string]bool   `json:"native"`
-	DockerSandbox map[string]bool   `json:"docker_sandbox"`
-	BrowserDocker map[string]bool   `json:"browser_docker"`
-	Dependencies  map[string]string `json:"dependencies"`
-	ProbeErrors   []string          `json:"probe_errors"`
+	Backends              []string                        `json:"backends"`
+	Native                map[string]bool                 `json:"native"`
+	DockerSandbox         map[string]bool                 `json:"docker_sandbox"`
+	BrowserDocker         map[string]bool                 `json:"browser_docker"`
+	Dependencies          map[string]string               `json:"dependencies"`
+	ProbeErrors           []string                        `json:"probe_errors"`
+	SessionPortForwarding SessionPortForwardingCapability `json:"session_port_forwarding"`
+}
+
+// SessionPortForwardingCapability describes the tunnel protocols and runtime backends the node can safely serve.
+type SessionPortForwardingCapability struct {
+	Supported        bool     `json:"supported"`
+	ProtocolVersions []int    `json:"protocol_versions"`
+	Backends         []string `json:"backends"`
+	MaxStreams       int      `json:"max_streams"`
 }
 
 // TaskEnvelope is a leased task.
@@ -171,6 +183,66 @@ type VerifySyncResponse struct {
 	RequestID string `json:"request_id"`
 }
 
+// RedeemPortForwardRequest exchanges a one-time tunnel token for a renewable lease.
+type RedeemPortForwardRequest struct {
+	ForwardID    string `json:"forward_id"`
+	DeviceID     string `json:"device_id"`
+	SSHKeyID     string `json:"ssh_key_id"`
+	ConnectToken string `json:"connect_token"`
+}
+
+// PortForwardLease contains the fixed runtime target and authorization generation.
+type PortForwardLease struct {
+	ForwardID                string `json:"forward_id"`
+	SessionID                string `json:"session_id"`
+	RuntimeBackend           string `json:"runtime_backend"`
+	RuntimeResourceID        string `json:"runtime_resource_id"`
+	RemotePort               int    `json:"remote_port"`
+	Generation               int    `json:"generation"`
+	LeaseExpiresAt           string `json:"lease_expires_at"`
+	MaxStreams               int    `json:"max_streams"`
+	BytesPerSecond           int    `json:"bytes_per_second"`
+	ControlPlaneGraceSeconds int    `json:"control_plane_grace_seconds"`
+}
+
+// PortForwardLeaseResponse wraps a port-forward authorization lease.
+type PortForwardLeaseResponse struct {
+	Data      PortForwardLease `json:"data"`
+	RequestID string           `json:"request_id"`
+}
+
+// RenewPortForwardRequest reports generation totals while extending a lease.
+type RenewPortForwardRequest struct {
+	Generation           int   `json:"generation"`
+	BytesUpTotal         int64 `json:"bytes_up_total"`
+	BytesDownTotal       int64 `json:"bytes_down_total"`
+	ConnectionCountTotal int64 `json:"connection_count_total"`
+}
+
+// ReleasePortForwardRequest reports final generation totals when a tunnel disconnects.
+type ReleasePortForwardRequest struct {
+	Generation           int    `json:"generation"`
+	BytesUpTotal         int64  `json:"bytes_up_total"`
+	BytesDownTotal       int64  `json:"bytes_down_total"`
+	ConnectionCountTotal int64  `json:"connection_count_total"`
+	Reason               string `json:"reason"`
+}
+
+// HTTPError is a bounded control-plane error suitable for authorization decisions.
+type HTTPError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+// Error returns a bounded description without response bodies or credentials.
+func (e *HTTPError) Error() string {
+	if e.Code != "" {
+		return fmt.Sprintf("server returned HTTP %d (%s)", e.StatusCode, e.Code)
+	}
+	return fmt.Sprintf("server returned HTTP %d", e.StatusCode)
+}
+
 // ReconcileRequest is a node reconciliation payload.
 type ReconcileRequest struct {
 	NodeID   string         `json:"node_id"`
@@ -240,6 +312,25 @@ func (c Client) VerifySync(ctx context.Context, request VerifySyncRequest) (Veri
 	return response, err
 }
 
+// RedeemPortForward exchanges a one-time connection token for a lease.
+func (c Client) RedeemPortForward(ctx context.Context, request RedeemPortForwardRequest) (PortForwardLeaseResponse, error) {
+	var response PortForwardLeaseResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/port-forwards/redeem", request, &response, true)
+	return response, err
+}
+
+// RenewPortForward extends a lease and reports aggregate usage deltas.
+func (c Client) RenewPortForward(ctx context.Context, forwardID string, request RenewPortForwardRequest) (PortForwardLeaseResponse, error) {
+	var response PortForwardLeaseResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/port-forwards/"+forwardID+"/renew", request, &response, true)
+	return response, err
+}
+
+// ReleasePortForward releases a tunnel generation and reports final usage deltas.
+func (c Client) ReleasePortForward(ctx context.Context, forwardID string, request ReleasePortForwardRequest) error {
+	return c.do(ctx, http.MethodPost, "/api/v1/node-api/port-forwards/"+forwardID+"/release", request, nil, true)
+}
+
 // Reconcile submits a reconciliation snapshot.
 func (c Client) Reconcile(ctx context.Context, request ReconcileRequest) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/node-api/reconcile", request, nil, true)
@@ -267,12 +358,26 @@ func (c Client) do(ctx context.Context, method string, path string, payload any,
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return err
 	}
+	if len(data) > maxResponseBodyBytes {
+		return errors.New("server response exceeds size limit")
+	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("server returned %s: %s", resp.Status, string(data))
+		var envelope struct {
+			Error struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		_ = json.Unmarshal(data, &envelope)
+		return &HTTPError{
+			StatusCode: resp.StatusCode,
+			Code:       envelope.Error.Code,
+			Message:    envelope.Error.Message,
+		}
 	}
 	if out == nil {
 		return nil

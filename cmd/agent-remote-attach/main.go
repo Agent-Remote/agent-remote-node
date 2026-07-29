@@ -6,12 +6,20 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strings"
+	"sync"
+	"syscall"
+	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
+	"github.com/Agent-Remote/agent-remote-node/internal/portforward"
+	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
@@ -32,6 +40,7 @@ func run(args []string) error {
 	sessionID := fs.String("session", "", "session ID")
 	bindingID := fs.String("binding", "", "tool account ID for a binding session")
 	deviceID := fs.String("device", "", "device ID")
+	sshKeyID := fs.String("ssh-key", "", "SSH key ID from the forced-command identity")
 	dryRun := fs.Bool("dry-run", false, "print tmux command without executing")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -49,13 +58,23 @@ func run(args []string) error {
 	if *sessionID != "" && *bindingID != "" {
 		return fmt.Errorf("session and binding are mutually exclusive")
 	}
+	originalCommand := os.Getenv("SSH_ORIGINAL_COMMAND")
+	if *sessionID == "" && *bindingID == "" {
+		if forwardID, tunnelErr := tunnelFromOriginalCommand(originalCommand); tunnelErr == nil {
+			if *sshKeyID == "" {
+				return fmt.Errorf("SSH key is required for port forwarding")
+			}
+			return runTunnelGateway(cfg, *deviceID, *sshKeyID, forwardID, *dryRun)
+		} else if strings.HasPrefix(strings.TrimSpace(originalCommand), "agent-remote-tunnel") {
+			return tunnelErr
+		}
+	}
 	targetKind := "session"
 	targetID := *sessionID
 	if *bindingID != "" {
 		targetKind, targetID = "binding", *bindingID
 	}
 	if targetID == "" {
-		originalCommand := os.Getenv("SSH_ORIGINAL_COMMAND")
 		if kind, id, parseErr := attachTargetFromOriginalCommand(originalCommand); parseErr == nil {
 			targetKind, targetID = kind, id
 		} else {
@@ -112,6 +131,22 @@ func run(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func runTunnelGateway(cfg config.Config, deviceID string, sshKeyID string, forwardID string, dryRun bool) error {
+	if dryRun {
+		fmt.Printf("agent-remote tunnel %s\n", forwardID)
+		return nil
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	connection := &stdioConnection{reader: os.Stdin, writer: os.Stdout}
+	return portforward.Serve(ctx, portforward.Config{
+		ForwardID: forwardID, DeviceID: deviceID, SSHKeyID: sshKeyID,
+		Client:     api.NewClient(cfg.ServerURL, cfg.NodeToken),
+		Runtime:    runtimehelper.NewClient(cfg.RuntimeSocketPath),
+		Connection: connection,
+	})
 }
 
 func defaultConfigPath() string {
@@ -178,3 +213,86 @@ func attachTargetFromOriginalCommand(command string) (string, string, error) {
 	}
 	return strings.TrimPrefix(fields[1], "--"), fields[2], nil
 }
+
+func tunnelFromOriginalCommand(command string) (string, error) {
+	fields := strings.Fields(command)
+	if len(fields) != 5 || fields[0] != "agent-remote-tunnel" || fields[1] != "--forward" || fields[3] != "--protocol" || fields[4] != "1" {
+		return "", fmt.Errorf("SSH command is not an allowed agent-remote tunnel request")
+	}
+	if err := validateCommandID(fields[2], "forward ID"); err != nil {
+		return "", err
+	}
+	return fields[2], nil
+}
+
+func validateCommandID(value string, name string) error {
+	if value == "" || len(value) > 128 {
+		return fmt.Errorf("%s is invalid", name)
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') ||
+			(character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') ||
+			character == '-' || character == '_' || character == ':' {
+			continue
+		}
+		return fmt.Errorf("%s contains unsafe characters", name)
+	}
+	return nil
+}
+
+type stdioConnection struct {
+	reader io.ReadCloser
+	writer io.WriteCloser
+	once   sync.Once
+}
+
+func (c *stdioConnection) Read(payload []byte) (int, error) {
+	return c.reader.Read(payload)
+}
+
+func (c *stdioConnection) Write(payload []byte) (int, error) {
+	return c.writer.Write(payload)
+}
+
+func (c *stdioConnection) Close() error {
+	var closeErr error
+	c.once.Do(func() {
+		if err := c.reader.Close(); err != nil {
+			closeErr = err
+		}
+		if err := c.writer.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+	})
+	return closeErr
+}
+
+func (c *stdioConnection) LocalAddr() net.Addr  { return stdioAddress("local-stdio") }
+func (c *stdioConnection) RemoteAddr() net.Addr { return stdioAddress("remote-stdio") }
+func (c *stdioConnection) SetDeadline(deadline time.Time) error {
+	if reader, ok := c.reader.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = reader.SetDeadline(deadline)
+	}
+	if writer, ok := c.writer.(interface{ SetDeadline(time.Time) error }); ok {
+		_ = writer.SetDeadline(deadline)
+	}
+	return nil
+}
+func (c *stdioConnection) SetReadDeadline(deadline time.Time) error {
+	if reader, ok := c.reader.(interface{ SetReadDeadline(time.Time) error }); ok {
+		return reader.SetReadDeadline(deadline)
+	}
+	return nil
+}
+func (c *stdioConnection) SetWriteDeadline(deadline time.Time) error {
+	if writer, ok := c.writer.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		return writer.SetWriteDeadline(deadline)
+	}
+	return nil
+}
+
+type stdioAddress string
+
+func (a stdioAddress) Network() string { return "stdio" }
+func (a stdioAddress) String() string  { return string(a) }

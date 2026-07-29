@@ -1,6 +1,7 @@
 package runtimehelper
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -146,6 +147,40 @@ type Engine struct {
 // NewEngine creates a privileged runtime engine.
 func NewEngine(config EngineConfig) Engine {
 	return Engine{config: config.WithDefaults()}
+}
+
+// DialSessionLoopback connects to one fixed loopback port inside a managed session namespace.
+func (e Engine) DialSessionLoopback(ctx context.Context, request Request) (*net.TCPConn, error) {
+	if request.Version != ProtocolVersion {
+		return nil, fmt.Errorf("unsupported protocol version %d", request.Version)
+	}
+	if err := validateID(request.RequestID, "request_id"); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(request.Payload)
+	if err != nil {
+		return nil, errors.New("dial session loopback payload is invalid")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var payload DialSessionLoopbackPayload
+	if err := decoder.Decode(&payload); err != nil {
+		return nil, errors.New("dial session loopback payload is invalid")
+	}
+	if payload.RuntimeBackend != "native" {
+		return nil, errors.New("session port forwarding backend is unsupported")
+	}
+	if err := validateID(payload.SessionID, "session_id"); err != nil {
+		return nil, err
+	}
+	if payload.Port < 1 || payload.Port > 65535 {
+		return nil, errors.New("session loopback port is invalid")
+	}
+	spec, err := readTrustedSpec(e.config, e.specPath(payload.SessionID))
+	if err != nil {
+		return nil, fmt.Errorf("managed session is unavailable: %w", err)
+	}
+	return dialNetworkNamespaceLoopback(ctx, spec.NetworkNamespace, payload.Port)
 }
 
 // Execute performs one idempotent declarative operation.

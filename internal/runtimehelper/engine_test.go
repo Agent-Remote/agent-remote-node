@@ -134,6 +134,47 @@ func TestCleanupResourcesIsIdempotentForMissingSession(t *testing.T) {
 	}
 }
 
+func TestDialSessionLoopbackRejectsUnmanagedTargets(t *testing.T) {
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
+	for name, request := range map[string]Request{
+		"version": {
+			Version: ProtocolVersion + 1, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "native", "port": 5173},
+		},
+		"request ID": {
+			Version: ProtocolVersion, RequestID: "../request", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "native", "port": 5173},
+		},
+		"backend": {
+			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "docker_sandbox", "port": 5173},
+		},
+		"port": {
+			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "native", "port": 0},
+		},
+		"unknown target": {
+			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "native", "port": 5173, "host": "169.254.169.254"},
+		},
+		"session ID": {
+			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "../session", "runtime_backend": "native", "port": 5173},
+		},
+		"missing managed spec": {
+			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "native", "port": 5173},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if connection, err := engine.DialSessionLoopback(context.Background(), request); err == nil {
+				connection.Close()
+				t.Fatal("expected unmanaged target to be rejected")
+			}
+		})
+	}
+}
+
 func TestSessionProcessExitRequiresSameBootMarker(t *testing.T) {
 	sessionRoot := t.TempDir()
 	spec := SessionSpec{SessionRoot: sessionRoot, BootID: "boot-1"}

@@ -63,6 +63,8 @@ go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-
 
 Native developer credential profiles provide persistent Git and GitHub CLI configuration directories. SSH private keys remain on the client: only an authorized `ssh -A` attach is bridged through a session-local Unix socket, and only while that connection is active. The gateway continues to deny TCP forwarding, X11 forwarding, and user SSH rc execution.
 
+Session port forwarding uses a separate no-PTY forced command and does not enable OpenSSH TCP forwarding. After redeeming a device- and SSH-key-bound one-time token, one HTTP/2 tunnel carries CONNECT streams for exactly one authorized runtime loopback port. The privileged Runtime Helper resolves the managed session network namespace itself and returns only an already-connected socket FD over `SCM_RIGHTS`; clients cannot provide a host, IP, PID, namespace path, or container ID. Heartbeats currently advertise this capability for Native Runtime only. Docker Sandbox remains disabled for forwarding until an equivalent audited network-namespace path is available.
+
 Native account binding requires a registered device token and an active SSH key. Binding attach uses the same forced-command gateway as normal sessions and is re-authorized by the control plane on every connection.
 
 `create_browser_session` node tasks start a temporary Kasm Chrome container by default. The browser runtime receives timezone, locale, launch URL, incognito Chrome arguments, and a temporary VNC password. It does not mount workspace or tool-account directories. `stop_browser_session` removes the container and the temporary profile directory under `browser_root`.
@@ -100,6 +102,8 @@ Native account binding requires a registered device token and an active SSH key.
 ```
 
 The config file contains node credentials and must be stored with deployment-level file permissions.
+
+No public listener, Docker port publish, NAT rule, or dynamic WireGuard ACL is created for session forwards. The existing restricted SSH port is the only data-plane entry. Runtime Helper and node services must be upgraded before enabling the control-plane policy.
 
 `browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.
 
