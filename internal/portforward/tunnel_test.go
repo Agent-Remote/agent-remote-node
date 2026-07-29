@@ -463,6 +463,17 @@ func TestLeaseFailureDeadlineIncludesControlPlaneGrace(t *testing.T) {
 	}
 }
 
+func TestInvalidLeaseExpirationFailsClosed(t *testing.T) {
+	lease := testLease()
+	lease.LeaseExpiresAt = "not-a-timestamp"
+	if err := validateLease("forward-1", lease); err == nil {
+		t.Fatal("invalid lease expiration was accepted")
+	}
+	if deadline := leaseFailureDeadline(lease); time.Until(deadline) > 100*time.Millisecond {
+		t.Fatalf("invalid lease expiration did not fail immediately: %s", deadline)
+	}
+}
+
 func TestBandwidthLimiterHonorsCancellationWhileQueued(t *testing.T) {
 	limiter := newBandwidthLimiter(1)
 	if err := limiter.wait(context.Background(), 1); err != nil {
