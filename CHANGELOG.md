@@ -4,6 +4,8 @@ All notable changes to this repository are recorded here.
 
 ## v0.0.6 - 2026-07-29
 
+- fix: prioritize cancelled tunnel contexts (a819b1b)
+- chore: release v0.0.6 (1a7e25e)
 - feat: add isolated session port forwarding gateway (a9dd571)
 - ci: add codecov reporting (84b2152)
 
