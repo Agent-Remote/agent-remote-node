@@ -674,6 +674,39 @@ func TestNamespaceFirewallAllowsSessionLoopbackBeforePrivateRejects(t *testing.T
 	}
 }
 
+func TestApplyNamespaceFirewallRunsAllCommands(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "ip.log")
+	ipPath := writeTestCommand(t, "ip", `printf '%s\n' "$*" >> "$IP_LOG"`)
+	t.Setenv("IP_LOG", logPath)
+	engine := NewEngine(EngineConfig{IPPath: ipPath, NFTPath: "/test/nft"})
+	spec := SessionSpec{NetworkNamespace: "agent-remote-test"}
+
+	if err := engine.applyNamespaceFirewall(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	output, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) != len(namespaceFirewallCommands(spec)) {
+		t.Fatalf("expected %d firewall commands, got %d: %q", len(namespaceFirewallCommands(spec)), len(lines), output)
+	}
+	if lines[0] != "netns exec agent-remote-test /test/nft add table inet agent_remote" {
+		t.Fatalf("unexpected first firewall command: %q", lines[0])
+	}
+}
+
+func TestApplyNamespaceFirewallReturnsCommandFailure(t *testing.T) {
+	ipPath := writeTestCommand(t, "ip", `echo "nft unavailable" >&2; exit 42`)
+	engine := NewEngine(EngineConfig{IPPath: ipPath, NFTPath: "/test/nft"})
+
+	err := engine.applyNamespaceFirewall(context.Background(), SessionSpec{NetworkNamespace: "agent-remote-test"})
+	if err == nil || !strings.Contains(err.Error(), "nft unavailable") {
+		t.Fatalf("expected firewall command failure, got %v", err)
+	}
+}
+
 func TestSaveSpecMetadataRemainsReadableWithRestrictiveUmask(t *testing.T) {
 	root := t.TempDir()
 	sessionRoot := filepath.Join(root, "sessions", "session_1")
