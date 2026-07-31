@@ -465,6 +465,9 @@ func TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths(t *testing.T) {
 
 // TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely verifies generation-bound context updates.
 func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("managed device-control specs require root-owned runtime state on Linux")
+	}
 	engine, spec := managedDeviceControlTestEngine(t)
 	now := time.Now().UTC()
 	payload := map[string]any{

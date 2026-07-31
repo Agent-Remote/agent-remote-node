@@ -7,6 +7,7 @@ All notable changes to this repository are recorded here.
 - feat: add the managed device control bridge and bundled proxy runtime
 - feat: enforce exact session bindings and persist bounded activation manifests
 - build: package version-matched standalone and embedded device proxies
+- test: run root-owned device context coverage only with Linux privileges
 - test: cover namespace firewall execution (c4d82b8)
 
 ## v0.0.6-fix.1 - 2026-07-29
