@@ -796,6 +796,12 @@ install_packaged() {
   run_as_root install -m 0755 "$package_dir/scripts/install-nodejs-runtime.sh" "$PREFIX/lib/agent-remote-node/install-nodejs-runtime.sh"
   run_as_root install -m 0755 "$package_dir/scripts/install-device-proxy.sh" "$PREFIX/lib/agent-remote-node/install-device-proxy.sh"
 
+  # Install the managed device proxy immediately while the extracted package
+  # directory is still available. The proxy file is architecture-specific and
+  # lives in the temporary download directory; installing it before the longer
+  # Claude/Node.js runtime downloads avoids race conditions with temp cleanup.
+  install_managed_device_proxy
+
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
     run_as_root install -d -m 0710 -o root -g "$USER_NAME" "$DATA_DIR/users"
@@ -1061,7 +1067,6 @@ else
 fi
 install_managed_claude
 install_managed_nodejs
-install_managed_device_proxy
 register_node
 configure_wireguard
 start_and_verify
