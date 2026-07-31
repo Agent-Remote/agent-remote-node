@@ -96,7 +96,8 @@ jobs:
         run: |
           set -euo pipefail
           for archive in dist/*.tar.gz; do
-            sha256sum "$archive" > "$archive.sha256"
+            archive_name=$(basename "$archive")
+            (cd dist && sha256sum "$archive_name" > "$archive_name.sha256")
           done
       - name: Generate Node release SBOM
         uses: anchore/sbom-action@v0
@@ -136,7 +137,7 @@ jobs:
             --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
             "$sbom"
           for archive in dist/*.tar.gz; do
-            sha256sum --check "$archive.sha256"
+            (cd dist && sha256sum --check "$(basename "$archive").sha256")
             cosign verify-blob \
               --bundle "$archive.sigstore.json" \
               --certificate-identity \
