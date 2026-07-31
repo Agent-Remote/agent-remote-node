@@ -199,14 +199,16 @@ if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
 fi
 
 package="$WORK/package"
-mkdir -p "$package/scripts"
+mkdir -p "$package/scripts" "$package/device"
 cp "$ROOT/scripts/install.sh" "$package/install.sh"
 cp "$ROOT/scripts/install-claude-runtime.sh" "$package/scripts/install-claude-runtime.sh"
 cp "$ROOT/scripts/install-nodejs-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
 cp "$ROOT/scripts/install-device-proxy.sh" "$package/scripts/install-device-proxy.sh"
+cp "$fake_device_proxy" "$package/device/agent-remote-device-proxy"
 cp "$ROOT/config.example.json" "$package/config.example.json"
 printf '7.7.7\n' > "$package/VERSION"
-chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh" "$package/scripts/install-device-proxy.sh"
+printf '1.2.3\n' > "$package/device/VERSION"
+chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh" "$package/scripts/install-device-proxy.sh" "$package/device/agent-remote-device-proxy"
 
 cat > "$package/agent-remote-node" <<'EOF'
 #!/bin/sh
