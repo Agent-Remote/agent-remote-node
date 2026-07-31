@@ -30,27 +30,33 @@ type DeveloperCredentials struct {
 	SSHMode     string         `json:"ssh_mode"`
 }
 
+// DeviceControlConfiguration enables the managed device MCP protocol for one session.
+type DeviceControlConfiguration struct {
+	ProtocolVersion int `json:"protocol_version"`
+}
+
 // CreatePayload describes a create_tool_session task payload.
 type CreatePayload struct {
-	SessionID                      string                `json:"session_id"`
-	ToolAccountID                  string                `json:"tool_account_id"`
-	ToolType                       string                `json:"tool_type"`
-	UserID                         string                `json:"user_id"`
-	WorkspaceID                    string                `json:"workspace_id"`
-	ProjectKey                     string                `json:"project_key"`
-	WorkspaceRemotePath            string                `json:"workspace_remote_path"`
-	AccountRemotePath              string                `json:"account_remote_path"`
-	DeveloperCredentialProfilePath string                `json:"developer_credential_profile_path"`
-	DeveloperCredentials           *DeveloperCredentials `json:"developer_credentials"`
-	SyncGit                        bool                  `json:"sync_git"`
-	TmuxSessionName                string                `json:"tmux_session_name"`
-	SandboxName                    string                `json:"sandbox_name"`
-	Timezone                       string                `json:"timezone"`
-	Locale                         string                `json:"locale"`
-	Argv                           []string              `json:"argv"`
-	Template                       RuntimeTemplate       `json:"template"`
-	RuntimeBackend                 string                `json:"runtime_backend"`
-	RuntimePolicy                  map[string]any        `json:"runtime_policy"`
+	SessionID                      string                      `json:"session_id"`
+	ToolAccountID                  string                      `json:"tool_account_id"`
+	ToolType                       string                      `json:"tool_type"`
+	UserID                         string                      `json:"user_id"`
+	WorkspaceID                    string                      `json:"workspace_id"`
+	ProjectKey                     string                      `json:"project_key"`
+	WorkspaceRemotePath            string                      `json:"workspace_remote_path"`
+	AccountRemotePath              string                      `json:"account_remote_path"`
+	DeveloperCredentialProfilePath string                      `json:"developer_credential_profile_path"`
+	DeveloperCredentials           *DeveloperCredentials       `json:"developer_credentials"`
+	SyncGit                        bool                        `json:"sync_git"`
+	TmuxSessionName                string                      `json:"tmux_session_name"`
+	SandboxName                    string                      `json:"sandbox_name"`
+	Timezone                       string                      `json:"timezone"`
+	Locale                         string                      `json:"locale"`
+	Argv                           []string                    `json:"argv"`
+	Template                       RuntimeTemplate             `json:"template"`
+	RuntimeBackend                 string                      `json:"runtime_backend"`
+	RuntimePolicy                  map[string]any              `json:"runtime_policy"`
+	DeviceControl                  *DeviceControlConfiguration `json:"device_control"`
 }
 
 // CreateResult describes the prepared tool session.
@@ -123,6 +129,14 @@ func DecodeCreatePayload(payload map[string]any) (CreatePayload, error) {
 	}
 	if decoded.RuntimeBackend == "" {
 		decoded.RuntimeBackend = "docker_sandbox"
+	}
+	if decoded.DeviceControl != nil {
+		if decoded.ToolType != "claude" || decoded.RuntimeBackend != "native" {
+			return CreatePayload{}, errors.New("device control requires a native Claude session")
+		}
+		if decoded.DeviceControl.ProtocolVersion != 1 {
+			return CreatePayload{}, errors.New("device-control protocol version is unsupported")
+		}
 	}
 	if _, ok := payload["sync_git"]; !ok {
 		decoded.SyncGit = true

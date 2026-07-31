@@ -2,17 +2,24 @@ package runtimehelper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"syscall"
 	"time"
 )
 
-const ProtocolVersion = 1
+const (
+	// ProtocolVersion is the current local runtime-helper protocol version.
+	ProtocolVersion            = 1
+	maxHelperResponseBytes     = 1 << 20
+	maxHelperDialResponseBytes = 8 << 10
+)
 
 // Request is the versioned local runtime-helper request envelope.
 type Request struct {
@@ -79,8 +86,8 @@ func (c Client) Call(ctx context.Context, requestID string, operation string, pa
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return nil, fmt.Errorf("encode runtime helper request: %w", err)
 	}
-	var response Response
-	if err := json.NewDecoder(bufio.NewReader(connection)).Decode(&response); err != nil {
+	response, err := readHelperResponse(connection)
+	if err != nil {
 		return nil, fmt.Errorf("decode runtime helper response: %w", err)
 	}
 	if response.Version != ProtocolVersion {
@@ -126,14 +133,22 @@ func (c Client) DialSessionLoopback(ctx context.Context, requestID string, paylo
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return nil, fmt.Errorf("encode runtime helper dial request: %w", err)
 	}
-	data := make([]byte, 8192)
+	data := make([]byte, maxHelperDialResponseBytes+1)
 	oob := make([]byte, syscall.CmsgSpace(4))
-	dataLength, oobLength, _, _, err := unixConnection.ReadMsgUnix(data, oob)
+	dataLength, oobLength, flags, _, err := unixConnection.ReadMsgUnix(data, oob)
 	if err != nil {
 		return nil, fmt.Errorf("read runtime helper dial response: %w", err)
 	}
-	var response Response
-	if err := json.Unmarshal(data[:dataLength], &response); err != nil {
+	fileDescriptors, err := parseFileDescriptors(oob[:oobLength])
+	if err != nil {
+		return nil, err
+	}
+	defer func() { closeFileDescriptors(fileDescriptors) }()
+	if dataLength == 0 || dataLength > maxHelperDialResponseBytes || flags&(syscall.MSG_TRUNC|syscall.MSG_CTRUNC) != 0 {
+		return nil, errors.New("runtime helper dial response is invalid")
+	}
+	response, err := decodeHelperResponse(data[:dataLength])
+	if err != nil {
 		return nil, fmt.Errorf("decode runtime helper dial response: %w", err)
 	}
 	if response.Version != ProtocolVersion {
@@ -145,25 +160,45 @@ func (c Client) DialSessionLoopback(ctx context.Context, requestID string, paylo
 		}
 		return nil, fmt.Errorf("runtime helper %s: %s", response.Error.Code, response.Error.Message)
 	}
-	fileDescriptors, err := parseFileDescriptors(oob[:oobLength])
-	if err != nil {
-		return nil, err
-	}
 	if len(fileDescriptors) != 1 {
-		closeFileDescriptors(fileDescriptors)
 		return nil, fmt.Errorf("runtime helper returned %d file descriptors", len(fileDescriptors))
 	}
 	file := os.NewFile(uintptr(fileDescriptors[0]), "session-loopback")
 	if file == nil {
-		closeFileDescriptors(fileDescriptors)
 		return nil, errors.New("runtime helper returned an invalid file descriptor")
 	}
+	fileDescriptors = nil
 	forwardedConnection, err := net.FileConn(file)
 	_ = file.Close()
 	if err != nil {
 		return nil, fmt.Errorf("adopt runtime helper connection: %w", err)
 	}
 	return forwardedConnection, nil
+}
+
+func readHelperResponse(reader io.Reader) (Response, error) {
+	bounded := bufio.NewReader(io.LimitReader(reader, maxHelperResponseBytes+1))
+	data, err := bounded.ReadBytes('\n')
+	if err != nil || len(data) == 0 || len(data) > maxHelperResponseBytes {
+		return Response{}, errors.New("runtime helper response is invalid")
+	}
+	return decodeHelperResponse(data)
+}
+
+func decodeHelperResponse(data []byte) (Response, error) {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return Response{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var response Response
+	if err := decoder.Decode(&response); err != nil {
+		return Response{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return Response{}, errors.New("runtime helper response must contain one JSON object")
+	}
+	return response, nil
 }
 
 func parseFileDescriptors(oob []byte) ([]int, error) {
@@ -196,7 +231,9 @@ func Map(value any) (map[string]any, error) {
 		return nil, err
 	}
 	var payload map[string]any
-	if err := json.Unmarshal(data, &payload); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
 		return nil, err
 	}
 	return payload, nil

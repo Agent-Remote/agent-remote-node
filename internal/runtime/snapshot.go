@@ -16,9 +16,9 @@ import (
 )
 
 // Snapshot captures current node resource and runtime status.
-func Snapshot(allowedBackends []string, runtimeSocketPath string) (api.ResourceStatus, api.RuntimeStatus) {
+func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string) (api.ResourceStatus, api.RuntimeStatus) {
 	resources := hostResources()
-	capabilities := probeCapabilities(allowedBackends, runtimeSocketPath)
+	capabilities := probeCapabilities(allowedBackends, runtimeSocketPath, deviceProxyPath)
 	status := api.RuntimeStatus{
 		DockerOK:              capabilities.DockerSandbox["docker"] && capabilities.DockerSandbox["daemon"],
 		TmuxOK:                capabilities.Native["tmux"] || capabilities.DockerSandbox["tmux"],
@@ -30,7 +30,7 @@ func Snapshot(allowedBackends []string, runtimeSocketPath string) (api.ResourceS
 	return resources, status
 }
 
-func probeCapabilities(allowedBackends []string, runtimeSocketPath string) api.RuntimeCapabilities {
+func probeCapabilities(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string) api.RuntimeCapabilities {
 	capabilities := api.RuntimeCapabilities{
 		Backends:      []string{},
 		Native:        map[string]bool{},
@@ -72,7 +72,29 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string) api.R
 			Backends:         []string{},
 		}
 	}
+	if slices.Contains(capabilities.Backends, "native") && capabilities.Native["network_ns"] && executableFile(deviceProxyPath) {
+		capabilities.DeviceControl = api.DeviceControlCapability{
+			Supported:        true,
+			ProtocolVersions: []int{1},
+			Platforms:        []string{"macos"},
+			Backends:         []string{"native"},
+		}
+	} else {
+		capabilities.DeviceControl = api.DeviceControlCapability{
+			ProtocolVersions: []int{},
+			Platforms:        []string{},
+			Backends:         []string{},
+		}
+	}
 	return capabilities
+}
+
+func executableFile(path string) bool {
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0
 }
 
 func hostResources() api.ResourceStatus {

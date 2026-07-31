@@ -12,6 +12,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
+	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
@@ -23,19 +24,23 @@ import (
 
 // Worker executes node heartbeats, task polling, and reconciliation.
 type Worker struct {
-	cfg    config.Config
-	client api.Client
-	ledger *ledger.Ledger
+	cfg     config.Config
+	client  api.Client
+	ledger  *ledger.Ledger
+	bridges *devicecontrol.BridgeManager
 }
 
 // New creates a Worker.
 func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker {
-	return Worker{cfg: cfg.WithDefaults(), client: client, ledger: taskLedger}
+	return Worker{
+		cfg: cfg.WithDefaults(), client: client, ledger: taskLedger,
+		bridges: devicecontrol.NewBridgeManager(client),
+	}
 }
 
 // Heartbeat sends a single heartbeat.
 func (w Worker) Heartbeat(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
+	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
 	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
@@ -82,7 +87,7 @@ func (w Worker) PollOnce(ctx context.Context) error {
 
 // Reconcile submits a basic node snapshot.
 func (w Worker) Reconcile(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
+	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
 	sessions := []any{}
 	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") || slices.Contains(w.cfg.AllowedRuntimeBackends, "docker_sandbox") {
 		result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
@@ -131,6 +136,9 @@ func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollIn
 	}
 
 	<-ctx.Done()
+	if w.bridges != nil {
+		w.bridges.StopAll()
+	}
 	loops.Wait()
 	return ctx.Err()
 }
@@ -225,7 +233,7 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (map[string]any, error) {
 	switch task.TaskType {
 	case "reconcile_state":
-		resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath)
+		resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
 		result := map[string]any{
 			"status":    "reconciled",
 			"resources": resources,
@@ -338,11 +346,75 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
 			return nil, err
 		}
+		if w.bridges != nil {
+			w.bridges.Stop(payload.SessionID)
+		}
 		operation := "docker_stop_session"
 		if payload.RuntimeBackend == "native" {
 			operation = "stop_session"
 		}
 		return w.callRuntimeHelper(ctx, task, operation, payload)
+	case "activate_device_control":
+		payload, err := devicecontrol.DecodeActivatePayload(task.Payload, w.cfg.NodeID, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
+			return nil, err
+		}
+		clearResult, err := w.callRuntimeHelperExact(ctx, task, "clear_device_control_context", map[string]any{
+			"device_session_id": payload.DeviceSessionID,
+			"tool_session_id":   payload.ToolSessionID,
+			"generation":        payload.Generation,
+			"inclusive":         false,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if err := devicecontrol.Activate(w.cfg.DeviceControlRoot, payload); err != nil {
+			return nil, err
+		}
+		bridgeSocketPath, ok := clearResult["bridge_socket_path"].(string)
+		if !ok || bridgeSocketPath == "" || w.bridges == nil {
+			return nil, errors.New("runtime helper omitted the managed device bridge path")
+		}
+		if err := w.bridges.Start(ctx, payload, bridgeSocketPath); err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status": "activated", "device_session_id": payload.DeviceSessionID,
+			"tool_session_id": payload.ToolSessionID, "generation": payload.Generation,
+		}, nil
+	case "deactivate_device_control":
+		payload, err := devicecontrol.DecodeDeactivatePayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		if w.bridges != nil {
+			w.bridges.Stop(payload.ToolSessionID)
+		}
+		if _, err := w.callRuntimeHelperExact(ctx, task, "clear_device_control_context", map[string]any{
+			"device_session_id": payload.DeviceSessionID,
+			"tool_session_id":   payload.ToolSessionID,
+			"generation":        payload.Generation,
+			"inclusive":         true,
+		}); err != nil {
+			return nil, err
+		}
+		removed, err := devicecontrol.Deactivate(w.cfg.DeviceControlRoot, payload)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status": "deactivated", "device_session_id": payload.DeviceSessionID,
+			"generation": payload.Generation, "removed": removed,
+		}, nil
+	case "update_device_control_context":
+		payload, err := devicecontrol.DecodeContextPayload(task.Payload, w.cfg.NodeID, time.Now().UTC())
+		if err != nil {
+			return nil, err
+		}
+		return w.callRuntimeHelperExact(ctx, task, "update_device_control_context", payload)
 	case "create_browser_session":
 		payload, err := browser.DecodeCreatePayload(task.Payload)
 		if err != nil {
@@ -380,6 +452,14 @@ func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, op
 	mapped["workspace_root"] = w.cfg.WorkspaceRoot
 	mapped["account_root"] = w.cfg.AccountRoot
 	mapped["claude_runtime_path"] = w.cfg.ClaudeRuntimePath
+	return runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
+}
+
+func (w Worker) callRuntimeHelperExact(ctx context.Context, task api.TaskEnvelope, operation string, payload any) (map[string]any, error) {
+	mapped, err := runtimehelper.Map(payload)
+	if err != nil {
+		return nil, err
+	}
 	return runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
 }
 

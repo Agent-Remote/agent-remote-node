@@ -6,7 +6,7 @@
   <a href="https://github.com/Agent-Remote/agent-remote-node/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Agent-Remote/agent-remote-node/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://codecov.io/gh/Agent-Remote/agent-remote-node"><img alt="Codecov" src="https://codecov.io/gh/Agent-Remote/agent-remote-node/graph/badge.svg"></a>
   <a href="https://github.com/Agent-Remote/agent-remote-node/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/Agent-Remote/agent-remote-node?style=flat&logo=github"></a>
-  <img alt="Go 1.23" src="https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white">
+  <img alt="Go 1.26.5" src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&logoColor=white">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/Agent-Remote/agent-remote-node"></a>
 </p>
 
@@ -78,7 +78,7 @@ Native account binding requires a registered device token and an active SSH key.
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.0.6-fix.1",
+  "version": "0.1.0",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -97,7 +97,8 @@ Native account binding requires a registered device token and an active SSH key.
   "allowed_runtime_backends": ["docker_sandbox", "native"],
   "runtime_socket_path": "/run/agent-remote/runtime.sock",
   "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
-  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude"
+  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude",
+  "device_proxy_path": "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
 }
 ```
 
@@ -161,13 +162,29 @@ Install from an extracted release archive with the same one-command options:
 
 ## Release Packaging
 
+Linux packages require an architecture- and libc-matched managed device proxy at:
+
+```text
+$DEVICE_PROXY_DIR/linux-amd64-glibc/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-arm64-glibc/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-amd64-musl/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-arm64-musl/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/<target>/VERSION
+```
+
+The installer verifies its digest, installs it under
+`/opt/agent-remote/device/releases/<version>/`, and atomically switches `current`. Reusing a
+version with different bytes is rejected, and capability remains disabled if the proxy is absent
+or not executable.
+
 ```sh
-VERSION=0.0.6-fix.1 scripts/build-release.sh
+VERSION=0.1.0 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.
 
 Each archive includes node binaries, installer, systemd unit, sample config, license, and notices.
+Linux archives also include the managed device proxy.
 
 GitHub Actions runs this packaging flow for `v*` tags and uploads the archives to the GitHub Release.
 

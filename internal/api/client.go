@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/websocket"
 )
 
 const maxResponseBodyBytes = 1 << 20
@@ -102,6 +105,7 @@ type RuntimeCapabilities struct {
 	Dependencies          map[string]string               `json:"dependencies"`
 	ProbeErrors           []string                        `json:"probe_errors"`
 	SessionPortForwarding SessionPortForwardingCapability `json:"session_port_forwarding"`
+	DeviceControl         DeviceControlCapability         `json:"device_control"`
 }
 
 // SessionPortForwardingCapability describes the tunnel protocols and runtime backends the node can safely serve.
@@ -110,6 +114,35 @@ type SessionPortForwardingCapability struct {
 	ProtocolVersions []int    `json:"protocol_versions"`
 	Backends         []string `json:"backends"`
 	MaxStreams       int      `json:"max_streams"`
+}
+
+// DeviceControlCapability describes the managed proxy protocol available to remote sessions.
+type DeviceControlCapability struct {
+	Supported        bool     `json:"supported"`
+	ProtocolVersions []int    `json:"protocol_versions"`
+	Platforms        []string `json:"platforms"`
+	Backends         []string `json:"backends"`
+}
+
+// DeviceRelayMaterialRequest registers one generation-scoped proxy certificate pin.
+type DeviceRelayMaterialRequest struct {
+	Generation uint64 `json:"generation"`
+	SPKISHA256 string `json:"spki_sha256"`
+}
+
+// DeviceRelayMaterialResponse contains one-time peer material for the opaque relay.
+type DeviceRelayMaterialResponse struct {
+	Data struct {
+		Status          string  `json:"status"`
+		Role            string  `json:"role"`
+		Generation      uint64  `json:"generation"`
+		RelayPath       *string `json:"relay_path"`
+		RelayTicket     *string `json:"relay_ticket"`
+		PeerSPKISHA256  *string `json:"peer_spki_sha256"`
+		ExporterContext *string `json:"exporter_context"`
+		ExpiresAt       *string `json:"expires_at"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
 }
 
 // TaskEnvelope is a leased task.
@@ -331,6 +364,50 @@ func (c Client) ReleasePortForward(ctx context.Context, forwardID string, reques
 	return c.do(ctx, http.MethodPost, "/api/v1/node-api/port-forwards/"+forwardID+"/release", request, nil, true)
 }
 
+// RegisterDeviceRelayMaterial exchanges a proxy certificate pin for one-time peer material.
+func (c Client) RegisterDeviceRelayMaterial(ctx context.Context, deviceSessionID string, request DeviceRelayMaterialRequest) (DeviceRelayMaterialResponse, error) {
+	var response DeviceRelayMaterialResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/device-sessions/"+url.PathEscape(deviceSessionID)+"/relay-material", request, &response, true)
+	return response, err
+}
+
+// OpenDeviceRelay consumes a one-time ticket and opens the bounded binary WebSocket relay.
+func (c Client) OpenDeviceRelay(ctx context.Context, deviceSessionID string, relayPath string, relayTicket string) (io.ReadWriteCloser, error) {
+	expectedPath := "/api/v1/device-sessions/" + url.PathEscape(deviceSessionID) + "/relay"
+	if relayPath != expectedPath || relayTicket == "" {
+		return nil, errors.New("device relay endpoint or ticket is invalid")
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return nil, errors.New("server URL cannot be used for a device relay")
+	}
+	websocketURL := *base
+	if base.Scheme == "https" {
+		websocketURL.Scheme = "wss"
+	} else {
+		websocketURL.Scheme = "ws"
+	}
+	websocketURL.Path = relayPath
+	websocketURL.RawQuery = ""
+	websocketURL.Fragment = ""
+	origin := *base
+	origin.Path = "/"
+	origin.RawQuery = ""
+	origin.Fragment = ""
+	configuration, err := websocket.NewConfig(websocketURL.String(), origin.String())
+	if err != nil {
+		return nil, err
+	}
+	configuration.Header.Set("authorization", "Bearer "+relayTicket)
+	connection, err := configuration.DialContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	connection.PayloadType = websocket.BinaryFrame
+	connection.MaxPayloadBytes = 4 << 20
+	return connection, nil
+}
+
 // Reconcile submits a reconciliation snapshot.
 func (c Client) Reconcile(ctx context.Context, request ReconcileRequest) error {
 	return c.do(ctx, http.MethodPost, "/api/v1/node-api/reconcile", request, nil, true)
@@ -372,7 +449,7 @@ func (c Client) do(ctx context.Context, method string, path string, payload any,
 				Message string `json:"message"`
 			} `json:"error"`
 		}
-		_ = json.Unmarshal(data, &envelope)
+		_ = decodeResponseJSON(data, &envelope)
 		return &HTTPError{
 			StatusCode: resp.StatusCode,
 			Code:       envelope.Error.Code,
@@ -382,5 +459,80 @@ func (c Client) do(ctx context.Context, method string, path string, payload any,
 	if out == nil {
 		return nil
 	}
-	return json.Unmarshal(data, out)
+	return decodeResponseJSON(data, out)
+}
+
+func decodeResponseJSON(data []byte, out any) error {
+	if err := rejectDuplicateJSONKeys(data); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(out); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("server response must contain one JSON object")
+	}
+	return nil
+}
+
+func rejectDuplicateJSONKeys(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	if err := validateJSONValue(decoder); err != nil {
+		return err
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errors.New("server response contains trailing data")
+	}
+	return nil
+}
+
+func validateJSONValue(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("server response object key is invalid")
+			}
+			if _, exists := seen[key]; exists {
+				return errors.New("server response contains a duplicate key")
+			}
+			seen[key] = struct{}{}
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("server response object is incomplete")
+		}
+	case '[':
+		for decoder.More() {
+			if err := validateJSONValue(decoder); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("server response array is incomplete")
+		}
+	default:
+		return errors.New("server response delimiter is invalid")
+	}
+	return nil
 }

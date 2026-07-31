@@ -13,7 +13,7 @@ import (
 )
 
 // DefaultVersion is overridden by release builds through Go ldflags.
-var DefaultVersion = "0.0.6-fix.1"
+var DefaultVersion = "0.1.0"
 
 // Config contains local node runtime settings.
 type Config struct {
@@ -41,6 +41,8 @@ type Config struct {
 	RuntimeSocketPath        string   `json:"runtime_socket_path"`
 	RuntimeBinaryPath        string   `json:"runtime_binary_path"`
 	ClaudeRuntimePath        string   `json:"claude_runtime_path"`
+	DeviceProxyPath          string   `json:"device_proxy_path"`
+	DeviceControlRoot        string   `json:"device_control_root"`
 	WireGuardInterface       string   `json:"wireguard_interface"`
 	WireGuardPrivateKeyPath  string   `json:"wireguard_private_key_path"`
 	WireGuardAddress         string   `json:"wireguard_address"`
@@ -104,6 +106,12 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.ClaudeRuntimePath == "" {
 		c.ClaudeRuntimePath = "/opt/agent-remote/runtimes/claude/current/bin/claude"
+	}
+	if c.DeviceProxyPath == "" {
+		c.DeviceProxyPath = "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
+	}
+	if c.DeviceControlRoot == "" {
+		c.DeviceControlRoot = "/var/lib/agent-remote/device-sessions"
 	}
 	if c.WireGuardInterface == "" {
 		c.WireGuardInterface = "agent-remote"

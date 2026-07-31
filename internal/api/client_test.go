@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"golang.org/x/net/websocket"
 )
 
 func TestRedeemPortForwardUsesNodeAuthenticationAndTypedContract(t *testing.T) {
@@ -69,6 +71,31 @@ func TestClientRejectsOversizedResponse(t *testing.T) {
 	}
 }
 
+func TestPollTasksPreservesGenerationPrecision(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, `{"data":{"tasks":[{"task_id":"task-1","node_id":"node-1","task_type":"deactivate_device_control","idempotency_key":"key-1","payload":{"generation":9223372036854775807},"lease_until":"2026-07-31T00:00:00Z","created_at":"2026-07-31T00:00:00Z","expires_at":"2026-07-31T00:00:00Z"}]},"request_id":"request-1"}`)
+	}))
+	defer server.Close()
+	result, err := NewClient(server.URL, "node-token").PollTasks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, ok := result.Data.Tasks[0].Payload["generation"].(json.Number)
+	if !ok || generation.String() != "9223372036854775807" {
+		t.Fatalf("generation precision was lost: %#v", result.Data.Tasks[0].Payload["generation"])
+	}
+}
+
+func TestClientRejectsDuplicateResponseKeys(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, `{"data":{"tasks":[],"tasks":[]},"request_id":"request-1"}`)
+	}))
+	defer server.Close()
+	if _, err := NewClient(server.URL, "node-token").PollTasks(context.Background()); err == nil || !strings.Contains(err.Error(), "duplicate key") {
+		t.Fatalf("expected duplicate response key rejection, got %v", err)
+	}
+}
+
 func TestPortForwardRenewReleaseAndUncodedHTTPError(t *testing.T) {
 	var methods []string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -96,5 +123,48 @@ func TestPortForwardRenewReleaseAndUncodedHTTPError(t *testing.T) {
 	}
 	if len(methods) != 3 {
 		t.Fatalf("unexpected requests: %v", methods)
+	}
+}
+
+// TestDeviceRelayUsesFixedPathOneTimeAuthorizationAndBinaryFrames verifies relay authorization and framing.
+func TestDeviceRelayUsesFixedPathOneTimeAuthorizationAndBinaryFrames(t *testing.T) {
+	deviceSessionID := "123e4567-e89b-42d3-a456-426614174003"
+	server := httptest.NewServer(websocket.Handler(func(connection *websocket.Conn) {
+		request := connection.Request()
+		if request.URL.Path != "/api/v1/device-sessions/"+deviceSessionID+"/relay" {
+			t.Errorf("unexpected relay path %q", request.URL.Path)
+			return
+		}
+		if request.Header.Get("authorization") != "Bearer one-time-ticket" {
+			t.Error("relay omitted one-time authorization")
+			return
+		}
+		requestBytes := make([]byte, 4)
+		if _, err := io.ReadFull(connection, requestBytes); err != nil || string(requestBytes) != "ping" {
+			t.Errorf("unexpected relay request %q: %v", requestBytes, err)
+			return
+		}
+		connection.PayloadType = websocket.BinaryFrame
+		_, _ = connection.Write([]byte("pong"))
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "node-token")
+	connection, err := client.OpenDeviceRelay(
+		context.Background(), deviceSessionID,
+		"/api/v1/device-sessions/"+deviceSessionID+"/relay", "one-time-ticket",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	response := make([]byte, 4)
+	if _, err := io.ReadFull(connection, response); err != nil || string(response) != "pong" {
+		t.Fatalf("unexpected relay response %q: %v", response, err)
+	}
+	if _, err := client.OpenDeviceRelay(context.Background(), deviceSessionID, "/attacker", "one-time-ticket"); err == nil {
+		t.Fatal("expected a non-fixed relay path to be rejected")
 	}
 }

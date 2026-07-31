@@ -2,6 +2,13 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.1.0 - 2026-07-31
+
+- feat: add the managed device control bridge and bundled proxy runtime
+- feat: enforce exact session bindings and persist bounded activation manifests
+- build: package version-matched standalone and embedded device proxies
+- test: cover namespace firewall execution (c4d82b8)
+
 ## v0.0.6-fix.1 - 2026-07-29
 
 - fix: allow native session loopback traffic (cd59700)
@@ -161,4 +168,3 @@ All notable changes to this repository are recorded here.
 - ci: allow manual release dispatch (abefa2c)
 - chore: release v0.0.2 (601c6d5)
 - build: inject node release version (4ef1c6a)
-

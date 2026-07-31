@@ -1,6 +1,6 @@
 # 03 Tech Stack
 
-- Go 1.23, as declared in `go.mod`, is authoritative.
+- Go 1.26.5, as declared in `go.mod`, is authoritative. Patch-level updates are security gates.
 - Prefer the Go standard library.
 - Go modules own dependency resolution; commit `go.sum` whenever dependencies require it.
 - Linux systemd, cgroup v2, Bubblewrap, network namespaces, nftables, tmux, and optional Docker Sandbox form the deployment environment.

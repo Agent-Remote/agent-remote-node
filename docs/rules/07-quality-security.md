@@ -1,6 +1,7 @@
 # 07 Quality And Security
 
-CI, pre-commit, and pre-push enforce shell parsing, formatting, vetting, Go tests, installer tests, and whitespace checks.
+CI, pre-commit, and pre-push enforce shell parsing, formatting, vetting, Go tests, at least 45% total
+statement coverage, installer tests, and whitespace checks.
 
 - Treat configuration, task payloads, API responses, archives, filesystem state, and helper requests as untrusted.
 - Validate managed-root containment without relying on string prefixes or unresolved symlinks.

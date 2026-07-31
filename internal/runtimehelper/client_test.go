@@ -2,6 +2,7 @@ package runtimehelper
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -47,6 +48,24 @@ func TestClientCall(t *testing.T) {
 	}
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestClientCallRejectsInvalidHelperResponses(t *testing.T) {
+	responses := map[string][]byte{
+		"unknown":   []byte(`{"version":1,"ok":true,"result":{},"request_id":"unexpected"}` + "\n"),
+		"duplicate": []byte(`{"version":1,"ok":true,"ok":false,"result":{}}` + "\n"),
+		"trailing":  []byte(`{"version":1,"ok":true,"result":{}} {}` + "\n"),
+		"oversized": append(bytes.Repeat([]byte("x"), maxHelperResponseBytes+1), '\n'),
+	}
+	for name, response := range responses {
+		t.Run(name, func(t *testing.T) {
+			socketPath, done := serveCallResponse(t, response)
+			if _, err := NewClient(socketPath).Call(context.Background(), "request-1", "probe", map[string]any{}); err == nil {
+				t.Fatal("invalid helper response was accepted")
+			}
+			<-done
+		})
 	}
 }
 
@@ -173,6 +192,9 @@ func TestDialSessionLoopbackRejectsInvalidRequestsAndHelperResponses(t *testing.
 
 	responses := map[string][]byte{
 		"malformed": []byte("not-json"),
+		"unknown":   []byte(`{"version":1,"ok":true,"unexpected":true}`),
+		"duplicate": []byte(`{"version":1,"ok":true,"ok":false}`),
+		"trailing":  []byte(`{"version":1,"ok":true} {}`),
 		"wrong version": mustJSON(t, Response{
 			Version: ProtocolVersion + 1, OK: true,
 		}),
@@ -205,6 +227,57 @@ func TestMapRejectsUnsupportedValues(t *testing.T) {
 	if _, err := Map(make(chan int)); err == nil {
 		t.Fatal("non-JSON payload was accepted")
 	}
+}
+
+func TestMapPreservesLargeIntegerPrecision(t *testing.T) {
+	payload, err := Map(struct {
+		Generation uint64 `json:"generation"`
+	}{Generation: 9223372036854775807})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generation, ok := payload["generation"].(json.Number)
+	if !ok || generation.String() != "9223372036854775807" {
+		t.Fatalf("generation precision was lost: %#v", payload["generation"])
+	}
+}
+
+func serveCallResponse(t *testing.T, response []byte) (string, <-chan error) {
+	t.Helper()
+	temporary, err := os.CreateTemp("", "arpf-call-response-*.sock")
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := temporary.Name()
+	if err := temporary.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		defer listener.Close()
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			done <- acceptErr
+			return
+		}
+		defer connection.Close()
+		var request Request
+		if decodeErr := json.NewDecoder(bufio.NewReader(connection)).Decode(&request); decodeErr != nil {
+			done <- decodeErr
+			return
+		}
+		_, writeErr := connection.Write(response)
+		done <- writeErr
+	}()
+	return socketPath, done
 }
 
 func serveDialResponse(t *testing.T, response []byte) (string, <-chan error) {

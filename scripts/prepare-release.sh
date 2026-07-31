@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "Usage: $0 <version>" >&2
-  echo "Example: $0 0.0.6" >&2
+  echo "Example: $0 0.1.0" >&2
 }
 
 if [[ $# -ne 1 ]]; then
@@ -67,10 +67,12 @@ if readme.exists():
     text = readme.read_text()
     text = re.sub(r'"version": "[0-9A-Za-z.+-]+"', f'"version": "{version}"', text, count=1)
     text = re.sub(
-        r"VERSION=[0-9A-Za-z.+-]+ scripts/build-release\.sh",
-        f"VERSION={version} scripts/build-release.sh",
+        r"VERSION=[0-9A-Za-z.+-]+(?= DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release\.sh)",
+        f"VERSION={version}",
         text,
     )
+    if f"VERSION={version} DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh" not in text:
+        raise SystemExit("README release example was not updated")
     text = re.sub(r"--version [0-9A-Za-z.+-]+", f"--version {version}", text)
     readme.write_text(text)
 
@@ -79,10 +81,12 @@ if readme_cn.exists():
     text = readme_cn.read_text()
     text = re.sub(r'"version": "[0-9A-Za-z.+-]+"', f'"version": "{version}"', text, count=1)
     text = re.sub(
-        r"VERSION=[0-9A-Za-z.+-]+ scripts/build-release\.sh",
-        f"VERSION={version} scripts/build-release.sh",
+        r"VERSION=[0-9A-Za-z.+-]+(?= DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release\.sh)",
+        f"VERSION={version}",
         text,
     )
+    if f"VERSION={version} DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh" not in text:
+        raise SystemExit("README.zh-CN release example was not updated")
     text = re.sub(r"--version [0-9A-Za-z.+-]+", f"--version {version}", text)
     readme_cn.write_text(text)
 PY

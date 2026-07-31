@@ -93,6 +93,7 @@ func serve(args []string) error {
 	workspaceRoot := fs.String("workspace-root", "/var/lib/agent-remote/users", "workspace root")
 	accountRoot := fs.String("account-root", "/var/lib/agent-remote/users", "account root")
 	claudeRuntime := fs.String("claude-runtime", "/opt/agent-remote/runtimes/claude/current/bin/claude", "managed Claude executable")
+	deviceProxy := fs.String("device-proxy", "/opt/agent-remote/device/current/bin/agent-remote-device-proxy", "managed device MCP proxy")
 	groupName := fs.String("group", "agent-remote", "socket access group")
 	userName := fs.String("user", "agent-remote", "authorized node worker user")
 	wireGuardInterface := fs.String("wireguard-interface", "agent-remote", "managed WireGuard interface")
@@ -117,6 +118,7 @@ func serve(args []string) error {
 		AccountRoot:         *accountRoot,
 		RuntimeBinaryPath:   os.Args[0],
 		ClaudeRuntimePath:   *claudeRuntime,
+		DeviceProxyPath:     *deviceProxy,
 		DataGroup:           *groupName,
 		NodeUser:            *userName,
 		WireGuardInterface:  *wireGuardInterface,

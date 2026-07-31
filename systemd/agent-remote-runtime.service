@@ -5,7 +5,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/agent-remote-runtime serve --socket /run/agent-remote/runtime.sock --state-root /var/lib/agent-remote-runtime --workspace-root /var/lib/agent-remote/users --account-root /var/lib/agent-remote/users --claude-runtime /opt/agent-remote/runtimes/claude/current/bin/claude --group agent-remote --user agent-remote --wireguard-interface agent-remote --wireguard-private-key /etc/agent-remote-node/wireguard.key --wireguard-listen-port 51820
+ExecStart=/usr/local/bin/agent-remote-runtime serve --socket /run/agent-remote/runtime.sock --state-root /var/lib/agent-remote-runtime --workspace-root /var/lib/agent-remote/users --account-root /var/lib/agent-remote/users --claude-runtime /opt/agent-remote/runtimes/claude/current/bin/claude --device-proxy /opt/agent-remote/device/current/bin/agent-remote-device-proxy --group agent-remote --user agent-remote --wireguard-interface agent-remote --wireguard-private-key /etc/agent-remote-node/wireguard.key --wireguard-listen-port 51820
 Restart=always
 RestartSec=5
 User=root
@@ -18,6 +18,7 @@ StateDirectory=agent-remote-runtime
 # owner-only tmux directories enforce access below it.
 StateDirectoryMode=0711
 NoNewPrivileges=no
+LimitCORE=0
 # The helper must create host-visible mounts and network namespaces for transient units.
 PrivateTmp=no
 ProtectKernelTunables=no

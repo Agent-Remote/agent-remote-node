@@ -42,6 +42,12 @@ grep -q 'systemctl restart agent-remote-runtime.service' "$ROOT/scripts/install.
   fail "runtime helper is not restarted during upgrades"
 grep -q '^StateDirectoryMode=0711$' "$ROOT/systemd/agent-remote-runtime.service" || \
   fail "runtime state root must remain traversable after systemd restarts"
+grep -q '^LimitCORE=0$' "$ROOT/systemd/agent-remote-node.service" || \
+  fail "node service must disable core dumps"
+grep -q '^LimitCORE=0$' "$ROOT/systemd/agent-remote-runtime.service" || \
+  fail "runtime helper service must disable core dumps"
+grep -q '"--property=LimitCORE=0"' "$ROOT/internal/runtimehelper/engine.go" || \
+  fail "managed runtime units must disable core dumps"
 grep -q 'systemctl restart "wg-quick@\$WIREGUARD_INTERFACE.service"' "$ROOT/scripts/install.sh" || \
   fail "WireGuard is not restarted during upgrades"
 grep -q 'systemctl restart agent-remote-node.service' "$ROOT/scripts/install.sh" || \
@@ -166,14 +172,41 @@ ALLOW_NON_ROOT=1 NODEJS_OS_OVERRIDE=Linux NODEJS_ARCH_OVERRIDE=x86_64 \
 [ "$(cat "$runtime_root/current/NODE_VERSION")" = "22.99.0" ] || fail "pinned Node.js version metadata is wrong"
 grep -q "$node_checksum" "$runtime_root/current/NODE_SHA256SUMS" || fail "pinned Node.js checksum metadata is wrong"
 
+fake_device_proxy="$WORK/agent-remote-device-proxy"
+cat > "$fake_device_proxy" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$fake_device_proxy"
+device_proxy_checksum="$(sha256_file "$fake_device_proxy")"
+device_runtime_root="$WORK/device-runtime"
+ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
+  --version 1.2.3 --source "$fake_device_proxy" --sha256 "$device_proxy_checksum" \
+  --runtime-root "$device_runtime_root" >/dev/null
+[ -x "$device_runtime_root/current/bin/agent-remote-device-proxy" ] || \
+  fail "managed device proxy was not installed"
+[ "$(cat "$device_runtime_root/current/VERSION")" = "1.2.3" ] || \
+  fail "managed device proxy version metadata is wrong"
+ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
+  --version 1.2.3 --source "$fake_device_proxy" --sha256 "$device_proxy_checksum" \
+  --runtime-root "$device_runtime_root" >/dev/null
+printf '\n# changed\n' >> "$fake_device_proxy"
+changed_device_proxy_checksum="$(sha256_file "$fake_device_proxy")"
+if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
+  --version 1.2.3 --source "$fake_device_proxy" --sha256 "$changed_device_proxy_checksum" \
+  --runtime-root "$device_runtime_root" >/dev/null 2>&1; then
+  fail "same device proxy version with different content was accepted"
+fi
+
 package="$WORK/package"
 mkdir -p "$package/scripts"
 cp "$ROOT/scripts/install.sh" "$package/install.sh"
 cp "$ROOT/scripts/install-claude-runtime.sh" "$package/scripts/install-claude-runtime.sh"
 cp "$ROOT/scripts/install-nodejs-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
+cp "$ROOT/scripts/install-device-proxy.sh" "$package/scripts/install-device-proxy.sh"
 cp "$ROOT/config.example.json" "$package/config.example.json"
 printf '7.7.7\n' > "$package/VERSION"
-chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
+chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh" "$package/scripts/install-device-proxy.sh"
 
 cat > "$package/agent-remote-node" <<'EOF'
 #!/bin/sh
@@ -226,7 +259,13 @@ grep -q -- "--claude-runtime-path $managed_claude/current/bin/claude" "$FAKE_NOD
   fail "managed Claude path was not registered"
 
 release_dir="$WORK/release"
+proxy_dir="$WORK/device-proxies/linux-amd64-glibc"
+mkdir -p "$proxy_dir"
+cp "$fake_device_proxy" "$proxy_dir/agent-remote-device-proxy"
+chmod 0755 "$proxy_dir/agent-remote-device-proxy"
+printf '1.2.3\n' > "$proxy_dir/VERSION"
 GOCACHE="$WORK/go-cache" VERSION=9.9.9 OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
+  DEVICE_PROXY_DIR="$WORK/device-proxies" \
   "$ROOT/scripts/build-release.sh" >/dev/null
 release_package="$release_dir/agent-remote-node-9.9.9-linux-amd64-glibc"
 for packaged_file in \
@@ -237,6 +276,9 @@ for packaged_file in \
   install.sh \
   scripts/install-claude-runtime.sh \
   scripts/install-nodejs-runtime.sh \
+  scripts/install-device-proxy.sh \
+  device/agent-remote-device-proxy \
+  device/VERSION \
   systemd/agent-remote-node.service \
   systemd/agent-remote-runtime.service \
   systemd/agent-remote-runtime.sudoers; do

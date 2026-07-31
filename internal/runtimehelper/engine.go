@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
+	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
@@ -35,6 +36,7 @@ type EngineConfig struct {
 	AccountRoot          string
 	RuntimeBinaryPath    string
 	ClaudeRuntimePath    string
+	DeviceProxyPath      string
 	TmuxBinaryPath       string
 	BubblewrapPath       string
 	SystemdRunPath       string
@@ -75,6 +77,9 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 	}
 	if c.ClaudeRuntimePath == "" {
 		c.ClaudeRuntimePath = "/opt/agent-remote/runtimes/claude/current/bin/claude"
+	}
+	if c.DeviceProxyPath == "" {
+		c.DeviceProxyPath = "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
 	}
 	if c.TmuxBinaryPath == "" {
 		c.TmuxBinaryPath = "tmux"
@@ -232,6 +237,10 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 		result, err = e.prepareWorkspace(request.Payload)
 	case "wireguard_sync":
 		result, err = e.wireGuardSync(ctx, request.Payload)
+	case "update_device_control_context":
+		result, err = e.updateDeviceControlContext(request.Payload)
+	case "clear_device_control_context":
+		result, err = e.clearDeviceControlContext(request.Payload)
 	default:
 		err = fmt.Errorf("unsupported operation %q", request.Operation)
 	}
@@ -244,6 +253,252 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 		}
 	}
 	return result, nil
+}
+
+type clearDeviceControlContextPayload struct {
+	DeviceSessionID string `json:"device_session_id"`
+	ToolSessionID   string `json:"tool_session_id"`
+	Generation      uint64 `json:"generation"`
+	Inclusive       bool   `json:"inclusive"`
+}
+
+type managedDeviceContext struct {
+	UserID                      string `json:"user_id"`
+	DeviceID                    string `json:"device_id"`
+	ToolSessionID               string `json:"tool_session_id"`
+	DeviceSessionID             string `json:"device_session_id"`
+	NodeID                      string `json:"node_id"`
+	Platform                    string `json:"platform"`
+	Generation                  uint64 `json:"generation"`
+	NextSequence                uint64 `json:"next_sequence"`
+	CurrentScreenshotGeneration uint64 `json:"current_screenshot_generation"`
+	LeaseUntil                  string `json:"lease_until"`
+}
+
+func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]any, error) {
+	now := time.Now().UTC()
+	decoded, err := devicecontrol.DecodeContextPayload(payload, "", now)
+	if err != nil {
+		return nil, err
+	}
+	spec, err := readTrustedSpec(e.config, e.specPath(decoded.ToolSessionID))
+	if err != nil {
+		return nil, fmt.Errorf("load managed device-control session: %w", err)
+	}
+	if spec.DeviceControlProtocolVersion != 1 || spec.SessionID != decoded.ToolSessionID || spec.UserID != decoded.UserID {
+		return nil, errors.New("device-control context does not match the managed session")
+	}
+	contextPath, err := validateDeviceControlContextPath(spec)
+	if err != nil {
+		return nil, err
+	}
+	context := managedDeviceContext{
+		UserID: decoded.UserID, DeviceID: decoded.DeviceID,
+		ToolSessionID: decoded.ToolSessionID, DeviceSessionID: decoded.DeviceSessionID,
+		NodeID: decoded.NodeID, Platform: decoded.Platform, Generation: decoded.Generation,
+		NextSequence: 1, CurrentScreenshotGeneration: 0, LeaseUntil: decoded.LeaseUntil,
+	}
+	current, err := loadManagedDeviceContext(contextPath, spec)
+	if err == nil {
+		if current.Generation > context.Generation {
+			return nil, errors.New("device-control context generation is stale")
+		}
+		if current.Generation == context.Generation {
+			if !sameDeviceControlBinding(current, context) {
+				return nil, errors.New("device-control binding changed within a generation")
+			}
+			currentLease, parseCurrentErr := time.Parse(time.RFC3339Nano, current.LeaseUntil)
+			newLease, parseNewErr := time.Parse(time.RFC3339Nano, context.LeaseUntil)
+			if parseCurrentErr != nil || parseNewErr != nil || newLease.Before(currentLease) {
+				return nil, errors.New("device-control lease moved backwards within a generation")
+			}
+			context.NextSequence = current.NextSequence
+			context.CurrentScreenshotGeneration = current.CurrentScreenshotGeneration
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"status": "updated", "device_session_id": context.DeviceSessionID,
+		"tool_session_id": context.ToolSessionID, "generation": context.Generation,
+	}, nil
+}
+
+func (e Engine) clearDeviceControlContext(payload map[string]any) (map[string]any, error) {
+	var decoded clearDeviceControlContextPayload
+	if err := decodeStrictPayload(payload, &decoded); err != nil {
+		return nil, err
+	}
+	if _, err := devicecontrol.DecodeDeactivatePayload(map[string]any{
+		"device_session_id": decoded.DeviceSessionID,
+		"tool_session_id":   decoded.ToolSessionID,
+		"generation":        decoded.Generation,
+	}); err != nil {
+		return nil, err
+	}
+	spec, err := readTrustedSpec(e.config, e.specPath(decoded.ToolSessionID))
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{"status": "cleared", "removed": false}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load managed device-control session: %w", err)
+	}
+	if spec.DeviceControlProtocolVersion != 1 || spec.SessionID != decoded.ToolSessionID {
+		return nil, errors.New("device-control clear does not match the managed session")
+	}
+	contextPath, err := validateDeviceControlContextPath(spec)
+	if err != nil {
+		return nil, err
+	}
+	bridgeSocketPath := filepath.Join(spec.DeviceControlDirectory, "bridge.sock")
+	current, err := loadManagedDeviceContext(contextPath, spec)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]any{
+			"status": "cleared", "removed": false, "bridge_socket_path": bridgeSocketPath,
+		}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if current.ToolSessionID != decoded.ToolSessionID || current.DeviceSessionID != decoded.DeviceSessionID {
+		return nil, errors.New("device-control clear binding does not match current context")
+	}
+	if current.Generation > decoded.Generation || (!decoded.Inclusive && current.Generation == decoded.Generation) {
+		return map[string]any{
+			"status": "cleared", "removed": false, "bridge_socket_path": bridgeSocketPath,
+		}, nil
+	}
+	if err := os.Remove(contextPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	return map[string]any{
+		"status": "cleared", "removed": true, "bridge_socket_path": bridgeSocketPath,
+	}, nil
+}
+
+func validateDeviceControlContextPath(spec SessionSpec) (string, error) {
+	expectedDirectory := filepath.Join(spec.SessionRoot, "device-control")
+	if spec.DeviceControlDirectory != expectedDirectory {
+		return "", errors.New("device-control directory is outside managed session state")
+	}
+	info, err := os.Lstat(expectedDirectory)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", errors.New("device-control directory is unsafe")
+	}
+	if runtime.GOOS == "linux" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 {
+			return "", errors.New("device-control directory is not root-owned")
+		}
+	}
+	return filepath.Join(expectedDirectory, "context.json"), nil
+}
+
+func loadManagedDeviceContext(path string, spec SessionSpec) (managedDeviceContext, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return managedDeviceContext{}, err
+	}
+	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm()&0o077 != 0 || info.Size() > 16*1024 {
+		return managedDeviceContext{}, errors.New("device-control context file is unsafe")
+	}
+	if runtime.GOOS == "linux" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || int(stat.Uid) != spec.RuntimeUID || int(stat.Gid) != spec.RuntimeGID {
+			return managedDeviceContext{}, errors.New("device-control context ownership is invalid")
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return managedDeviceContext{}, err
+	}
+	var context managedDeviceContext
+	if err := decodeStrictJSON(data, &context); err != nil {
+		return managedDeviceContext{}, err
+	}
+	if context.Generation == 0 ||
+		context.Generation > devicecontrol.MaximumActiveDeviceSessionGeneration ||
+		context.NextSequence == 0 ||
+		context.Platform != "macos" {
+		return managedDeviceContext{}, errors.New("device-control context data is invalid")
+	}
+	return context, nil
+}
+
+func writeManagedDeviceContext(path string, context managedDeviceContext, spec SessionSpec) error {
+	data, err := json.MarshalIndent(context, "", "  ")
+	if err != nil {
+		return err
+	}
+	directory := filepath.Dir(path)
+	temporary, err := os.CreateTemp(directory, ".context-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	closeWithError := func(operationError error) error {
+		if closeErr := temporary.Close(); operationError == nil {
+			return closeErr
+		}
+		return operationError
+	}
+	if err := temporary.Chmod(0o600); err != nil {
+		return closeWithError(err)
+	}
+	if err := temporary.Chown(spec.RuntimeUID, spec.RuntimeGID); err != nil {
+		return closeWithError(err)
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		return closeWithError(err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return closeWithError(err)
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	directoryHandle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer directoryHandle.Close()
+	return directoryHandle.Sync()
+}
+
+func sameDeviceControlBinding(left managedDeviceContext, right managedDeviceContext) bool {
+	return left.UserID == right.UserID && left.DeviceID == right.DeviceID &&
+		left.ToolSessionID == right.ToolSessionID && left.DeviceSessionID == right.DeviceSessionID &&
+		left.NodeID == right.NodeID && left.Platform == right.Platform && left.Generation == right.Generation
+}
+
+func decodeStrictPayload(payload map[string]any, destination any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return decodeStrictJSON(data, destination)
+}
+
+func decodeStrictJSON(data []byte, destination any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(destination); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return errors.New("payload must contain one JSON object")
+	}
+	return nil
 }
 
 func (e Engine) wireGuardSync(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -948,6 +1203,9 @@ type SessionSpec struct {
 	RuntimeRoot                    string        `json:"runtime_root"`
 	RuntimeCommand                 string        `json:"runtime_command"`
 	Argv                           []string      `json:"argv"`
+	DeviceControlProtocolVersion   int           `json:"device_control_protocol_version,omitempty"`
+	DeviceControlDirectory         string        `json:"device_control_directory,omitempty"`
+	DeviceProxyPath                string        `json:"device_proxy_path,omitempty"`
 	Timezone                       string        `json:"timezone"`
 	Locale                         string        `json:"locale"`
 	TmuxSessionName                string        `json:"tmux_session_name"`
@@ -1027,6 +1285,29 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 	if err != nil {
 		return SessionSpec{}, err
 	}
+	deviceControlProtocol, err := parseDeviceControlProtocol(payload["device_control"], kind)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	deviceControlDirectory := ""
+	deviceProxyPath := ""
+	if deviceControlProtocol != 0 {
+		if err := validateManagedDeviceProxy(e.config.DeviceProxyPath); err != nil {
+			return SessionSpec{}, err
+		}
+		argv, err = managedDeviceControlArgv(sessionID, argv)
+		if err != nil {
+			return SessionSpec{}, err
+		}
+		deviceControlDirectory = filepath.Join(sessionRoot, "device-control")
+		if err := os.Mkdir(deviceControlDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+			return SessionSpec{}, err
+		}
+		if err := e.applyDeviceControlACL(deviceControlDirectory, identity.Username); err != nil {
+			return SessionSpec{}, err
+		}
+		deviceProxyPath = filepath.Clean(e.config.DeviceProxyPath)
+	}
 	spec := SessionSpec{
 		Version:                        ProtocolVersion,
 		Kind:                           kind,
@@ -1043,6 +1324,9 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		RuntimeRoot:                    runtimeRoot,
 		RuntimeCommand:                 "/opt/agent-remote/runtime/bin/claude",
 		Argv:                           argv,
+		DeviceControlProtocolVersion:   deviceControlProtocol,
+		DeviceControlDirectory:         deviceControlDirectory,
+		DeviceProxyPath:                deviceProxyPath,
 		Timezone:                       timezone,
 		Locale:                         locale,
 		TmuxSessionName:                tmuxName,
@@ -1192,6 +1476,7 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 		fmt.Sprintf("--property=CPUQuota=%d%%", spec.Policy.CPUQuotaPercent),
 		fmt.Sprintf("--property=TasksMax=%d", spec.Policy.TasksMax),
 		fmt.Sprintf("--property=LimitNOFILE=%d", spec.Policy.LimitNOFILE),
+		"--property=LimitCORE=0",
 		"--property=KillMode=control-group",
 		"--property=NetworkNamespacePath=/run/netns/" + spec.NetworkNamespace,
 	}
@@ -1636,6 +1921,17 @@ func (e Engine) applyDataACL(path string, runtimeUser string) error {
 	return nil
 }
 
+func (e Engine) applyDeviceControlACL(path string, runtimeUser string) error {
+	if err := os.Chmod(path, 0o700); err != nil {
+		return err
+	}
+	access := "u:" + runtimeUser + ":r-x,u:" + e.config.NodeUser + ":rwx"
+	if output, err := exec.Command(e.config.SetfaclPath, "-m", access, path).CombinedOutput(); err != nil {
+		return fmt.Errorf("set device-control ACL failed: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
 func (e Engine) clearDataACL(path string) error {
 	for _, args := range [][]string{{"-R", "-b", path}, {"-R", "-k", path}} {
 		if output, err := exec.Command(e.config.SetfaclPath, args...).CombinedOutput(); err != nil {
@@ -1803,6 +2099,107 @@ func claudeBindingArgv(payload map[string]any) ([]string, error) {
 		return nil, errors.New("template command must use claude")
 	}
 	return command[1:], nil
+}
+
+func parseDeviceControlProtocol(value any, kind string) (int, error) {
+	if value == nil {
+		return 0, nil
+	}
+	configuration, ok := value.(map[string]any)
+	if !ok || len(configuration) != 1 {
+		return 0, errors.New("device_control is invalid")
+	}
+	version, ok := numericInt64(configuration["protocol_version"])
+	if !ok || version != 1 || kind != "session" {
+		return 0, errors.New("device_control protocol is unsupported")
+	}
+	return int(version), nil
+}
+
+func managedDeviceControlArgv(_ string, argv []string) ([]string, error) {
+	for _, argument := range argv {
+		if argument == "--mcp-config" || strings.HasPrefix(argument, "--mcp-config=") ||
+			argument == "--strict-mcp-config" || strings.HasPrefix(argument, "--strict-mcp-config=") ||
+			argument == "--settings" || strings.HasPrefix(argument, "--settings=") ||
+			argument == "--setting-sources" || strings.HasPrefix(argument, "--setting-sources=") ||
+			argument == "--safe-mode" || strings.HasPrefix(argument, "--safe-mode=") ||
+			argument == "--bare" || strings.HasPrefix(argument, "--bare=") {
+			return nil, errors.New("managed device control does not allow lifecycle or MCP configuration overrides")
+		}
+	}
+	lifecycleSocket := "/tmp/lifecycle.sock"
+	proxyCommand := "/opt/agent-remote/device/bin/agent-remote-device-proxy"
+	configuration := map[string]any{
+		"mcpServers": map[string]any{
+			"agent-remote-device": map[string]any{
+				"type":    "stdio",
+				"command": proxyCommand,
+				"args": []string{
+					"--managed-context", "/run/agent-remote/device/context.json",
+					"--bridge-socket", "/run/agent-remote/device/bridge.sock",
+					"--lifecycle-socket", lifecycleSocket,
+				},
+			},
+		},
+	}
+	encodedMCP, err := json.Marshal(configuration)
+	if err != nil {
+		return nil, err
+	}
+	hook := func(notification string) []map[string]any {
+		return []map[string]any{{
+			"hooks": []map[string]any{{
+				"type": "command", "command": proxyCommand,
+				"args":    []string{"--notify", notification, "--lifecycle-socket", lifecycleSocket},
+				"timeout": 5,
+			}},
+		}}
+	}
+	settings := map[string]any{
+		"hooks": map[string]any{
+			"Stop":        hook("turn-stop"),
+			"StopFailure": hook("turn-stop"),
+			"SessionEnd":  hook("session-end"),
+		},
+	}
+	encodedSettings, err := json.Marshal(settings)
+	if err != nil {
+		return nil, err
+	}
+	managed := []string{
+		"--setting-sources", "", "--settings", string(encodedSettings),
+		"--strict-mcp-config", "--mcp-config", string(encodedMCP),
+	}
+	return append(managed, argv...), nil
+}
+
+func argumentPrefix(arguments []string, prefix []string) bool {
+	if len(arguments) < len(prefix) {
+		return false
+	}
+	for index := range prefix {
+		if arguments[index] != prefix[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateManagedDeviceProxy(path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return errors.New("managed device proxy path must be absolute")
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 || info.Mode().Perm()&0o022 != 0 {
+		return errors.New("managed device proxy is unavailable or unsafe")
+	}
+	if runtime.GOOS == "linux" {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 {
+			return errors.New("managed device proxy is not root-owned")
+		}
+	}
+	return nil
 }
 
 func parseRuntimePolicy(value any) (RuntimePolicy, error) {
@@ -2240,6 +2637,7 @@ func (p *sshAgentProxy) forward(client *net.UnixConn) {
 	<-done
 }
 
+// Close stops the proxy listener and waits for active forwarding loops to exit.
 func (p *sshAgentProxy) Close() error {
 	err := p.listener.Close()
 	if target, readErr := os.Readlink(p.stablePath); readErr == nil && target == filepath.Base(p.socketPath) {
@@ -2347,6 +2745,7 @@ func parentDirectories(path string) []string {
 }
 
 func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) {
+	config = config.WithDefaults()
 	if !pathInside(filepath.Join(config.StateRoot, "sessions"), specPath) {
 		return SessionSpec{}, errors.New("spec path is outside runtime state")
 	}
@@ -2395,11 +2794,22 @@ func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) 
 	if spec.SSHAgentDirectory != "" && spec.SSHAgentDirectory != filepath.Join(spec.SessionRoot, "ssh-agent") {
 		return SessionSpec{}, errors.New("SSH agent directory is outside session state")
 	}
+	if spec.DeviceControlProtocolVersion != 0 {
+		expectedArgs, err := managedDeviceControlArgv(spec.SessionID, nil)
+		if err != nil || spec.DeviceControlProtocolVersion != 1 ||
+			spec.DeviceControlDirectory != filepath.Join(spec.SessionRoot, "device-control") ||
+			filepath.Clean(spec.DeviceProxyPath) != filepath.Clean(config.DeviceProxyPath) ||
+			!argumentPrefix(spec.Argv, expectedArgs) {
+			return SessionSpec{}, errors.New("spec contains invalid managed device control")
+		}
+	} else if spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "" {
+		return SessionSpec{}, errors.New("spec contains unconfigured device control paths")
+	}
 	return spec, nil
 }
 
 func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
-	args := []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--proc", "/proc", "--dev", "/dev", "--dir", "/etc", "--dir", "/workspace", "--dir", "/account", "--dir", "/home", "--dir", "/home/runtime"}
+	args := []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--proc", "/proc", "--dev", "/dev", "--dir", "/etc", "--dir", "/workspace", "--dir", "/account", "--dir", "/home", "--dir", "/home/runtime", "--dir", "/run", "--dir", "/run/agent-remote"}
 	for _, path := range []string{"/usr", "/bin", "/lib", "/lib64"} {
 		if pathExists(path) {
 			args = append(args, "--ro-bind", path, path)
@@ -2445,9 +2855,16 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 	}
 	if spec.SSHAgentDirectory != "" {
 		args = append(args,
-			"--dir", "/run", "--dir", "/run/agent-remote", "--dir", "/run/agent-remote/ssh-agent",
+			"--dir", "/run/agent-remote/ssh-agent",
 			"--bind", spec.SSHAgentDirectory, "/run/agent-remote/ssh-agent",
 			"--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock",
+		)
+	}
+	if spec.DeviceControlProtocolVersion == 1 {
+		args = append(args,
+			"--ro-bind", spec.DeviceControlDirectory, "/run/agent-remote/device",
+			"--ro-bind", spec.DeviceProxyPath,
+			"/opt/agent-remote/device/bin/agent-remote-device-proxy",
 		)
 	}
 	for _, path := range []string{"/etc/ssl", "/etc/pki"} {

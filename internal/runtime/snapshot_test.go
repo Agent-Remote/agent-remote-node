@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
@@ -28,6 +29,10 @@ func TestStringMapDropsNonStringValues(t *testing.T) {
 }
 
 func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
+	proxyPath := filepath.Join(t.TempDir(), "agent-remote-device-proxy")
+	if err := os.WriteFile(proxyPath, []byte("managed proxy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	socketPath, done := serveRuntimeProbe(t, map[string]any{
 		"backends":       []string{"native", "docker_sandbox"},
 		"native":         map[string]bool{"network_ns": true, "tmux": true},
@@ -35,7 +40,7 @@ func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
 		"browser_docker": map[string]bool{"docker": true},
 		"dependencies":   map[string]string{"kernel": "6.8.0"},
 	})
-	capabilities := probeCapabilities([]string{"native", "docker_sandbox"}, socketPath)
+	capabilities := probeCapabilities([]string{"native", "docker_sandbox"}, socketPath, proxyPath)
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +53,15 @@ func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
 	if capabilities.SessionPortForwarding.MaxStreams != 128 {
 		t.Fatalf("unexpected max streams: %#v", capabilities.SessionPortForwarding)
 	}
+	if !capabilities.DeviceControl.Supported {
+		t.Fatalf("managed device proxy was not advertised: %#v", capabilities.DeviceControl)
+	}
+	if len(capabilities.DeviceControl.Platforms) != 1 || capabilities.DeviceControl.Platforms[0] != "macos" {
+		t.Fatalf("unexpected device platforms: %#v", capabilities.DeviceControl)
+	}
+	if len(capabilities.DeviceControl.Backends) != 1 || capabilities.DeviceControl.Backends[0] != "native" {
+		t.Fatalf("unsafe device-control backend: %#v", capabilities.DeviceControl)
+	}
 }
 
 func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T) {
@@ -55,7 +69,7 @@ func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T)
 		"backends": []string{"native"},
 		"native":   map[string]bool{"network_ns": false},
 	})
-	capabilities := probeCapabilities([]string{"native"}, socketPath)
+	capabilities := probeCapabilities([]string{"native"}, socketPath, filepath.Join(t.TempDir(), "missing-proxy"))
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +78,9 @@ func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T)
 	}
 	if len(capabilities.SessionPortForwarding.ProtocolVersions) != 0 {
 		t.Fatalf("disabled capability exposed protocol versions: %#v", capabilities.SessionPortForwarding)
+	}
+	if capabilities.DeviceControl.Supported || len(capabilities.DeviceControl.ProtocolVersions) != 0 || len(capabilities.DeviceControl.Platforms) != 0 {
+		t.Fatalf("device control must fail closed: %#v", capabilities.DeviceControl)
 	}
 }
 

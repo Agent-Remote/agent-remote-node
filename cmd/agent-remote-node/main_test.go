@@ -96,7 +96,7 @@ func TestRegisterReusesExistingTokenAndRefreshesSystemLayout(t *testing.T) {
 
 func TestApplySystemInstallPaths(t *testing.T) {
 	cfg := config.Config{}
-	applySystemInstallPaths(&cfg, "/opt/agent", "/srv/node", "/srv/data", "/opt/claude")
+	applySystemInstallPaths(&cfg, "/opt/agent", "/srv/node", "/srv/data", "/opt/claude", "/opt/device-proxy")
 	if cfg.LedgerPath != "/srv/node/ledger.json" {
 		t.Fatalf("unexpected ledger path %q", cfg.LedgerPath)
 	}
@@ -117,6 +117,9 @@ func TestApplySystemInstallPaths(t *testing.T) {
 	}
 	if cfg.ClaudeRuntimePath != "/opt/claude" {
 		t.Fatalf("unexpected Claude path %q", cfg.ClaudeRuntimePath)
+	}
+	if cfg.DeviceProxyPath != "/opt/device-proxy" {
+		t.Fatalf("unexpected device proxy path %q", cfg.DeviceProxyPath)
 	}
 }
 

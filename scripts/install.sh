@@ -37,6 +37,8 @@ NODEJS_CHANNEL="${NODEJS_CHANNEL:-22}"
 NODEJS_VERSION="${NODEJS_VERSION:-}"
 NODEJS_SOURCE="${NODEJS_SOURCE:-}"
 NODEJS_SHA256="${NODEJS_SHA256:-}"
+DEVICE_RUNTIME_ROOT="${DEVICE_RUNTIME_ROOT:-/opt/agent-remote/device}"
+PACKAGED_ROOT=""
 WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
 WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
 WIREGUARD_ENDPOINT="${AGENT_REMOTE_WIREGUARD_ENDPOINT:-}"
@@ -146,6 +148,7 @@ Environment:
   NODEJS_VERSION           Same as --nodejs-version.
   NODEJS_SOURCE            Same as --nodejs-source.
   NODEJS_SHA256            Same as --nodejs-sha256.
+  DEVICE_RUNTIME_ROOT      Managed device proxy runtime root.
   INSTALL_DEPENDENCIES=0     Same as --no-dependencies.
   INSTALL_CLAUDE=0           Same as --no-claude.
   INSTALL_NODEJS=0           Same as --no-nodejs.
@@ -605,13 +608,14 @@ escape_sed_replacement() {
 }
 
 render_system_file() {
-  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root wireguard_interface
+  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root device_runtime_root wireguard_interface
   prefix="$(escape_sed_replacement "$PREFIX")"
   config_dir="$(escape_sed_replacement "$CONFIG_DIR")"
   state_dir="$(escape_sed_replacement "$STATE_DIR")"
   data_dir="$(escape_sed_replacement "$DATA_DIR")"
   user_name="$(escape_sed_replacement "$USER_NAME")"
   claude_runtime_root="$(escape_sed_replacement "$CLAUDE_RUNTIME_ROOT")"
+  device_runtime_root="$(escape_sed_replacement "$DEVICE_RUNTIME_ROOT")"
   wireguard_interface="$(escape_sed_replacement "$WIREGUARD_INTERFACE")"
   sed \
     -e "s|/var/lib/agent-remote-runtime|@AGENT_REMOTE_RUNTIME_STATE@|g" \
@@ -621,6 +625,7 @@ render_system_file() {
     -e "s|/etc/agent-remote-node|$config_dir|g" \
     -e "s|/usr/local|$prefix|g" \
     -e "s|/opt/agent-remote/runtimes/claude|$claude_runtime_root|g" \
+    -e "s|/opt/agent-remote/device|$device_runtime_root|g" \
     -e "s|User=agent-remote|User=$user_name|g" \
     -e "s|Group=agent-remote|Group=$user_name|g" \
     -e "s|--group agent-remote|--group $user_name|g" \
@@ -745,12 +750,14 @@ EOF
 
 install_packaged() {
   local package_dir="$1" rendered
+  PACKAGED_ROOT="$package_dir"
   require_file "$package_dir/agent-remote-node"
   require_file "$package_dir/agent-remote-attach"
   require_file "$package_dir/agent-remote-runtime"
   require_file "$package_dir/config.example.json"
   require_file "$package_dir/scripts/install-claude-runtime.sh"
   require_file "$package_dir/scripts/install-nodejs-runtime.sh"
+  require_file "$package_dir/scripts/install-device-proxy.sh"
   if [ "$VERSION" = "latest" ] && [ -f "$package_dir/VERSION" ]; then
     VERSION="$(tr -d '[:space:]' < "$package_dir/VERSION")"
   fi
@@ -787,6 +794,7 @@ install_packaged() {
   run_as_root install -d -m 0755 "$PREFIX/lib/agent-remote-node"
   run_as_root install -m 0755 "$package_dir/scripts/install-claude-runtime.sh" "$PREFIX/lib/agent-remote-node/install-claude-runtime.sh"
   run_as_root install -m 0755 "$package_dir/scripts/install-nodejs-runtime.sh" "$PREFIX/lib/agent-remote-node/install-nodejs-runtime.sh"
+  run_as_root install -m 0755 "$package_dir/scripts/install-device-proxy.sh" "$PREFIX/lib/agent-remote-node/install-device-proxy.sh"
 
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
@@ -900,6 +908,36 @@ install_managed_nodejs() {
   fi
 }
 
+install_managed_device_proxy() {
+  if ! backend_enabled native || [ "$(uname -s)" != "Linux" ]; then
+    return
+  fi
+  local source checksum installer proxy_version
+  source="$PACKAGED_ROOT/device/agent-remote-device-proxy"
+  require_file "$source"
+  require_file "$PACKAGED_ROOT/device/VERSION"
+  if [ ! -x "$source" ] || [ -L "$source" ]; then
+    echo "packaged device proxy must be a non-symlink executable" >&2
+    exit 1
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    checksum="$(sha256sum "$source" | awk '{print $1}')"
+  else
+    checksum="$(shasum -a 256 "$source" | awk '{print $1}')"
+  fi
+  installer="$PREFIX/lib/agent-remote-node/install-device-proxy.sh"
+  proxy_version="$(tr -d '[:space:]' < "$PACKAGED_ROOT/device/VERSION")"
+  run_as_root "$installer" \
+    --runtime-root "$DEVICE_RUNTIME_ROOT" \
+    --version "$proxy_version" \
+    --source "$source" \
+    --sha256 "$checksum"
+  if [ ! -x "$DEVICE_RUNTIME_ROOT/current/bin/agent-remote-device-proxy" ]; then
+    echo "managed device proxy installation did not produce an executable" >&2
+    exit 1
+  fi
+}
+
 register_node() {
   if [ -z "$REGISTRATION_TOKEN" ]; then
     return
@@ -918,6 +956,7 @@ register_node() {
     --state-dir "$STATE_DIR"
     --data-dir "$DATA_DIR"
     --claude-runtime-path "$CLAUDE_RUNTIME_ROOT/current/bin/claude"
+    --device-proxy-path "$DEVICE_RUNTIME_ROOT/current/bin/agent-remote-device-proxy"
   )
   if [ "$FORCE_REGISTER" = "1" ]; then
     args+=(--force)
@@ -1022,6 +1061,7 @@ else
 fi
 install_managed_claude
 install_managed_nodejs
+install_managed_device_proxy
 register_node
 configure_wireguard
 start_and_verify

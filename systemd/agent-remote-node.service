@@ -15,6 +15,7 @@ User=agent-remote
 Group=agent-remote
 WorkingDirectory=/var/lib/agent-remote-node
 NoNewPrivileges=true
+LimitCORE=0
 PrivateTmp=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/agent-remote-node /var/lib/agent-remote /run/agent-remote

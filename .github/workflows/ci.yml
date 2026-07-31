@@ -17,6 +17,15 @@ jobs:
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
+      - name: Scan reachable Go vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json
+      - name: Upload Go vulnerability report
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: agent-remote-node-govulncheck
+          path: govulncheck.json
+          if-no-files-found: error
       - run: scripts/run-quality-checks.sh
       - name: Generate coverage with session network namespace integration
         run: |
@@ -27,6 +36,7 @@ jobs:
             AGENT_REMOTE_RUN_NETNS_TEST=1 \
             go test -covermode=atomic -coverprofile=coverage.out ./...
           sudo chown "$USER:$(id -gn)" coverage.out
+          scripts/check-coverage.sh coverage.out 45
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:

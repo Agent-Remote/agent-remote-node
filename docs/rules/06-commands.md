@@ -12,7 +12,8 @@ Expanded commands:
 bash -n scripts/*.sh tests/*.sh
 gofmt -l cmd internal
 go vet ./...
-go test ./...
+go test -covermode=atomic -coverprofile=coverage.out ./...
+scripts/check-coverage.sh coverage.out 45
 tests/install_scripts_test.sh
 git diff --check
 ```

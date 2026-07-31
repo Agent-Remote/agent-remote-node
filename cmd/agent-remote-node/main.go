@@ -122,6 +122,11 @@ func register(args []string) error {
 		"/opt/agent-remote/runtimes/claude/current/bin/claude",
 		"managed Claude executable",
 	)
+	deviceProxyPath := fs.String(
+		"device-proxy-path",
+		"/opt/agent-remote/device/current/bin/agent-remote-device-proxy",
+		"managed device proxy executable",
+	)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -137,7 +142,7 @@ func register(args []string) error {
 				existing.AllowedRuntimeBackends = splitCommaList(*runtimeBackends)
 			}
 			if *systemInstall {
-				applySystemInstallPaths(&existing, *prefix, *stateDir, *dataDir, *claudeRuntimePath)
+				applySystemInstallPaths(&existing, *prefix, *stateDir, *dataDir, *claudeRuntimePath, *deviceProxyPath)
 			}
 			if err := existing.Validate(true); err != nil {
 				return err
@@ -159,7 +164,7 @@ func register(args []string) error {
 		cfg.AllowedRuntimeBackends = splitCommaList(*runtimeBackends)
 	}
 	if *systemInstall {
-		applySystemInstallPaths(&cfg, *prefix, *stateDir, *dataDir, *claudeRuntimePath)
+		applySystemInstallPaths(&cfg, *prefix, *stateDir, *dataDir, *claudeRuntimePath, *deviceProxyPath)
 	}
 	if err := cfg.Validate(false); err != nil {
 		return err
@@ -191,7 +196,7 @@ func splitCommaList(value string) []string {
 	return items
 }
 
-func applySystemInstallPaths(cfg *config.Config, prefix string, stateDir string, dataDir string, claudeRuntimePath string) {
+func applySystemInstallPaths(cfg *config.Config, prefix string, stateDir string, dataDir string, claudeRuntimePath string, deviceProxyPath string) {
 	cfg.LedgerPath = filepath.Join(stateDir, "ledger.json")
 	cfg.SSHAuthorizedKeysPath = filepath.Join(stateDir, "authorized_keys")
 	cfg.AttachBinaryPath = filepath.Join(prefix, "bin", "agent-remote-attach")
@@ -200,6 +205,8 @@ func applySystemInstallPaths(cfg *config.Config, prefix string, stateDir string,
 	cfg.BrowserRoot = filepath.Join(dataDir, "browser-sessions")
 	cfg.RuntimeBinaryPath = filepath.Join(prefix, "bin", "agent-remote-runtime")
 	cfg.ClaudeRuntimePath = claudeRuntimePath
+	cfg.DeviceProxyPath = deviceProxyPath
+	cfg.DeviceControlRoot = filepath.Join(dataDir, "device-sessions")
 }
 
 func installSSH(args []string) error {

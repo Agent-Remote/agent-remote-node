@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.0.6-fix.1}"
+VERSION="${VERSION:-0.1.0}"
 OUT_DIR="${OUT_DIR:-dist}"
 TARGETS="${TARGETS:-darwin/amd64 darwin/arm64 linux/amd64/glibc linux/arm64/glibc linux/amd64/musl linux/arm64/musl}"
+DEVICE_PROXY_DIR="${DEVICE_PROXY_DIR:-}"
 
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
@@ -42,7 +43,24 @@ EOF
   install -m 0755 scripts/install.sh "$work/scripts/install.sh"
   install -m 0755 scripts/install-claude-runtime.sh "$work/scripts/install-claude-runtime.sh"
   install -m 0755 scripts/install-nodejs-runtime.sh "$work/scripts/install-nodejs-runtime.sh"
+  install -m 0755 scripts/install-device-proxy.sh "$work/scripts/install-device-proxy.sh"
   install -m 0755 scripts/install.sh "$work/install.sh"
+  if [ "$GOOS" = "linux" ]; then
+    proxy_root="$DEVICE_PROXY_DIR/${GOOS}-${GOARCH}-${LIBC}"
+    proxy_source="$proxy_root/agent-remote-device-proxy"
+    if [ -z "$DEVICE_PROXY_DIR" ] || [ ! -f "$proxy_source" ] || [ -L "$proxy_source" ] || [ ! -x "$proxy_source" ] || [ ! -f "$proxy_root/VERSION" ]; then
+      echo "missing executable device proxy for $target at $proxy_source" >&2
+      exit 1
+    fi
+    proxy_version="$(tr -d '[:space:]' < "$proxy_root/VERSION")"
+    if ! [[ "$proxy_version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+      echo "invalid device proxy version for $target" >&2
+      exit 1
+    fi
+    mkdir -p "$work/device"
+    install -m 0755 "$proxy_source" "$work/device/agent-remote-device-proxy"
+    printf '%s\n' "$proxy_version" > "$work/device/VERSION"
+  fi
   tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
 done
 

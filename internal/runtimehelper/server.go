@@ -91,6 +91,7 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
 	encoder := json.NewEncoder(connection)
 	var request Request
 	if err := decoder.Decode(&request); err != nil {

@@ -6,7 +6,7 @@
   <a href="https://github.com/Agent-Remote/agent-remote-node/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/Agent-Remote/agent-remote-node/actions/workflows/ci.yml/badge.svg"></a>
   <a href="https://codecov.io/gh/Agent-Remote/agent-remote-node"><img alt="Codecov" src="https://codecov.io/gh/Agent-Remote/agent-remote-node/graph/badge.svg"></a>
   <a href="https://github.com/Agent-Remote/agent-remote-node/stargazers"><img alt="GitHub Stars" src="https://img.shields.io/github/stars/Agent-Remote/agent-remote-node?style=flat&logo=github"></a>
-  <img alt="Go 1.23" src="https://img.shields.io/badge/Go-1.23-00ADD8?logo=go&logoColor=white">
+  <img alt="Go 1.26.5" src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&logoColor=white">
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/github/license/Agent-Remote/agent-remote-node"></a>
 </p>
 
@@ -78,7 +78,7 @@ Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑�
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.0.6-fix.1",
+  "version": "0.1.0",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -97,7 +97,8 @@ Native 账户绑定要求使用已注册的设备令牌和活跃 SSH key。绑�
   "allowed_runtime_backends": ["docker_sandbox", "native"],
   "runtime_socket_path": "/run/agent-remote/runtime.sock",
   "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
-  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude"
+  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude",
+  "device_proxy_path": "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
 }
 ```
 
@@ -161,13 +162,26 @@ Node.js 默认安装经过校验的最新 22.x 版本。可用 `--nodejs-version
 
 ## 发布打包
 
+Linux 发布包要求按架构和 libc 提供对应的受管 device proxy：
+
+```text
+$DEVICE_PROXY_DIR/linux-amd64-glibc/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-arm64-glibc/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-amd64-musl/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/linux-arm64-musl/agent-remote-device-proxy
+$DEVICE_PROXY_DIR/<target>/VERSION
+```
+
+安装器会验证摘要，将其安装到 `/opt/agent-remote/device/releases/<version>/` 并原子切换
+`current`。同一版本出现不同内容时会拒绝覆盖；proxy 缺失或不可执行时 capability 保持关闭。
+
 ```sh
-VERSION=0.0.6-fix.1 scripts/build-release.sh
+VERSION=0.1.0 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。
 
-每个归档包含节点二进制、安装器、systemd unit、示例配置、license 和 notices。
+每个归档包含节点二进制、安装器、systemd unit、示例配置、license 和 notices；Linux 归档还包含受管 device proxy。
 
 GitHub Actions 会在 `v*` tag 上运行该打包流程，并把归档上传到 GitHub Release。
 

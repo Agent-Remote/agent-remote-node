@@ -46,6 +46,13 @@ func TestServerExecutesValidProbeRequest(t *testing.T) {
 	}
 }
 
+func TestServerPreservesTerminalDeviceGeneration(t *testing.T) {
+	response := roundTripHelperRequest(t, []byte(`{"version":1,"request_id":"request-1","operation":"clear_device_control_context","payload":{"device_session_id":"223e4567-e89b-42d3-a456-426614174001","tool_session_id":"323e4567-e89b-42d3-a456-426614174002","generation":9223372036854775807,"inclusive":true}}`+"\n"))
+	if !response.OK || response.Error != nil {
+		t.Fatalf("terminal generation lost precision: %#v", response)
+	}
+}
+
 func TestDuplicateKeyValidatorRejectsMalformedStructures(t *testing.T) {
 	for name, payload := range map[string][]byte{
 		"empty":             {},

@@ -3,6 +3,7 @@ package runtimehelper
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -14,6 +15,9 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
+
+	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
 )
 
 func TestInitializeGitIndexFromHead(t *testing.T) {
@@ -383,6 +387,231 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock")
 }
 
+// TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths verifies fixed managed runtime paths.
+func TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths(t *testing.T) {
+	sessionID := "123e4567-e89b-42d3-a456-426614174000"
+	arguments, err := managedDeviceControlArgv(sessionID, []string{"--model", "opus"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(arguments) != 9 || arguments[0] != "--setting-sources" || arguments[1] != "" ||
+		arguments[2] != "--settings" || arguments[4] != "--strict-mcp-config" ||
+		arguments[5] != "--mcp-config" {
+		t.Fatalf("unexpected managed arguments: %#v", arguments)
+	}
+	var settings map[string]any
+	if err := json.Unmarshal([]byte(arguments[3]), &settings); err != nil {
+		t.Fatal(err)
+	}
+	hooks := settings["hooks"].(map[string]any)
+	for event, notification := range map[string]string{
+		"Stop": "turn-stop", "StopFailure": "turn-stop", "SessionEnd": "session-end",
+	} {
+		entries := hooks[event].([]any)
+		handlers := entries[0].(map[string]any)["hooks"].([]any)
+		handler := handlers[0].(map[string]any)
+		if handler["command"] != "/opt/agent-remote/device/bin/agent-remote-device-proxy" ||
+			handler["timeout"] != float64(5) {
+			t.Fatalf("unexpected %s hook: %#v", event, handler)
+		}
+		wantArgs := []any{"--notify", notification, "--lifecycle-socket", "/tmp/lifecycle.sock"}
+		if !slices.Equal(handler["args"].([]any), wantArgs) {
+			t.Fatalf("unexpected %s hook arguments: %#v", event, handler["args"])
+		}
+	}
+	var configuration map[string]any
+	if err := json.Unmarshal([]byte(arguments[6]), &configuration); err != nil {
+		t.Fatal(err)
+	}
+	servers := configuration["mcpServers"].(map[string]any)
+	if len(servers) != 1 {
+		t.Fatalf("unexpected MCP servers: %#v", servers)
+	}
+	device := servers["agent-remote-device"].(map[string]any)
+	if device["command"] != "/opt/agent-remote/device/bin/agent-remote-device-proxy" {
+		t.Fatalf("unexpected proxy command: %#v", device)
+	}
+	if got := device["args"].([]any); !slices.Contains(got, "/tmp/lifecycle.sock") {
+		t.Fatalf("managed MCP arguments omit the lifecycle socket: %#v", got)
+	}
+	encoded := arguments[6]
+	for _, forbidden := range []string{"http://", "https://", "ws://", "wss://", "token", "secret"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("managed MCP configuration contains %q: %s", forbidden, encoded)
+		}
+	}
+	for _, override := range [][]string{
+		{"--mcp-config", "{}"}, {"--mcp-config={}"}, {"--strict-mcp-config=false"},
+		{"--settings", "{}"}, {"--settings={}"}, {"--setting-sources", "project"},
+		{"--setting-sources=local"}, {"--safe-mode"}, {"--safe-mode=true"}, {"--bare"},
+	} {
+		if _, err := managedDeviceControlArgv(sessionID, override); err == nil {
+			t.Fatalf("expected override rejection: %#v", override)
+		}
+	}
+
+	spec := SessionSpec{
+		RuntimeRoot: "/runtime", WorkspacePath: "/workspace-host", AccountPath: "/account-host",
+		SessionRoot: "/runtime-state/session", Timezone: "UTC", Locale: "en_US.UTF-8",
+		RuntimeCommand:               "/opt/agent-remote/runtime/bin/claude",
+		DeviceControlProtocolVersion: 1,
+		DeviceControlDirectory:       "/runtime-state/session/device-control",
+		DeviceProxyPath:              "/opt/agent-remote/device/current/bin/agent-remote-device-proxy",
+	}
+	bubblewrap := bubblewrapArgs(EngineConfig{}, spec)
+	assertArgumentSequence(t, bubblewrap, "--ro-bind", spec.DeviceControlDirectory, "/run/agent-remote/device")
+	assertArgumentSequence(t, bubblewrap, "--ro-bind", spec.DeviceProxyPath, "/opt/agent-remote/device/bin/agent-remote-device-proxy")
+}
+
+// TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely verifies generation-bound context updates.
+func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *testing.T) {
+	engine, spec := managedDeviceControlTestEngine(t)
+	now := time.Now().UTC()
+	payload := map[string]any{
+		"protocol_version":  1,
+		"user_id":           spec.UserID,
+		"device_id":         "123e4567-e89b-42d3-a456-426614174002",
+		"tool_session_id":   spec.SessionID,
+		"device_session_id": "123e4567-e89b-42d3-a456-426614174003",
+		"node_id":           "123e4567-e89b-42d3-a456-426614174004",
+		"platform":          "macos",
+		"generation":        uint64(1),
+		"lease_until":       now.Add(60 * time.Second).Format(time.RFC3339Nano),
+	}
+	if _, err := engine.updateDeviceControlContext(payload); err != nil {
+		t.Fatal(err)
+	}
+	contextPath := filepath.Join(spec.DeviceControlDirectory, "context.json")
+	context, err := loadManagedDeviceContext(contextPath, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if context.NextSequence != 1 || context.CurrentScreenshotGeneration != 0 {
+		t.Fatalf("unexpected initial context state: %#v", context)
+	}
+	context.Generation = devicecontrol.MaximumDeviceSessionGeneration
+	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadManagedDeviceContext(contextPath, spec); err == nil {
+		t.Fatal("expected terminal-only generation context rejection")
+	}
+	context.Generation = 1
+	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+		t.Fatal(err)
+	}
+	context.NextSequence = 7
+	context.CurrentScreenshotGeneration = 5
+	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+		t.Fatal(err)
+	}
+	payload["lease_until"] = now.Add(90 * time.Second).Format(time.RFC3339Nano)
+	if _, err := engine.updateDeviceControlContext(payload); err != nil {
+		t.Fatal(err)
+	}
+	renewed, err := loadManagedDeviceContext(contextPath, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renewed.NextSequence != 7 || renewed.CurrentScreenshotGeneration != 5 {
+		t.Fatalf("lease renewal reset action state: %#v", renewed)
+	}
+
+	olderLease := mapsClone(payload)
+	olderLease["lease_until"] = now.Add(30 * time.Second).Format(time.RFC3339Nano)
+	if _, err := engine.updateDeviceControlContext(olderLease); err == nil {
+		t.Fatal("expected a backwards lease update to be rejected")
+	}
+	changedBinding := mapsClone(payload)
+	changedBinding["device_id"] = "123e4567-e89b-42d3-a456-426614174005"
+	if _, err := engine.updateDeviceControlContext(changedBinding); err == nil {
+		t.Fatal("expected a same-generation binding change to be rejected")
+	}
+
+	payload["generation"] = uint64(2)
+	payload["lease_until"] = now.Add(120 * time.Second).Format(time.RFC3339Nano)
+	if _, err := engine.updateDeviceControlContext(payload); err != nil {
+		t.Fatal(err)
+	}
+	secondGeneration, err := loadManagedDeviceContext(contextPath, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondGeneration.NextSequence != 1 || secondGeneration.CurrentScreenshotGeneration != 0 {
+		t.Fatalf("new generation did not reset action state: %#v", secondGeneration)
+	}
+	clearPayload := map[string]any{
+		"device_session_id": payload["device_session_id"],
+		"tool_session_id":   spec.SessionID,
+		"generation":        uint64(2),
+		"inclusive":         false,
+	}
+	result, err := engine.clearDeviceControlContext(clearPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["removed"] != false {
+		t.Fatalf("activation retry removed its own generation: %#v", result)
+	}
+	clearPayload["inclusive"] = true
+	result, err = engine.clearDeviceControlContext(clearPayload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["removed"] != true {
+		t.Fatalf("terminal clear did not remove the context: %#v", result)
+	}
+}
+
+func managedDeviceControlTestEngine(t *testing.T) (Engine, SessionSpec) {
+	t.Helper()
+	stateRoot := t.TempDir()
+	workspaceRoot := t.TempDir()
+	accountRoot := t.TempDir()
+	runtimeRoot := t.TempDir()
+	proxyPath := filepath.Join(t.TempDir(), "agent-remote-device-proxy")
+	config := EngineConfig{
+		StateRoot: stateRoot, WorkspaceRoot: workspaceRoot, AccountRoot: accountRoot,
+		ClaudeRuntimePath: filepath.Join(runtimeRoot, "bin", "claude"), DeviceProxyPath: proxyPath,
+	}
+	engine := NewEngine(config)
+	sessionID := "123e4567-e89b-42d3-a456-426614174001"
+	userID := "123e4567-e89b-42d3-a456-426614174000"
+	sessionRoot := filepath.Join(stateRoot, "sessions", sessionID)
+	deviceDirectory := filepath.Join(sessionRoot, "device-control")
+	if err := os.MkdirAll(deviceDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	arguments, err := managedDeviceControlArgv(sessionID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := SessionSpec{
+		Version: ProtocolVersion, Kind: "session", SessionID: sessionID, UserID: userID,
+		Username: "ar-u-" + shortDigest(userID, 12), WorkspacePath: filepath.Join(workspaceRoot, "project"),
+		AccountPath: filepath.Join(accountRoot, "account"), SessionRoot: sessionRoot,
+		RuntimeRoot:    filepath.Clean(filepath.Join(filepath.Dir(config.ClaudeRuntimePath), "..")),
+		RuntimeCommand: "/opt/agent-remote/runtime/bin/claude", Argv: arguments,
+		DeviceControlProtocolVersion: 1, DeviceControlDirectory: deviceDirectory, DeviceProxyPath: proxyPath,
+		Timezone: "UTC", Locale: "en_US.UTF-8", TmuxSessionName: "ar-native-test",
+		TmuxSocketPath:   filepath.Join(sessionRoot, "tmux", "tmux.sock"),
+		UnitName:         "agent-remote-session-" + shortDigest(sessionID, 12) + ".service",
+		NetworkNamespace: "ar-" + shortDigest(sessionID, 10), RuntimeUID: os.Geteuid(), RuntimeGID: os.Getegid(),
+	}
+	if err := engine.saveSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	return engine, spec
+}
+
+func mapsClone(source map[string]any) map[string]any {
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func TestRuntimeIdentityFilesRemainReadableWithRestrictiveExistingModes(t *testing.T) {
 	sessionRoot := t.TempDir()
 	for _, name := range []string{"passwd", "group"} {
@@ -593,6 +822,26 @@ func TestClearDataACLRemovesAccessAndDefaultEntries(t *testing.T) {
 	}
 	if got, want := string(data), "-R -b /workspace\n-R -k /workspace\n"; got != want {
 		t.Fatalf("unexpected setfacl calls: got %q, want %q", got, want)
+	}
+}
+
+// TestDeviceControlACLGrantsRuntimeReadOnlyAndNodeSocketAccess verifies the least-privilege ACL layout.
+func TestDeviceControlACLGrantsRuntimeReadOnlyAndNodeSocketAccess(t *testing.T) {
+	directory := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "setfacl.log")
+	setfaclPath := writeTestCommand(t, "setfacl", `printf '%s\n' "$*" > "$ACL_LOG"`)
+	t.Setenv("ACL_LOG", logPath)
+	engine := NewEngine(EngineConfig{SetfaclPath: setfaclPath, NodeUser: "agent-remote"})
+	if err := engine.applyDeviceControlACL(directory, "ar-u-test"); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "-m u:ar-u-test:r-x,u:agent-remote:rwx " + directory + "\n"
+	if string(data) != want {
+		t.Fatalf("unexpected device-control ACL: got %q, want %q", data, want)
 	}
 }
 
