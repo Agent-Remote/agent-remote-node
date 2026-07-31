@@ -2,6 +2,13 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.1.3 - 2026-07-31
+
+- test: include device proxy in installer fixture (5d3a0d1)
+- test: run root-owned context coverage with privileges (c29393f)
+- feat: add managed device control bridge (e28d439)
+- test: cover namespace firewall execution (c4d82b8)
+
 ## v0.1.0 - 2026-07-31
 
 - feat: add the managed device control bridge and bundled proxy runtime
