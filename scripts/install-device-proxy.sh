@@ -94,7 +94,10 @@ fi
 
 NEXT_LINK="$RUNTIME_ROOT/.current-$$"
 ln -s "$release" "$NEXT_LINK"
-mv -f "$NEXT_LINK" "$RUNTIME_ROOT/current"
+if ! mv -Tf "$NEXT_LINK" "$RUNTIME_ROOT/current" 2>/dev/null; then
+  # BSD mv uses -h to avoid following a destination symlink to a directory.
+  mv -fh "$NEXT_LINK" "$RUNTIME_ROOT/current"
+fi
 NEXT_LINK=""
 
 echo "installed agent-remote-device proxy $VERSION"

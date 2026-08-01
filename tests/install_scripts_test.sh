@@ -190,6 +190,17 @@ ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
 ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
   --version 1.2.3 --source "$fake_device_proxy" --sha256 "$device_proxy_checksum" \
   --runtime-root "$device_runtime_root" >/dev/null
+fake_device_proxy_next="$WORK/agent-remote-device-proxy-next"
+cp "$fake_device_proxy" "$fake_device_proxy_next"
+printf '\n# next version\n' >> "$fake_device_proxy_next"
+next_device_proxy_checksum="$(sha256_file "$fake_device_proxy_next")"
+ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
+  --version 1.2.4 --source "$fake_device_proxy_next" --sha256 "$next_device_proxy_checksum" \
+  --runtime-root "$device_runtime_root" >/dev/null
+[ "$(cat "$device_runtime_root/current/VERSION")" = "1.2.4" ] || \
+  fail "managed device proxy did not switch to the newer version"
+[ "$(cat "$device_runtime_root/releases/1.2.3/VERSION")" = "1.2.3" ] || \
+  fail "managed device proxy upgrade removed the previous version"
 printf '\n# changed\n' >> "$fake_device_proxy"
 changed_device_proxy_checksum="$(sha256_file "$fake_device_proxy")"
 if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
