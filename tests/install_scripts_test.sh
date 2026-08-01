@@ -44,6 +44,8 @@ grep -q '^StateDirectoryMode=0711$' "$ROOT/systemd/agent-remote-runtime.service"
   fail "runtime state root must remain traversable after systemd restarts"
 grep -q '^LimitCORE=0$' "$ROOT/systemd/agent-remote-node.service" || \
   fail "node service must disable core dumps"
+grep -q '^ReadWritePaths=.* /var/lib/agent-remote-runtime/sessions ' "$ROOT/systemd/agent-remote-node.service" || \
+  fail "node service must permit managed device bridge sockets under runtime sessions"
 grep -q '^LimitCORE=0$' "$ROOT/systemd/agent-remote-runtime.service" || \
   fail "runtime helper service must disable core dumps"
 grep -q '"--property=LimitCORE=0"' "$ROOT/internal/runtimehelper/engine.go" || \
