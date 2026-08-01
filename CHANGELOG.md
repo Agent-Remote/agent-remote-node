@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.1.6 - 2026-08-01
+
+- fix(install): install device proxy before claude/nodejs runtime (8bf59cf)
+
 ## v0.1.5 - 2026-07-31
 
 - fix: publish portable release checksums (e588270)
