@@ -1442,7 +1442,8 @@ func writeRuntimeIdentityFile(path string, contents string) error {
 
 func (e Engine) grantSpecAccess(spec SessionSpec) error {
 	parents := []string{e.config.StateRoot, filepath.Join(e.config.StateRoot, "sessions")}
-	args := append([]string{"-m", "u:" + spec.Username + ":--x"}, parents...)
+	access := "u:" + spec.Username + ":--x,u:" + e.config.NodeUser + ":--x"
+	args := append([]string{"-m", access}, parents...)
 	if output, err := exec.Command(e.config.SetfaclPath, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("grant runtime spec access: %w: %s", err, strings.TrimSpace(string(output)))
 	}

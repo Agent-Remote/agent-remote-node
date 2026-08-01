@@ -724,7 +724,7 @@ func assertArgumentSequence(t *testing.T, args []string, expected ...string) {
 	t.Fatalf("expected argument sequence %#v in %#v", expected, args)
 }
 
-func TestGrantSpecAccessAddsTraverseACLToStateParents(t *testing.T) {
+func TestGrantSpecAccessAddsRuntimeAndNodeTraverseACLToStateParents(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Mkdir(filepath.Join(root, "sessions"), 0o700); err != nil {
 		t.Fatal(err)
@@ -735,7 +735,7 @@ func TestGrantSpecAccessAddsTraverseACLToStateParents(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("ACL_LOG", logPath)
-	engine := NewEngine(EngineConfig{StateRoot: root, SetfaclPath: setfaclPath})
+	engine := NewEngine(EngineConfig{StateRoot: root, SetfaclPath: setfaclPath, NodeUser: "agent-remote"})
 	if err := engine.grantSpecAccess(SessionSpec{Username: "ar-u-test"}); err != nil {
 		t.Fatal(err)
 	}
@@ -743,7 +743,9 @@ func TestGrantSpecAccessAddsTraverseACLToStateParents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := strings.Join([]string{"-m", "u:ar-u-test:--x", root, filepath.Join(root, "sessions"), ""}, "\n")
+	want := strings.Join([]string{
+		"-m", "u:ar-u-test:--x,u:agent-remote:--x", root, filepath.Join(root, "sessions"), "",
+	}, "\n")
 	if string(data) != want {
 		t.Fatalf("unexpected setfacl arguments: %q", data)
 	}
