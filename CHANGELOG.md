@@ -2,6 +2,14 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.1.8 - 2026-08-03
+
+- feat: add local device session binding (4a5b798)
+- fix(install): set wireguard tunnel MTU to 1000 (1fcb68b)
+- fix: allow managed device bridge sockets (48a6e87)
+- fix: grant node traverse access to session state (2fb6971)
+- fix: atomically switch managed device proxy versions (93a6e5f)
+
 ## v0.1.7 - 2026-08-01
 
 - Release metadata update.
