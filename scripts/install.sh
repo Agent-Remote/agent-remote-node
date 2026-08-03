@@ -993,7 +993,7 @@ configure_wireguard() {
   fi
   run_as_root chmod 0600 "$key_path"
   public_key="$(run_as_root sh -c '"$1" pubkey < "$2"' sh "$wg_path" "$key_path")"
-  run_as_root sh -c 'umask 077; { printf "[Interface]\nPrivateKey = "; cat "$1"; printf "Address = %s\nListenPort = %s\n" "$3" "$4"; } > "$2"' \
+  run_as_root sh -c 'umask 077; { printf "[Interface]\nPrivateKey = "; cat "$1"; printf "Address = %s\nListenPort = %s\nMTU = 1000\n" "$3" "$4"; } > "$2"' \
     sh "$key_path" "$config_path" "$WIREGUARD_ADDRESS" "$WIREGUARD_LISTEN_PORT"
   endpoint_args=()
   if [ -n "$WIREGUARD_ENDPOINT" ]; then
