@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -124,6 +125,59 @@ func TestBridgeManagerRejectsBindingBeforeControlPlaneExchange(t *testing.T) {
 	}
 	if client.registrations.Load() != 0 {
 		t.Fatal("mismatched bridge binding reached the control plane")
+	}
+}
+
+// TestDelayedOldDeactivateDoesNotStopReplacement verifies asymmetric start and stop semantics.
+func TestDelayedOldDeactivateDoesNotStopReplacement(t *testing.T) {
+	client := &fakeRelayClient{remotePeer: make(chan net.Conn, 1)}
+	manager := NewBridgeManager(client)
+	oldActivation := testActivation(time.Now().Add(time.Minute))
+	oldSocket := shortBridgeSocketPath(t)
+	if err := manager.Start(context.Background(), oldActivation, oldSocket); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement := oldActivation
+	replacement.DeviceSessionID = "123e4567-e89b-42d3-a456-426614174099"
+	replacementSocket := shortBridgeSocketPath(t)
+	if err := manager.Start(context.Background(), replacement, replacementSocket); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.StopAll()
+
+	manager.Stop(oldActivation.DeviceSessionID, oldActivation.Generation)
+	connection, err := net.Dial("unix", replacementSocket)
+	if err != nil {
+		t.Fatalf("delayed old deactivate stopped replacement bridge: %v", err)
+	}
+	_ = connection.Close()
+	if _, err := os.Stat(oldSocket); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old bridge socket still exists after replacement: %v", err)
+	}
+}
+
+// TestStopThroughPreservesNewerGeneration verifies stale deactivation cannot stop a reconnect.
+func TestStopThroughPreservesNewerGeneration(t *testing.T) {
+	client := &fakeRelayClient{remotePeer: make(chan net.Conn, 1)}
+	manager := NewBridgeManager(client)
+	activation := testActivation(time.Now().Add(time.Minute))
+	activation.Generation = 2
+	socketPath := shortBridgeSocketPath(t)
+	if err := manager.Start(context.Background(), activation, socketPath); err != nil {
+		t.Fatal(err)
+	}
+	defer manager.StopAll()
+
+	manager.StopThrough(activation.DeviceSessionID, 1)
+	connection, err := net.Dial("unix", socketPath)
+	if err != nil {
+		t.Fatalf("older revocation stopped newer bridge generation: %v", err)
+	}
+	_ = connection.Close()
+	manager.StopThrough(activation.DeviceSessionID, 2)
+	if _, err := os.Stat(socketPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("matching revocation did not stop bridge: %v", err)
 	}
 }
 

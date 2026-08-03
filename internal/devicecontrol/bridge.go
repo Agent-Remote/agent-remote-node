@@ -59,16 +59,21 @@ type bridgeSession struct {
 	connections map[net.Conn]struct{}
 }
 
+type bridgeBindingKey struct {
+	deviceSessionID string
+	generation      uint64
+}
+
 // BridgeManager owns generation-bound local listeners and opaque relay connections.
 type BridgeManager struct {
 	client   relayClient
 	mu       sync.Mutex
-	sessions map[string]*bridgeSession
+	sessions map[bridgeBindingKey]*bridgeSession
 }
 
 // NewBridgeManager creates a local device relay manager backed by the authenticated node client.
 func NewBridgeManager(client relayClient) *BridgeManager {
-	return &BridgeManager{client: client, sessions: make(map[string]*bridgeSession)}
+	return &BridgeManager{client: client, sessions: make(map[bridgeBindingKey]*bridgeSession)}
 }
 
 // Start replaces an older tool-session listener with one exact activation generation.
@@ -76,7 +81,9 @@ func (m *BridgeManager) Start(parent context.Context, activation ActivatePayload
 	if err := validateBridgeSocketPath(socketPath); err != nil {
 		return err
 	}
-	m.Stop(activation.ToolSessionID)
+	if err := m.stopConflictingActivations(activation); err != nil {
+		return err
+	}
 	if info, err := os.Lstat(socketPath); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
 			return errors.New("device bridge path is occupied by a non-socket entry")
@@ -108,17 +115,42 @@ func (m *BridgeManager) Start(parent context.Context, activation ActivatePayload
 		connections: make(map[net.Conn]struct{}),
 	}
 	m.mu.Lock()
-	m.sessions[activation.ToolSessionID] = session
+	m.sessions[bridgeBindingKey{
+		deviceSessionID: activation.DeviceSessionID,
+		generation:      activation.Generation,
+	}] = session
 	m.mu.Unlock()
 	go m.serve(ctx, socketPath, session)
 	return nil
 }
 
-// Stop closes the listener and active relay streams for one tool session.
-func (m *BridgeManager) Stop(toolSessionID string) {
+func (m *BridgeManager) stopConflictingActivations(activation ActivatePayload) error {
 	m.mu.Lock()
-	session := m.sessions[toolSessionID]
-	delete(m.sessions, toolSessionID)
+	keys := make([]bridgeBindingKey, 0)
+	for key, session := range m.sessions {
+		current := session.activation
+		if current.DeviceSessionID != activation.DeviceSessionID && current.ToolSessionID != activation.ToolSessionID {
+			continue
+		}
+		if current.DeviceSessionID == activation.DeviceSessionID && current.Generation > activation.Generation {
+			m.mu.Unlock()
+			return errors.New("device bridge activation generation is stale")
+		}
+		keys = append(keys, key)
+	}
+	m.mu.Unlock()
+	for _, key := range keys {
+		m.Stop(key.deviceSessionID, key.generation)
+	}
+	return nil
+}
+
+// Stop closes the listener and active relay streams for one tool session.
+func (m *BridgeManager) Stop(deviceSessionID string, generation uint64) {
+	key := bridgeBindingKey{deviceSessionID: deviceSessionID, generation: generation}
+	m.mu.Lock()
+	session := m.sessions[key]
+	delete(m.sessions, key)
 	m.mu.Unlock()
 	if session == nil {
 		return
@@ -133,16 +165,46 @@ func (m *BridgeManager) Stop(toolSessionID string) {
 	<-session.done
 }
 
+// StopThrough closes generations up to one exact device-session revocation boundary.
+func (m *BridgeManager) StopThrough(deviceSessionID string, generation uint64) {
+	m.mu.Lock()
+	keys := make([]bridgeBindingKey, 0)
+	for key := range m.sessions {
+		if key.deviceSessionID == deviceSessionID && key.generation <= generation {
+			keys = append(keys, key)
+		}
+	}
+	m.mu.Unlock()
+	for _, key := range keys {
+		m.Stop(key.deviceSessionID, key.generation)
+	}
+}
+
+// StopToolSession closes all generations belonging to one Claude session.
+func (m *BridgeManager) StopToolSession(toolSessionID string) {
+	m.mu.Lock()
+	keys := make([]bridgeBindingKey, 0)
+	for key, session := range m.sessions {
+		if session.activation.ToolSessionID == toolSessionID {
+			keys = append(keys, key)
+		}
+	}
+	m.mu.Unlock()
+	for _, key := range keys {
+		m.Stop(key.deviceSessionID, key.generation)
+	}
+}
+
 // StopAll closes every listener and active relay stream owned by the manager.
 func (m *BridgeManager) StopAll() {
 	m.mu.Lock()
-	identifiers := make([]string, 0, len(m.sessions))
-	for identifier := range m.sessions {
-		identifiers = append(identifiers, identifier)
+	keys := make([]bridgeBindingKey, 0, len(m.sessions))
+	for key := range m.sessions {
+		keys = append(keys, key)
 	}
 	m.mu.Unlock()
-	for _, identifier := range identifiers {
-		m.Stop(identifier)
+	for _, key := range keys {
+		m.Stop(key.deviceSessionID, key.generation)
 	}
 }
 

@@ -347,7 +347,7 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 			return nil, err
 		}
 		if w.bridges != nil {
-			w.bridges.Stop(payload.SessionID)
+			w.bridges.StopToolSession(payload.SessionID)
 		}
 		operation := "docker_stop_session"
 		if payload.RuntimeBackend == "native" {
@@ -391,7 +391,7 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 			return nil, err
 		}
 		if w.bridges != nil {
-			w.bridges.Stop(payload.ToolSessionID)
+			w.bridges.StopThrough(payload.DeviceSessionID, payload.Generation)
 		}
 		if _, err := w.callRuntimeHelperExact(ctx, task, "clear_device_control_context", map[string]any{
 			"device_session_id": payload.DeviceSessionID,
