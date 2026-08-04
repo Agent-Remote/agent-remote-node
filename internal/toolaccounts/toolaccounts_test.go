@@ -62,7 +62,7 @@ func TestPrepareBindingCreatesAccountArchive(t *testing.T) {
 	if result.TmuxStarted {
 		t.Fatal("tmux should be skipped when binary is missing")
 	}
-	for _, relativePath := range []string{".claude", ".claude.json", "cache", "workspace", ".agent-remote-tool-account.json"} {
+	for _, relativePath := range []string{".claude", ".claude.json", "cache", "workspace", ".agent-remote-tool-account.json", ".claude/skills/agent-remote-device/SKILL.md"} {
 		if _, err := os.Stat(filepath.Join(result.AccountRemotePath, relativePath)); err != nil {
 			t.Fatalf("expected %s to exist: %v", relativePath, err)
 		}

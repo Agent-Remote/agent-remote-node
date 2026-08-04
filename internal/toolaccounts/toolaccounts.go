@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
@@ -196,6 +197,11 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 	claudeJSONPath := filepath.Join(accountPath, ".claude.json")
 	if err := ensureFile(claudeJSONPath, []byte("{}\n")); err != nil {
 		return BindingResult{}, err
+	}
+	if payload.ToolType == "claude" {
+		if err := managedskills.InstallClaude(accountPath, nil); err != nil {
+			return BindingResult{}, err
+		}
 	}
 	markerPath := filepath.Join(accountPath, ".agent-remote-tool-account.json")
 	marker := map[string]any{

@@ -394,7 +394,7 @@ func TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(arguments) != 9 || arguments[0] != "--setting-sources" || arguments[1] != "" ||
+	if len(arguments) != 9 || arguments[0] != "--setting-sources" || arguments[1] != "user" ||
 		arguments[2] != "--settings" || arguments[4] != "--strict-mcp-config" ||
 		arguments[5] != "--mcp-config" {
 		t.Fatalf("unexpected managed arguments: %#v", arguments)

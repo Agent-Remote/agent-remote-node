@@ -35,9 +35,11 @@ the same version with different bytes is rejected. A missing, non-executable, or
 keeps device-control capability disabled.
 
 Eligible native Claude sessions receive a root-generated inline
-`--strict-mcp-config --mcp-config` value and inline `Stop`, `StopFailure`, and `SessionEnd` hooks. Device-enabled
-sessions load no user, project, or local settings sources, and reject CLI arguments that could
-replace settings, disable hooks, or override MCP configuration. Both hooks invoke the verified
+`--strict-mcp-config --mcp-config` value and inline `Stop`, `StopFailure`, and `SessionEnd` hooks. They retain the
+account's complete user settings source while rejecting CLI arguments that could replace settings,
+disable managed hooks, or override MCP configuration. The runtime helper also installs and updates
+the Agent Remote-owned `agent-remote-device` skill before account binding and session startup; it
+does not modify other account skills or configuration. Both hooks invoke the verified
 proxy binary in exec form over a fixed session-private lifecycle socket. The root helper binds the
 verified proxy binary and per-session bridge directory at fixed sandbox paths. Project files,
 account configuration, and user-provided CLI arguments cannot replace these paths.

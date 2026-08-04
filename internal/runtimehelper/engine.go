@@ -22,6 +22,7 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
+	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
@@ -1056,6 +1057,9 @@ func (e Engine) prepareAccount(ctx context.Context, payload map[string]any) (map
 	if err := ensureOwnedFile(filepath.Join(accountPath, ".claude.json"), []byte("{}\n"), 0o600, e.identity(userID)); err != nil {
 		return nil, err
 	}
+	if err := e.installManagedClaudeSkills(userID, accountPath); err != nil {
+		return nil, err
+	}
 	argv, err := claudeBindingArgv(payload)
 	if err != nil {
 		return nil, err
@@ -1113,6 +1117,9 @@ func (e Engine) startSession(ctx context.Context, payload map[string]any) (map[s
 		return nil, err
 	}
 	if err := e.prepareOwnedDirectories(userID, accountPath, filepath.Join(accountPath, ".claude")); err != nil {
+		return nil, err
+	}
+	if err := e.installManagedClaudeSkills(userID, accountPath); err != nil {
 		return nil, err
 	}
 	argv := textList(payload["argv"])
@@ -1782,6 +1789,14 @@ func (e Engine) prepareOwnedDirectories(userID string, paths ...string) error {
 	return nil
 }
 
+func (e Engine) installManagedClaudeSkills(userID string, accountPath string) error {
+	identity, err := e.ensureIdentity(userID)
+	if err != nil {
+		return err
+	}
+	return managedskills.InstallClaude(accountPath, &managedskills.Ownership{UID: identity.UID, GID: identity.GID})
+}
+
 func (e Engine) preparePrivateDirectories(userID string, paths ...string) error {
 	identity, err := e.ensureIdentity(userID)
 	if err != nil {
@@ -2168,7 +2183,7 @@ func managedDeviceControlArgv(_ string, argv []string) ([]string, error) {
 		return nil, err
 	}
 	managed := []string{
-		"--setting-sources", "", "--settings", string(encodedSettings),
+		"--setting-sources", "user", "--settings", string(encodedSettings),
 		"--strict-mcp-config", "--mcp-config", string(encodedMCP),
 	}
 	return append(managed, argv...), nil
