@@ -12,8 +12,11 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
+	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
+
+var deviceControlCapabilitiesV2 = devicecontrol.SupportedV2Capabilities()
 
 // Snapshot captures current node resource and runtime status.
 func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string) (api.ResourceStatus, api.RuntimeStatus) {
@@ -78,12 +81,14 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 			ProtocolVersions: []int{1},
 			Platforms:        []string{"macos"},
 			Backends:         []string{"native"},
+			Capabilities:     append([]string(nil), deviceControlCapabilitiesV2...),
 		}
 	} else {
 		capabilities.DeviceControl = api.DeviceControlCapability{
 			ProtocolVersions: []int{},
 			Platforms:        []string{},
 			Backends:         []string{},
+			Capabilities:     []string{},
 		}
 	}
 	return capabilities

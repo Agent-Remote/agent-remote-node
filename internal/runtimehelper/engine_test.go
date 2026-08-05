@@ -431,8 +431,15 @@ func TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths(t *testing.T) {
 	if device["command"] != "/opt/agent-remote/device/bin/agent-remote-device-proxy" {
 		t.Fatalf("unexpected proxy command: %#v", device)
 	}
-	if got := device["args"].([]any); !slices.Contains(got, "/tmp/lifecycle.sock") {
-		t.Fatalf("managed MCP arguments omit the lifecycle socket: %#v", got)
+	wantDeviceArgs := []any{
+		"--managed-context", "/run/agent-remote/device/context.json",
+		"--bridge-socket", "/run/agent-remote/device/bridge.sock",
+		"--lifecycle-socket", "/tmp/lifecycle.sock",
+		"--compact-tools",
+		"--optimization-metrics", "/tmp/agent-remote-device-optimization.jsonl",
+	}
+	if got := device["args"].([]any); !slices.Equal(got, wantDeviceArgs) {
+		t.Fatalf("unexpected managed MCP arguments: %#v", got)
 	}
 	encoded := arguments[6]
 	for _, forbidden := range []string{"http://", "https://", "ws://", "wss://", "token", "secret"} {
@@ -480,6 +487,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 		"platform":          "macos",
 		"generation":        uint64(1),
 		"lease_until":       now.Add(60 * time.Second).Format(time.RFC3339Nano),
+		"capabilities":      append([]string(nil), managedDeviceCapabilitiesV2...),
 	}
 	if _, err := engine.updateDeviceControlContext(payload); err != nil {
 		t.Fatal(err)
@@ -489,7 +497,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context.NextSequence != 1 || context.CurrentScreenshotGeneration != 0 {
+	if context.NextSequence != 1 || context.CurrentScreenshotGeneration != 0 || context.CurrentStateGeneration != 0 || !slices.Equal(context.Capabilities, managedDeviceCapabilitiesV2) {
 		t.Fatalf("unexpected initial context state: %#v", context)
 	}
 	context.Generation = devicecontrol.MaximumDeviceSessionGeneration
@@ -505,6 +513,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	}
 	context.NextSequence = 7
 	context.CurrentScreenshotGeneration = 5
+	context.CurrentStateGeneration = 9
 	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
 		t.Fatal(err)
 	}
@@ -516,7 +525,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renewed.NextSequence != 7 || renewed.CurrentScreenshotGeneration != 5 {
+	if renewed.NextSequence != 7 || renewed.CurrentScreenshotGeneration != 5 || renewed.CurrentStateGeneration != 9 || !slices.Equal(renewed.Capabilities, managedDeviceCapabilitiesV2) {
 		t.Fatalf("lease renewal reset action state: %#v", renewed)
 	}
 
@@ -530,6 +539,11 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if _, err := engine.updateDeviceControlContext(changedBinding); err == nil {
 		t.Fatal("expected a same-generation binding change to be rejected")
 	}
+	downgradedCapabilities := mapsClone(payload)
+	downgradedCapabilities["capabilities"] = []string{}
+	if _, err := engine.updateDeviceControlContext(downgradedCapabilities); err == nil {
+		t.Fatal("expected a same-generation capability downgrade to be rejected")
+	}
 
 	payload["generation"] = uint64(2)
 	payload["lease_until"] = now.Add(120 * time.Second).Format(time.RFC3339Nano)
@@ -540,7 +554,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondGeneration.NextSequence != 1 || secondGeneration.CurrentScreenshotGeneration != 0 {
+	if secondGeneration.NextSequence != 1 || secondGeneration.CurrentScreenshotGeneration != 0 || secondGeneration.CurrentStateGeneration != 0 || !slices.Equal(secondGeneration.Capabilities, managedDeviceCapabilitiesV2) {
 		t.Fatalf("new generation did not reset action state: %#v", secondGeneration)
 	}
 	clearPayload := map[string]any{

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -27,6 +28,22 @@ var (
 	uuidPattern     = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 	resourcePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 )
+
+var capabilitiesV2 = []string{
+	"adaptive_settle_v2",
+	"ax_state_v2",
+	"observation_mode_v2",
+}
+
+// SupportedV2Capabilities returns the canonical all-or-nothing v2 capability set.
+func SupportedV2Capabilities() []string {
+	return append([]string(nil), capabilitiesV2...)
+}
+
+// ValidCapabilities accepts either the v1 fallback or the complete canonical v2 set.
+func ValidCapabilities(capabilities []string) bool {
+	return len(capabilities) == 0 || slices.Equal(capabilities, capabilitiesV2)
+}
 
 // ActivatePayload is the zero-secret control-plane request for one device generation.
 type ActivatePayload struct {
@@ -52,15 +69,16 @@ type DeactivatePayload struct {
 
 // ContextPayload carries the active generation binding and its short authorization lease.
 type ContextPayload struct {
-	ProtocolVersion int    `json:"protocol_version"`
-	UserID          string `json:"user_id"`
-	DeviceID        string `json:"device_id"`
-	ToolSessionID   string `json:"tool_session_id"`
-	DeviceSessionID string `json:"device_session_id"`
-	NodeID          string `json:"node_id"`
-	Platform        string `json:"platform"`
-	Generation      uint64 `json:"generation"`
-	LeaseUntil      string `json:"lease_until"`
+	ProtocolVersion int      `json:"protocol_version"`
+	UserID          string   `json:"user_id"`
+	DeviceID        string   `json:"device_id"`
+	ToolSessionID   string   `json:"tool_session_id"`
+	DeviceSessionID string   `json:"device_session_id"`
+	NodeID          string   `json:"node_id"`
+	Platform        string   `json:"platform"`
+	Generation      uint64   `json:"generation"`
+	LeaseUntil      string   `json:"lease_until"`
+	Capabilities    []string `json:"capabilities"`
 }
 
 // DecodeActivatePayload strictly validates an activation task without accepting paths or secrets.
@@ -144,6 +162,9 @@ func DecodeContextPayload(payload map[string]any, expectedNodeID string, now tim
 	}
 	if decoded.Platform != "macos" || decoded.Generation == 0 || decoded.Generation > MaximumActiveDeviceSessionGeneration {
 		return ContextPayload{}, errors.New("context platform or generation is invalid")
+	}
+	if !ValidCapabilities(decoded.Capabilities) {
+		return ContextPayload{}, errors.New("device-control capabilities are invalid or incomplete")
 	}
 	leaseUntil, err := time.Parse(time.RFC3339Nano, decoded.LeaseUntil)
 	if err != nil || !leaseUntil.After(now) || leaseUntil.After(now.Add(5*time.Minute+30*time.Second)) {

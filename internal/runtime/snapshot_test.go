@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
@@ -62,6 +63,9 @@ func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
 	if len(capabilities.DeviceControl.Backends) != 1 || capabilities.DeviceControl.Backends[0] != "native" {
 		t.Fatalf("unsafe device-control backend: %#v", capabilities.DeviceControl)
 	}
+	if !slices.Equal(capabilities.DeviceControl.Capabilities, deviceControlCapabilitiesV2) {
+		t.Fatalf("unexpected device-control capabilities: %#v", capabilities.DeviceControl)
+	}
 }
 
 func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T) {
@@ -79,7 +83,7 @@ func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T)
 	if len(capabilities.SessionPortForwarding.ProtocolVersions) != 0 {
 		t.Fatalf("disabled capability exposed protocol versions: %#v", capabilities.SessionPortForwarding)
 	}
-	if capabilities.DeviceControl.Supported || len(capabilities.DeviceControl.ProtocolVersions) != 0 || len(capabilities.DeviceControl.Platforms) != 0 {
+	if capabilities.DeviceControl.Supported || len(capabilities.DeviceControl.ProtocolVersions) != 0 || len(capabilities.DeviceControl.Platforms) != 0 || len(capabilities.DeviceControl.Capabilities) != 0 {
 		t.Fatalf("device control must fail closed: %#v", capabilities.DeviceControl)
 	}
 }

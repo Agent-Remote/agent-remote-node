@@ -15,6 +15,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -264,17 +265,21 @@ type clearDeviceControlContextPayload struct {
 }
 
 type managedDeviceContext struct {
-	UserID                      string `json:"user_id"`
-	DeviceID                    string `json:"device_id"`
-	ToolSessionID               string `json:"tool_session_id"`
-	DeviceSessionID             string `json:"device_session_id"`
-	NodeID                      string `json:"node_id"`
-	Platform                    string `json:"platform"`
-	Generation                  uint64 `json:"generation"`
-	NextSequence                uint64 `json:"next_sequence"`
-	CurrentScreenshotGeneration uint64 `json:"current_screenshot_generation"`
-	LeaseUntil                  string `json:"lease_until"`
+	UserID                      string   `json:"user_id"`
+	DeviceID                    string   `json:"device_id"`
+	ToolSessionID               string   `json:"tool_session_id"`
+	DeviceSessionID             string   `json:"device_session_id"`
+	NodeID                      string   `json:"node_id"`
+	Platform                    string   `json:"platform"`
+	Generation                  uint64   `json:"generation"`
+	NextSequence                uint64   `json:"next_sequence"`
+	CurrentScreenshotGeneration uint64   `json:"current_screenshot_generation"`
+	CurrentStateGeneration      uint64   `json:"current_state_generation"`
+	Capabilities                []string `json:"capabilities"`
+	LeaseUntil                  string   `json:"lease_until"`
 }
+
+var managedDeviceCapabilitiesV2 = devicecontrol.SupportedV2Capabilities()
 
 func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]any, error) {
 	now := time.Now().UTC()
@@ -297,7 +302,9 @@ func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]a
 		UserID: decoded.UserID, DeviceID: decoded.DeviceID,
 		ToolSessionID: decoded.ToolSessionID, DeviceSessionID: decoded.DeviceSessionID,
 		NodeID: decoded.NodeID, Platform: decoded.Platform, Generation: decoded.Generation,
-		NextSequence: 1, CurrentScreenshotGeneration: 0, LeaseUntil: decoded.LeaseUntil,
+		NextSequence: 1, CurrentScreenshotGeneration: 0, CurrentStateGeneration: 0,
+		Capabilities: append([]string(nil), decoded.Capabilities...),
+		LeaseUntil:   decoded.LeaseUntil,
 	}
 	current, err := loadManagedDeviceContext(contextPath, spec)
 	if err == nil {
@@ -308,6 +315,9 @@ func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]a
 			if !sameDeviceControlBinding(current, context) {
 				return nil, errors.New("device-control binding changed within a generation")
 			}
+			if len(current.Capabilities) > 0 && !slices.Equal(current.Capabilities, context.Capabilities) {
+				return nil, errors.New("device-control capabilities changed within a generation")
+			}
 			currentLease, parseCurrentErr := time.Parse(time.RFC3339Nano, current.LeaseUntil)
 			newLease, parseNewErr := time.Parse(time.RFC3339Nano, context.LeaseUntil)
 			if parseCurrentErr != nil || parseNewErr != nil || newLease.Before(currentLease) {
@@ -315,6 +325,7 @@ func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]a
 			}
 			context.NextSequence = current.NextSequence
 			context.CurrentScreenshotGeneration = current.CurrentScreenshotGeneration
+			context.CurrentStateGeneration = current.CurrentStateGeneration
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
@@ -426,10 +437,15 @@ func loadManagedDeviceContext(path string, spec SessionSpec) (managedDeviceConte
 	if context.Generation == 0 ||
 		context.Generation > devicecontrol.MaximumActiveDeviceSessionGeneration ||
 		context.NextSequence == 0 ||
-		context.Platform != "macos" {
+		context.Platform != "macos" ||
+		!validManagedDeviceCapabilities(context.Capabilities) {
 		return managedDeviceContext{}, errors.New("device-control context data is invalid")
 	}
 	return context, nil
+}
+
+func validManagedDeviceCapabilities(capabilities []string) bool {
+	return devicecontrol.ValidCapabilities(capabilities)
 }
 
 func writeManagedDeviceContext(path string, context managedDeviceContext, spec SessionSpec) error {
@@ -2154,6 +2170,8 @@ func managedDeviceControlArgv(_ string, argv []string) ([]string, error) {
 					"--managed-context", "/run/agent-remote/device/context.json",
 					"--bridge-socket", "/run/agent-remote/device/bridge.sock",
 					"--lifecycle-socket", lifecycleSocket,
+					"--compact-tools",
+					"--optimization-metrics", "/tmp/agent-remote-device-optimization.jsonl",
 				},
 			},
 		},

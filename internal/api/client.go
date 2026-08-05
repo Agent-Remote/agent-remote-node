@@ -122,6 +122,7 @@ type DeviceControlCapability struct {
 	ProtocolVersions []int    `json:"protocol_versions"`
 	Platforms        []string `json:"platforms"`
 	Backends         []string `json:"backends"`
+	Capabilities     []string `json:"capabilities"`
 }
 
 // DeviceRelayMaterialRequest registers one generation-scoped proxy certificate pin.
