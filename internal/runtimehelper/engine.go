@@ -303,7 +303,7 @@ func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]a
 		ToolSessionID: decoded.ToolSessionID, DeviceSessionID: decoded.DeviceSessionID,
 		NodeID: decoded.NodeID, Platform: decoded.Platform, Generation: decoded.Generation,
 		NextSequence: 1, CurrentScreenshotGeneration: 0, CurrentStateGeneration: 0,
-		Capabilities: append([]string(nil), decoded.Capabilities...),
+		Capabilities: append([]string{}, decoded.Capabilities...),
 		LeaseUntil:   decoded.LeaseUntil,
 	}
 	current, err := loadManagedDeviceContext(contextPath, spec)

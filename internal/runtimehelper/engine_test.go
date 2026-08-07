@@ -580,6 +580,40 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	}
 }
 
+func TestDeviceControlContextSerializesEmptyCapabilitiesAsArray(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("managed device-control specs require root-owned runtime state on Linux")
+	}
+	engine, spec := managedDeviceControlTestEngine(t)
+	payload := map[string]any{
+		"protocol_version":  1,
+		"user_id":           spec.UserID,
+		"device_id":         "123e4567-e89b-42d3-a456-426614174002",
+		"tool_session_id":   spec.SessionID,
+		"device_session_id": "123e4567-e89b-42d3-a456-426614174003",
+		"node_id":           "123e4567-e89b-42d3-a456-426614174004",
+		"platform":          "macos",
+		"generation":        uint64(1),
+		"lease_until":       time.Now().UTC().Add(60 * time.Second).Format(time.RFC3339Nano),
+		"capabilities":      []string{},
+	}
+	if _, err := engine.updateDeviceControlContext(payload); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(spec.DeviceControlDirectory, "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	capabilities, ok := document["capabilities"].([]any)
+	if !ok || len(capabilities) != 0 {
+		t.Fatalf("empty capabilities must be encoded as an array: %s", data)
+	}
+}
+
 func managedDeviceControlTestEngine(t *testing.T) (Engine, SessionSpec) {
 	t.Helper()
 	stateRoot := t.TempDir()
