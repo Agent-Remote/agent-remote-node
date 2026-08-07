@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.2 - 2026-08-07
+
+- fix: preserve empty device capabilities (072524d)
+
 ## v0.2.1 - 2026-08-05
 
 - feat: propagate computer use v2 capabilities (5d2c8fc)
