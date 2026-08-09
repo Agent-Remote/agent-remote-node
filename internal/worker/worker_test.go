@@ -349,6 +349,65 @@ func TestWorkerPollOnceCompletesTask(t *testing.T) {
 	}
 }
 
+func TestWorkerPollOnceReplaysFailedTask(t *testing.T) {
+	var failed bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/node-api/tasks/poll":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"tasks": []map[string]any{{
+						"task_id":         "task_failed",
+						"node_id":         "node_1",
+						"task_type":       "stop_tool_session",
+						"idempotency_key": "task_failed",
+						"payload":         map[string]any{},
+					}},
+				},
+				"request_id": "req_test",
+			})
+		case "/api/v1/node-api/tasks/task_failed/fail":
+			var body struct {
+				Error map[string]any `json:"error"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error["code"] != "NODE_TASK_FAILED" || body.Error["message"] != "runtime failed" {
+				t.Fatalf("unexpected task error: %#v", body.Error)
+			}
+			failed = true
+			w.WriteHeader(http.StatusOK)
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	taskLedger, err := ledger.Open(t.TempDir() + "/ledger.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := taskLedger.Save(ledger.Entry{
+		TaskID: "task_failed",
+		Status: "failed",
+		Error: map[string]any{
+			"code":    "NODE_TASK_FAILED",
+			"message": "runtime failed",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{NodeID: "node_1", ServerURL: server.URL, NodeToken: "node_token"}.WithDefaults()
+	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
+	if err := w.PollOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !failed {
+		t.Fatal("expected persisted task failure to be replayed")
+	}
+}
+
 func TestWorkerPollOnceContinuesAfterTaskError(t *testing.T) {
 	var secondTaskCompleted atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

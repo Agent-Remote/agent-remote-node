@@ -211,8 +211,13 @@ func retryDelay(failures int, interval time.Duration, initial time.Duration, max
 }
 
 func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
-	if entry, ok := w.ledger.Get(task.TaskID); ok && entry.Status == "succeeded" {
-		return w.client.CompleteTask(ctx, task.TaskID, entry.Result)
+	if entry, ok := w.ledger.Get(task.TaskID); ok {
+		switch entry.Status {
+		case "succeeded":
+			return w.client.CompleteTask(ctx, task.TaskID, entry.Result)
+		case "failed":
+			return w.client.FailTask(ctx, task.TaskID, entry.Error)
+		}
 	}
 
 	if err := w.client.StartTask(ctx, task.TaskID); err != nil {

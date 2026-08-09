@@ -17,6 +17,9 @@ internal/workspace/        Managed workspace operations
 ```
 
 The worker must remain unprivileged and must not join the Docker group. Privileged actions pass through the root-owned Unix socket, peer credential checks, request validation, and serialized engine execution. Packages must not bypass this boundary with direct host mutations.
+The worker persists successful and failed task outcomes in its local idempotency ledger. When the
+control plane reissues an expired lease, the worker reports that stored terminal outcome instead
+of invoking the privileged runtime operation again.
 The worker, privileged helper, and every transient managed runtime explicitly disable core dumps;
 device screenshots, input, credentials, and session state must not enter host crash artifacts.
 
