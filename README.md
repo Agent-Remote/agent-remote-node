@@ -86,7 +86,7 @@ Native account binding requires a registered device token and an active SSH key.
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -186,7 +186,7 @@ version with different bytes is rejected, and capability remains disabled if the
 or not executable.
 
 ```sh
-VERSION=0.2.3 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+VERSION=0.2.4 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.

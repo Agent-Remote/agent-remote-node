@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.4 - 2026-08-09
+
+- fix(worker): replay persisted task failures (83b7678)
+
 ## v0.2.3 - 2026-08-09
 
 - feat: keep managed device skills consistent (a183145)
