@@ -68,7 +68,9 @@ Session port forwarding uses a separate no-PTY forced command and does not enabl
 Managed macOS device control advertises `observation_mode_v2`, `ax_state_v2`, and
 `adaptive_settle_v2` only when the Native Runtime and verified device proxy are
 available. The Server selects the complete set or an empty v1 fallback; partial
-sets and same-generation capability downgrades are rejected. Runtime Helper writes
+sets and same-generation capability downgrades are rejected. New generations use
+the complete v2 set by default, while the Server emergency switch forces the empty
+v1 set. Runtime Helper writes
 the negotiated set into the owner-only managed context, starts the proxy with the
 four-tool compact MCP surface, and fixes zero-content optimization metrics at
 `/tmp/agent-remote-device-optimization.jsonl` inside the isolated session.

@@ -67,7 +67,8 @@ Session 端口转发使用独立的无 PTY forced command，不会开启 OpenSSH
 
 受管 macOS 设备控制只有在 Native Runtime 和已验证 device proxy 可用时才广告
 `observation_mode_v2`、`ax_state_v2`、`adaptive_settle_v2`。Server 只选择完整集合或空的 v1
-fallback；部分集合和同 generation capability 降级都会被拒绝。Runtime Helper 把协商结果写入
+fallback；部分集合和同 generation capability 降级都会被拒绝。新 generation 默认选择完整 v2 集合，
+Server 紧急开关可强制选择空的 v1 集合。Runtime Helper 把协商结果写入
 owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔离 session 内的零内容优化指标
 固定写到 `/tmp/agent-remote-device-optimization.jsonl`。
 
