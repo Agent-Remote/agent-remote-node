@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.3 - 2026-08-09
+
+- feat: keep managed device skills consistent (a183145)
+
 ## v0.2.2 - 2026-08-07
 
 - fix: preserve empty device capabilities (072524d)
