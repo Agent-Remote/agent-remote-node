@@ -14,9 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.0
+      - uses: actions/checkout@v7.0.0
+        with:
+          repository: Agent-Remote/agent-remote-device
+          ref: main
+          path: .external/agent-remote-device
+          persist-credentials: false
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
+      - name: Verify managed skill matches device source
+        run: scripts/check-managed-skills.sh .external/agent-remote-device
       - name: Scan reachable Go vulnerabilities
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json
       - name: Upload Go vulnerability report

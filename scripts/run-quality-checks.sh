@@ -22,5 +22,6 @@ if scripts/check-coverage.sh "$coverage_profile" 100 >/dev/null 2>&1; then
   exit 1
 fi
 tests/install_scripts_test.sh
+tests/managed_skills_consistency_test.sh
 ruby tests/release_workflow_contract_test.rb
 git diff --check

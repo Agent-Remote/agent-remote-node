@@ -13,12 +13,22 @@ import (
 )
 
 const (
-	deviceSkillDirectory = ".claude/skills/agent-remote-device"
-	deviceSkillPath      = deviceSkillDirectory + "/SKILL.md"
+	deviceSkillDirectory           = ".claude/skills/agent-remote-device"
+	deviceSkillReferencesDirectory = deviceSkillDirectory + "/references"
+	deviceSkillPath                = deviceSkillDirectory + "/SKILL.md"
+	deviceBrowserReferencePath     = deviceSkillReferencesDirectory + "/browser.md"
 )
 
 //go:embed skills/agent-remote-device/SKILL.md
 var deviceSkill []byte
+
+//go:embed skills/agent-remote-device/references/browser.md
+var deviceBrowserReference []byte
+
+type managedFile struct {
+	path    string
+	content []byte
+}
 
 // Ownership identifies the account user that should own installed resources.
 type Ownership struct {
@@ -35,26 +45,42 @@ func InstallClaude(accountPath string, ownership *Ownership) error {
 	}
 	defer root.Close()
 
-	for _, path := range []string{".claude/skills", deviceSkillDirectory} {
+	for _, path := range []string{
+		".claude/skills",
+		deviceSkillDirectory,
+		deviceSkillReferencesDirectory,
+	} {
 		if err := ensureDirectory(root, path, ownership); err != nil {
 			return fmt.Errorf("prepare managed skill directory %s: %w", path, err)
 		}
 	}
-	info, err := root.Lstat(deviceSkillPath)
+	for _, file := range []managedFile{
+		{path: deviceSkillPath, content: deviceSkill},
+		{path: deviceBrowserReferencePath, content: deviceBrowserReference},
+	} {
+		if err := installManagedFile(root, file, ownership); err != nil {
+			return fmt.Errorf("install managed skill file %s: %w", file.path, err)
+		}
+	}
+	return nil
+}
+
+func installManagedFile(root *os.Root, file managedFile, ownership *Ownership) error {
+	info, err := root.Lstat(file.path)
 	if err == nil && !info.Mode().IsRegular() {
 		return errors.New("managed skill path is not a regular file")
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect managed skill: %w", err)
 	}
-	current, err := root.ReadFile(deviceSkillPath)
-	if err == nil && bytes.Equal(current, deviceSkill) {
-		return applyFileMetadata(root, deviceSkillPath, ownership)
+	current, err := root.ReadFile(file.path)
+	if err == nil && bytes.Equal(current, file.content) {
+		return applyFileMetadata(root, file.path, ownership)
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read managed skill: %w", err)
 	}
-	if err := writeFileAtomic(root, deviceSkillPath, deviceSkill, ownership); err != nil {
+	if err := writeFileAtomic(root, file.path, file.content, ownership); err != nil {
 		return fmt.Errorf("write managed skill: %w", err)
 	}
 	return nil

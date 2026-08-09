@@ -37,6 +37,14 @@ jobs:
             exit 1
           fi
           echo "value=${version}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v7.0.0
+        with:
+          repository: Agent-Remote/agent-remote-device
+          ref: v${{ steps.version.outputs.value }}
+          path: .external/agent-remote-device
+          persist-credentials: false
+      - name: Verify managed skill matches tagged device source
+        run: scripts/check-managed-skills.sh .external/agent-remote-device
       - name: Prepare version files
         run: scripts/prepare-release.sh "${{ steps.version.outputs.value }}"
       - name: Commit and tag

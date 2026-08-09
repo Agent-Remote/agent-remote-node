@@ -43,6 +43,9 @@ does not modify other account skills or configuration. Both hooks invoke the ver
 proxy binary in exec form over a fixed session-private lifecycle socket. The root helper binds the
 verified proxy binary and per-session bridge directory at fixed sandbox paths. Project files,
 account configuration, and user-provided CLI arguments cannot replace these paths.
+Node CI must compare the managed skill against the Device repository's main branch, and a Node
+release must compare it against the matching Device version tag. Tests must also verify that the
+runtime writes the complete embedded skill tree into the Claude account without content drift.
 
 The unprivileged worker owns the per-generation Unix bridge listener, authenticates its fixed
 binding against the activation manifest, exchanges proxy relay material with node credentials,
