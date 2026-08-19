@@ -403,7 +403,8 @@ func ensureGitReady(workspacePath string) error {
 		if entry.IsDir() && (path == filepath.Join(gitPath, "hooks") || path == filepath.Join(gitPath, "worktrees")) {
 			return filepath.SkipDir
 		}
-		if !entry.IsDir() && filepath.Ext(path) == ".lock" {
+		maintenanceLock := filepath.Join(gitPath, "objects", "maintenance.lock")
+		if !entry.IsDir() && filepath.Ext(path) == ".lock" && path != maintenanceLock {
 			locks = append(locks, path)
 		}
 		return nil
