@@ -169,6 +169,10 @@ Node.js 默认安装经过校验的最新 22.x 版本。可用 `--nodejs-version
 
 ## 发布打包
 
+Node 与 Device 使用彼此独立的发布版本。`release-dependencies.json` 固定每个 Node 发布包内置的
+Device proxy 精确 tag、commit 和制品签名 workflow。升级该依赖必须作为可审查的源码变更完成；准备新的 Node 版本
+不会改写它。
+
 Linux 发布包要求按架构和 libc 提供对应的受管 device proxy：
 
 ```text

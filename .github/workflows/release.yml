@@ -40,6 +40,22 @@ jobs:
           source_version=$(sed -n 's/^var DefaultVersion = "\([^"]*\)"/\1/p' internal/config/config.go)
           test "$source_version" = "$version"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
+      - name: Resolve pinned device proxy dependency
+        id: device
+        run: |
+          set -euo pipefail
+          test "$(jq -er .schema_version release-dependencies.json)" = "2"
+          test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
+            "Agent-Remote/agent-remote-device"
+          version=$(jq -er .device_proxy.version release-dependencies.json)
+          commit=$(jq -er .device_proxy.commit release-dependencies.json)
+          workflow=$(jq -er .device_proxy.release_workflow release-dependencies.json)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "workflow=$workflow" >> "$GITHUB_OUTPUT"
       - name: Scan reachable Go vulnerabilities
         env:
           VERSION: ${{ steps.version.outputs.value }}
@@ -51,35 +67,40 @@ jobs:
       - uses: actions/checkout@v7.0.0
         with:
           repository: Agent-Remote/agent-remote-device
-          ref: v${{ steps.version.outputs.value }}
+          ref: v${{ steps.device.outputs.version }}
           path: .external/agent-remote-device
           persist-credentials: false
       - name: Verify managed skill matches tagged device source
-        run: scripts/check-managed-skills.sh .external/agent-remote-device
+        env:
+          DEVICE_COMMIT: ${{ steps.device.outputs.commit }}
+        run: |
+          test "$(git -C .external/agent-remote-device rev-parse HEAD)" = "$DEVICE_COMMIT"
+          scripts/check-managed-skills.sh .external/agent-remote-device
       - uses: sigstore/cosign-installer@v4.0.0
       - name: Download and verify matching device proxy releases
         env:
           GH_TOKEN: ${{ github.token }}
-          VERSION: ${{ steps.version.outputs.value }}
+          DEVICE_VERSION: ${{ steps.device.outputs.version }}
+          DEVICE_WORKFLOW: ${{ steps.device.outputs.workflow }}
         run: |
           set -euo pipefail
           download="$RUNNER_TEMP/device-download"
           proxy_root="$RUNNER_TEMP/device-proxies"
           mkdir -p "$download" "$proxy_root"
-          gh release download "v${VERSION}" \
+          gh release download "v${DEVICE_VERSION}" \
             --repo Agent-Remote/agent-remote-device \
             --dir "$download" \
-            --pattern "agent-remote-device-proxy-*-${VERSION}.tar.gz" \
-            --pattern "agent-remote-device-proxy-*-${VERSION}.tar.gz.sha256" \
-            --pattern "agent-remote-device-proxy-*-${VERSION}.tar.gz.sigstore.json"
+            --pattern "agent-remote-device-proxy-*-${DEVICE_VERSION}.tar.gz" \
+            --pattern "agent-remote-device-proxy-*-${DEVICE_VERSION}.tar.gz.sha256" \
+            --pattern "agent-remote-device-proxy-*-${DEVICE_VERSION}.tar.gz.sigstore.json"
           for label in linux-amd64-glibc linux-arm64-glibc linux-amd64-musl linux-arm64-musl; do
-            archive="agent-remote-device-proxy-${label}-${VERSION}.tar.gz"
+            archive="agent-remote-device-proxy-${label}-${DEVICE_VERSION}.tar.gz"
             test -f "$download/$archive"
             (cd "$download" && sha256sum --check "$archive.sha256")
             cosign verify-blob \
               --bundle "$download/$archive.sigstore.json" \
               --certificate-identity \
-                "https://github.com/Agent-Remote/agent-remote-device/.github/workflows/prepare-release.yml@refs/tags/v${VERSION}" \
+                "https://github.com/Agent-Remote/agent-remote-device/.github/workflows/${DEVICE_WORKFLOW}@refs/tags/v${DEVICE_VERSION}" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
               "$download/$archive"
             mkdir -p "$proxy_root/$label"

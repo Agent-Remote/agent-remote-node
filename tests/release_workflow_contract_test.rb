@@ -27,6 +27,10 @@ uses = steps.map { |step| step["uses"] }.compact
 
 required = [
   "refs/tags/v${version}",
+  "release-dependencies.json",
+  "DEVICE_VERSION",
+  "DEVICE_WORKFLOW",
+  "device_proxy.release_workflow",
   "Agent-Remote/agent-remote-device",
   "sha256sum --check",
   "govulncheck@v1.6.0",
@@ -45,25 +49,28 @@ device_checkouts = steps.select do |step|
   step["uses"]&.start_with?("actions/checkout@") &&
     step.dig("with", "repository") == "Agent-Remote/agent-remote-device"
 end
-raise "release workflow does not check out the matching device tag" unless device_checkouts.any? { |step| step.dig("with", "ref") == "v${{ steps.version.outputs.value }}" }
+raise "release workflow does not check out the pinned device tag" unless device_checkouts.any? { |step| step.dig("with", "ref") == "v${{ steps.device.outputs.version }}" }
+raise "release workflow does not verify the pinned device commit" unless commands.include?("DEVICE_COMMIT")
 raise "release workflow does not compare managed skills" unless commands.include?("scripts/check-managed-skills.sh")
 
 ci_commands = ci_steps.map { |step| step["run"] }.compact.join("\n")
 ci_device_checkout = ci_steps.any? do |step|
   step["uses"]&.start_with?("actions/checkout@") &&
     step.dig("with", "repository") == "Agent-Remote/agent-remote-device" &&
-    step.dig("with", "ref") == "main"
+    step.dig("with", "ref") == "v${{ steps.device.outputs.version }}"
 end
-raise "CI does not check out the device source" unless ci_device_checkout
+raise "CI does not check out the pinned device source" unless ci_device_checkout
+raise "CI does not resolve the pinned dependency" unless ci_commands.include?("release-dependencies.json")
 raise "CI does not compare managed skills" unless ci_commands.include?("scripts/check-managed-skills.sh")
 
 prepare_commands = prepare_steps.map { |step| step["run"] }.compact.join("\n")
 prepare_device_checkout = prepare_steps.any? do |step|
   step["uses"]&.start_with?("actions/checkout@") &&
     step.dig("with", "repository") == "Agent-Remote/agent-remote-device" &&
-    step.dig("with", "ref") == "v${{ steps.version.outputs.value }}"
+    step.dig("with", "ref") == "v${{ steps.device.outputs.version }}"
 end
-raise "prepare-release does not check out the matching device tag" unless prepare_device_checkout
+raise "prepare-release does not check out the pinned device tag" unless prepare_device_checkout
+raise "prepare-release does not resolve the pinned dependency" unless prepare_commands.include?("release-dependencies.json")
 raise "prepare-release does not compare managed skills" unless prepare_commands.include?("scripts/check-managed-skills.sh")
 prepare_check_index = prepare_steps.index { |step| step["name"] == "Verify managed skill matches tagged device source" }
 prepare_tag_index = prepare_steps.index { |step| step["name"] == "Commit and tag" }

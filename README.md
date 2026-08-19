@@ -172,6 +172,10 @@ Install from an extracted release archive with the same one-command options:
 
 ## Release Packaging
 
+Node and Device use independent release versions. `release-dependencies.json` pins the exact
+Device proxy tag, commit, and artifact-signing workflow embedded by a Node release. Updating that dependency is an explicit,
+reviewable source change; preparing a new Node version does not rewrite it.
+
 Linux packages require an architecture- and libc-matched managed device proxy at:
 
 ```text
