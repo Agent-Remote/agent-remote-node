@@ -1,6 +1,6 @@
 module github.com/Agent-Remote/agent-remote-node
 
-go 1.26.5
+go 1.26.6
 
 require (
 	golang.org/x/net v0.57.0

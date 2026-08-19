@@ -34,6 +34,7 @@ required = [
   "Agent-Remote/agent-remote-device",
   "sha256sum --check",
   "govulncheck@v1.6.0",
+  'any(.[]; has("finding")) | not',
   "$report.sha256",
   "$report.sigstore.json",
   "$sbom.sigstore.json",
@@ -62,6 +63,7 @@ end
 raise "CI does not check out the pinned device source" unless ci_device_checkout
 raise "CI does not resolve the pinned dependency" unless ci_commands.include?("release-dependencies.json")
 raise "CI does not compare managed skills" unless ci_commands.include?("scripts/check-managed-skills.sh")
+raise "CI does not reject Go vulnerability findings" unless ci_commands.include?('any(.[]; has("finding")) | not')
 
 prepare_commands = prepare_steps.map { |step| step["run"] }.compact.join("\n")
 prepare_device_checkout = prepare_steps.any? do |step|
@@ -80,3 +82,6 @@ raise "release workflow does not generate an SBOM" unless uses.any? { |value| va
 raise "release workflow does not attest provenance" unless uses.any? { |value| value.start_with?("actions/attest-build-provenance@") }
 raise "release workflow does not publish the SBOM signature" unless File.read(File.join(repository_root, ".github/workflows/release.yml")).include?(".spdx.json.sigstore.json")
 raise "release checksums must contain asset basenames" unless commands.include?('(cd dist && sha256sum "$archive_name"')
+
+dockerfile = File.read(File.join(repository_root, "Dockerfile"))
+raise "Docker build must copy the locked Go dependency checksums" unless dockerfile.include?("COPY go.mod go.sum ./")

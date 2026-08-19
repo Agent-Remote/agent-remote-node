@@ -45,7 +45,9 @@ jobs:
           test "$(git -C .external/agent-remote-device rev-parse HEAD)" = "$DEVICE_COMMIT"
           scripts/check-managed-skills.sh .external/agent-remote-device
       - name: Scan reachable Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json
+          jq -s -e 'any(.[]; has("finding")) | not' govulncheck.json >/dev/null
       - name: Upload Go vulnerability report
         if: always()
         uses: actions/upload-artifact@v7.0.1

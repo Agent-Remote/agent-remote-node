@@ -65,6 +65,7 @@ jobs:
           set -euo pipefail
           report="agent-remote-node-${VERSION}.govulncheck.json"
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$report"
+          jq -s -e 'any(.[]; has("finding")) | not' "$report" >/dev/null
           sha256sum "$report" > "$report.sha256"
       - uses: actions/checkout@v7.0.0
         with:

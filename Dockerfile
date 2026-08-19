@@ -1,7 +1,7 @@
-FROM golang:1.26.5-alpine AS build
+FROM golang:1.26.6-alpine AS build
 
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
 COPY cmd ./cmd
 COPY internal ./internal
 RUN go build -o /out/agent-remote-node ./cmd/agent-remote-node
