@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.8 - 2026-08-19
+
+- chore: pin device proxy v0.2.8 (bfd5f4d)
+- feat: pin independent device proxy releases (22a43cc)
+
 ## v0.2.7 - 2026-08-13
 
 - docs: sync computer use skill guidance (a784045)
