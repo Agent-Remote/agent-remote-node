@@ -53,9 +53,11 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
-          echo "workflow=$workflow" >> "$GITHUB_OUTPUT"
+          {
+            echo "version=$version"
+            echo "commit=$commit"
+            echo "workflow=$workflow"
+          } >> "$GITHUB_OUTPUT"
       - name: Scan reachable Go vulnerabilities
         env:
           VERSION: ${{ steps.version.outputs.value }}
