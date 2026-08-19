@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.9 - 2026-08-19
+
+- fix: allow concurrent Git maintenance locks (0588631)
+- fix: update Go toolchain security patch (c13a5b0)
+
 ## v0.2.8 - 2026-08-19
 
 - chore: pin device proxy v0.2.8 (bfd5f4d)
