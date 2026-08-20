@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.10 - 2026-08-20
+
+- chore: pin device proxy v0.2.9 (3f10223)
+
 ## v0.2.9 - 2026-08-19
 
 - fix: allow concurrent Git maintenance locks (0588631)
