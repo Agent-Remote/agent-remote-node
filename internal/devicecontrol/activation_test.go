@@ -188,6 +188,10 @@ func TestContextPayloadRejectsUnknownFieldsWrongNodeAndLongLease(t *testing.T) {
 	if _, err := DecodeContextPayload(payload, testNodeID, now); err != nil {
 		t.Fatalf("complete v2 capabilities were rejected: %v", err)
 	}
+	payload["capabilities"] = append([]string(nil), requiredCapabilitiesV2...)
+	if _, err := DecodeContextPayload(payload, testNodeID, now); err != nil {
+		t.Fatalf("legacy v2 base capabilities were rejected: %v", err)
+	}
 	payload["capabilities"] = []string{"ax_state_v2"}
 	if _, err := DecodeContextPayload(payload, testNodeID, now); err == nil {
 		t.Fatal("expected partial v2 capability rejection")

@@ -65,11 +65,13 @@ Native developer credential profiles provide persistent Git and GitHub CLI confi
 
 Session port forwarding uses a separate no-PTY forced command and does not enable OpenSSH TCP forwarding. After redeeming a device- and SSH-key-bound one-time token, one HTTP/2 tunnel carries CONNECT streams for exactly one authorized runtime loopback port. The privileged Runtime Helper resolves the managed session network namespace itself and returns only an already-connected socket FD over `SCM_RIGHTS`; clients cannot provide a host, IP, PID, namespace path, or container ID. Heartbeats currently advertise this capability for Native Runtime only. Docker Sandbox remains disabled for forwarding until an equivalent audited network-namespace path is available.
 
-Managed macOS device control advertises `observation_mode_v2`, `ax_state_v2`, and
-`adaptive_settle_v2` only when the Native Runtime and verified device proxy are
-available. The Server selects the complete set or an empty v1 fallback; partial
-sets and same-generation capability downgrades are rejected. New generations use
-the complete v2 set by default, while the Server emergency switch forces the empty
+Managed macOS device control advertises the required `observation_mode_v2`,
+`ax_state_v2`, and `adaptive_settle_v2` base plus the optional
+`clipboard_payload_v2` extension only when the Native Runtime and verified device
+proxy are available. The Server selects the complete required base, includes
+supported extensions, or uses an empty v1 fallback; partial sets and
+same-generation capability changes are rejected. New generations use the
+supported v2 set by default, while the Server emergency switch forces the empty
 v1 set. Runtime Helper writes
 the negotiated set into the owner-only managed context, starts the proxy with the
 four-tool compact MCP surface, and fixes zero-content optimization metrics at

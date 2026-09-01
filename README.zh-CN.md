@@ -65,9 +65,10 @@ Native developer credential profile 提供持久 Git 和 GitHub CLI 配置目录
 
 Session 端口转发使用独立的无 PTY forced command，不会开启 OpenSSH TCP forwarding。Node 兑换绑定设备和 SSH key 的一次性 token 后，一条 HTTP/2 隧道只承载一个已授权 runtime loopback 端口的 CONNECT stream。特权 Runtime Helper 自行解析受管 session network namespace，并仅通过 `SCM_RIGHTS` 返回已经连接的 socket FD；客户端不能提供 host、IP、PID、namespace path 或 container ID。当前 heartbeat 只为 Native Runtime 上报该能力；Docker Sandbox 在具备等价且可审计的 network namespace 路径前保持关闭。
 
-受管 macOS 设备控制只有在 Native Runtime 和已验证 device proxy 可用时才广告
-`observation_mode_v2`、`ax_state_v2`、`adaptive_settle_v2`。Server 只选择完整集合或空的 v1
-fallback；部分集合和同 generation capability 降级都会被拒绝。新 generation 默认选择完整 v2 集合，
+受管 macOS 设备控制只有在 Native Runtime 和已验证 device proxy 可用时才广告必需的
+`observation_mode_v2`、`ax_state_v2`、`adaptive_settle_v2` 基础集合，以及可选的
+`clipboard_payload_v2` 扩展。Server 会选择完整基础集合并带上双方支持的扩展，或使用空的 v1
+fallback；部分集合和同 generation capability 变化都会被拒绝。新 generation 默认选择受支持的 v2 集合，
 Server 紧急开关可强制选择空的 v1 集合。Runtime Helper 把协商结果写入
 owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔离 session 内的零内容优化指标
 固定写到 `/tmp/agent-remote-device-optimization.jsonl`。

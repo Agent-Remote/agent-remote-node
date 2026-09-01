@@ -29,20 +29,29 @@ var (
 	resourcePattern = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
 )
 
-var capabilitiesV2 = []string{
+var requiredCapabilitiesV2 = []string{
 	"adaptive_settle_v2",
 	"ax_state_v2",
 	"observation_mode_v2",
 }
 
-// SupportedV2Capabilities returns the canonical all-or-nothing v2 capability set.
+var capabilitiesV2 = []string{
+	"adaptive_settle_v2",
+	"ax_state_v2",
+	"clipboard_payload_v2",
+	"observation_mode_v2",
+}
+
+// SupportedV2Capabilities returns the canonical v2 set with supported extensions.
 func SupportedV2Capabilities() []string {
 	return append([]string(nil), capabilitiesV2...)
 }
 
-// ValidCapabilities accepts either the v1 fallback or the complete canonical v2 set.
+// ValidCapabilities accepts v1, the v2 base, or the base with supported extensions.
 func ValidCapabilities(capabilities []string) bool {
-	return len(capabilities) == 0 || slices.Equal(capabilities, capabilitiesV2)
+	return len(capabilities) == 0 ||
+		slices.Equal(capabilities, requiredCapabilitiesV2) ||
+		slices.Equal(capabilities, capabilitiesV2)
 }
 
 // ActivatePayload is the zero-secret control-plane request for one device generation.
