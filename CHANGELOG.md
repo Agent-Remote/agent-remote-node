@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.11 - 2026-09-01
+
+- feat(device-control): negotiate clipboard payload extension (6309293)
+
 ## v0.2.10 - 2026-08-20
 
 - chore: pin device proxy v0.2.9 (3f10223)
