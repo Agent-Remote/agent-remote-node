@@ -3,7 +3,7 @@
   "device_proxy": {
     "repository": "Agent-Remote/agent-remote-device",
     "release_workflow": "release.yml",
-    "version": "0.2.10",
-    "commit": "277b197b0f058f447a7086bfb2b798fb390ba544"
+    "version": "0.2.11",
+    "commit": "60cfe213a49f7ef6e1457a561401552b5155cefb"
   }
 }
