@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.13 - 2026-09-03
+
+- feat: propagate session full-trust capabilities (a6d7cf7)
+- docs(device-control): sync managed skill guidance (7956773)
+
 ## v0.2.12 - 2026-09-02
 
 - fix(device-control): pin device proxy v0.2.11 (4ff557a)
