@@ -477,6 +477,12 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	}
 	engine, spec := managedDeviceControlTestEngine(t)
 	now := time.Now().UTC()
+	legacyCapabilities := []string{
+		"adaptive_settle_v2",
+		"ax_state_v2",
+		"clipboard_payload_v2",
+		"observation_mode_v2",
+	}
 	payload := map[string]any{
 		"protocol_version":  1,
 		"user_id":           spec.UserID,
@@ -487,7 +493,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 		"platform":          "macos",
 		"generation":        uint64(1),
 		"lease_until":       now.Add(60 * time.Second).Format(time.RFC3339Nano),
-		"capabilities":      append([]string(nil), managedDeviceCapabilitiesV2...),
+		"capabilities":      append([]string(nil), legacyCapabilities...),
 	}
 	if _, err := engine.updateDeviceControlContext(payload); err != nil {
 		t.Fatal(err)
@@ -497,8 +503,11 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if context.NextSequence != 1 || context.CurrentScreenshotGeneration != 0 || context.CurrentStateGeneration != 0 || !slices.Equal(context.Capabilities, managedDeviceCapabilitiesV2) {
+	if context.NextSequence != 1 || context.CurrentScreenshotGeneration != 0 || context.CurrentStateGeneration != 0 || !slices.Equal(context.Capabilities, legacyCapabilities) {
 		t.Fatalf("unexpected initial context state: %#v", context)
+	}
+	if context.AuthorizationMode != devicecontrol.AuthorizationModePerApplicationApproval || context.AuthorizationPolicyVersion != 1 {
+		t.Fatalf("unexpected authorization identity: %#v", context)
 	}
 	context.Generation = devicecontrol.MaximumDeviceSessionGeneration
 	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
@@ -525,7 +534,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if renewed.NextSequence != 7 || renewed.CurrentScreenshotGeneration != 5 || renewed.CurrentStateGeneration != 9 || !slices.Equal(renewed.Capabilities, managedDeviceCapabilitiesV2) {
+	if renewed.NextSequence != 7 || renewed.CurrentScreenshotGeneration != 5 || renewed.CurrentStateGeneration != 9 || !slices.Equal(renewed.Capabilities, legacyCapabilities) {
 		t.Fatalf("lease renewal reset action state: %#v", renewed)
 	}
 
@@ -544,6 +553,13 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if _, err := engine.updateDeviceControlContext(downgradedCapabilities); err == nil {
 		t.Fatal("expected a same-generation capability downgrade to be rejected")
 	}
+	changedAuthorization := mapsClone(payload)
+	changedAuthorization["authorization_mode"] = devicecontrol.AuthorizationModeSessionFullTrust
+	changedAuthorization["authorization_policy_version"] = 1
+	changedAuthorization["capabilities"] = devicecontrol.SupportedV2Capabilities()
+	if _, err := engine.updateDeviceControlContext(changedAuthorization); err == nil {
+		t.Fatal("expected a same-generation authorization change to be rejected")
+	}
 
 	payload["generation"] = uint64(2)
 	payload["lease_until"] = now.Add(120 * time.Second).Format(time.RFC3339Nano)
@@ -554,7 +570,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if secondGeneration.NextSequence != 1 || secondGeneration.CurrentScreenshotGeneration != 0 || secondGeneration.CurrentStateGeneration != 0 || !slices.Equal(secondGeneration.Capabilities, managedDeviceCapabilitiesV2) {
+	if secondGeneration.NextSequence != 1 || secondGeneration.CurrentScreenshotGeneration != 0 || secondGeneration.CurrentStateGeneration != 0 || !slices.Equal(secondGeneration.Capabilities, legacyCapabilities) {
 		t.Fatalf("new generation did not reset action state: %#v", secondGeneration)
 	}
 	clearPayload := map[string]any{
@@ -611,6 +627,36 @@ func TestDeviceControlContextSerializesEmptyCapabilitiesAsArray(t *testing.T) {
 	capabilities, ok := document["capabilities"].([]any)
 	if !ok || len(capabilities) != 0 {
 		t.Fatalf("empty capabilities must be encoded as an array: %s", data)
+	}
+
+	delete(document, "authorization_mode")
+	delete(document, "authorization_policy_version")
+	legacyData, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	contextPath := filepath.Join(spec.DeviceControlDirectory, "context.json")
+	if err := os.WriteFile(contextPath, legacyData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacy, err := loadManagedDeviceContext(contextPath, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if legacy.AuthorizationMode != devicecontrol.AuthorizationModePerApplicationApproval || legacy.AuthorizationPolicyVersion != 1 {
+		t.Fatalf("legacy authorization was not normalized: %#v", legacy)
+	}
+
+	document["authorization_mode"] = devicecontrol.AuthorizationModePerApplicationApproval
+	partialData, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(contextPath, partialData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadManagedDeviceContext(contextPath, spec); err == nil {
+		t.Fatal("expected partially specified persisted authorization rejection")
 	}
 }
 

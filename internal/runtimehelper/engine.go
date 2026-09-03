@@ -265,6 +265,8 @@ type clearDeviceControlContextPayload struct {
 }
 
 type managedDeviceContext struct {
+	AuthorizationMode           string   `json:"authorization_mode"`
+	AuthorizationPolicyVersion  int      `json:"authorization_policy_version"`
 	UserID                      string   `json:"user_id"`
 	DeviceID                    string   `json:"device_id"`
 	ToolSessionID               string   `json:"tool_session_id"`
@@ -278,8 +280,6 @@ type managedDeviceContext struct {
 	Capabilities                []string `json:"capabilities"`
 	LeaseUntil                  string   `json:"lease_until"`
 }
-
-var managedDeviceCapabilitiesV2 = devicecontrol.SupportedV2Capabilities()
 
 func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]any, error) {
 	now := time.Now().UTC()
@@ -299,6 +299,7 @@ func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]a
 		return nil, err
 	}
 	context := managedDeviceContext{
+		AuthorizationMode: decoded.AuthorizationMode, AuthorizationPolicyVersion: decoded.AuthorizationPolicyVersion,
 		UserID: decoded.UserID, DeviceID: decoded.DeviceID,
 		ToolSessionID: decoded.ToolSessionID, DeviceSessionID: decoded.DeviceSessionID,
 		NodeID: decoded.NodeID, Platform: decoded.Platform, Generation: decoded.Generation,
@@ -434,18 +435,22 @@ func loadManagedDeviceContext(path string, spec SessionSpec) (managedDeviceConte
 	if err := decodeStrictJSON(data, &context); err != nil {
 		return managedDeviceContext{}, err
 	}
+	if context.AuthorizationMode == "" && context.AuthorizationPolicyVersion == 0 {
+		context.AuthorizationMode = devicecontrol.AuthorizationModePerApplicationApproval
+		context.AuthorizationPolicyVersion = 1
+	}
 	if context.Generation == 0 ||
 		context.Generation > devicecontrol.MaximumActiveDeviceSessionGeneration ||
 		context.NextSequence == 0 ||
 		context.Platform != "macos" ||
-		!validManagedDeviceCapabilities(context.Capabilities) {
+		!devicecontrol.ValidCapabilitiesForAuthorization(
+			context.AuthorizationMode,
+			context.AuthorizationPolicyVersion,
+			context.Capabilities,
+		) {
 		return managedDeviceContext{}, errors.New("device-control context data is invalid")
 	}
 	return context, nil
-}
-
-func validManagedDeviceCapabilities(capabilities []string) bool {
-	return devicecontrol.ValidCapabilities(capabilities)
 }
 
 func writeManagedDeviceContext(path string, context managedDeviceContext, spec SessionSpec) error {
@@ -493,7 +498,9 @@ func writeManagedDeviceContext(path string, context managedDeviceContext, spec S
 }
 
 func sameDeviceControlBinding(left managedDeviceContext, right managedDeviceContext) bool {
-	return left.UserID == right.UserID && left.DeviceID == right.DeviceID &&
+	return left.AuthorizationMode == right.AuthorizationMode &&
+		left.AuthorizationPolicyVersion == right.AuthorizationPolicyVersion &&
+		left.UserID == right.UserID && left.DeviceID == right.DeviceID &&
 		left.ToolSessionID == right.ToolSessionID && left.DeviceSessionID == right.DeviceSessionID &&
 		left.NodeID == right.NodeID && left.Platform == right.Platform && left.Generation == right.Generation
 }

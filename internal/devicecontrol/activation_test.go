@@ -185,8 +185,12 @@ func TestContextPayloadRejectsUnknownFieldsWrongNodeAndLongLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	payload["capabilities"] = SupportedV2Capabilities()
+	if _, err := DecodeContextPayload(payload, testNodeID, now); err == nil {
+		t.Fatal("expected legacy authorization to reject full-trust capabilities")
+	}
+	payload["capabilities"] = append([]string(nil), legacyCapabilitiesV2...)
 	if _, err := DecodeContextPayload(payload, testNodeID, now); err != nil {
-		t.Fatalf("complete v2 capabilities were rejected: %v", err)
+		t.Fatalf("legacy v2 capabilities were rejected: %v", err)
 	}
 	payload["capabilities"] = append([]string(nil), requiredCapabilitiesV2...)
 	if _, err := DecodeContextPayload(payload, testNodeID, now); err != nil {
@@ -208,6 +212,42 @@ func TestContextPayloadRejectsUnknownFieldsWrongNodeAndLongLease(t *testing.T) {
 	payload["lease_until"] = now.Add(10 * time.Minute).Format(time.RFC3339Nano)
 	if _, err := DecodeContextPayload(payload, testNodeID, now); err == nil {
 		t.Fatal("expected long lease rejection")
+	}
+}
+
+// TestAuthorizationModeBindsTheExactCapabilitySet verifies full-trust cannot use a legacy set.
+func TestAuthorizationModeBindsTheExactCapabilitySet(t *testing.T) {
+	now := time.Now().UTC()
+	activation := validActivation(now)
+	activation["authorization_mode"] = AuthorizationModeSessionFullTrust
+	activation["authorization_policy_version"] = 1
+	decodedActivation, err := DecodeActivatePayload(activation, testNodeID, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decodedActivation.AuthorizationMode != AuthorizationModeSessionFullTrust {
+		t.Fatalf("unexpected authorization mode: %s", decodedActivation.AuthorizationMode)
+	}
+
+	delete(activation, "authorization_policy_version")
+	if _, err := DecodeActivatePayload(activation, testNodeID, now); err == nil {
+		t.Fatal("expected partially specified authorization rejection")
+	}
+
+	context := validActivation(now)
+	delete(context, "expires_at")
+	delete(context, "runtime_backend")
+	delete(context, "runtime_resource_id")
+	context["lease_until"] = now.Add(time.Minute).Format(time.RFC3339Nano)
+	context["authorization_mode"] = AuthorizationModeSessionFullTrust
+	context["authorization_policy_version"] = 1
+	context["capabilities"] = append([]string(nil), legacyCapabilitiesV2...)
+	if _, err := DecodeContextPayload(context, testNodeID, now); err == nil {
+		t.Fatal("expected legacy capabilities to be rejected for full trust")
+	}
+	context["capabilities"] = SupportedV2Capabilities()
+	if _, err := DecodeContextPayload(context, testNodeID, now); err != nil {
+		t.Fatalf("complete full-trust capabilities were rejected: %v", err)
 	}
 }
 

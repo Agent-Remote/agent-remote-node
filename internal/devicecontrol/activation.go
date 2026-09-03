@@ -18,6 +18,10 @@ import (
 const (
 	protocolVersion               = 1
 	maximumActivationManifestSize = 16 << 10
+	// AuthorizationModePerApplicationApproval identifies the explicit legacy authorization path.
+	AuthorizationModePerApplicationApproval = "per_application_approval"
+	// AuthorizationModeSessionFullTrust identifies the complete session-level authorization path.
+	AuthorizationModeSessionFullTrust = "session_full_trust"
 	// MaximumDeviceSessionGeneration is the shared signed database maximum reserved for terminal revocation.
 	MaximumDeviceSessionGeneration uint64 = 1<<63 - 1
 	// MaximumActiveDeviceSessionGeneration is the largest generation accepted for live state.
@@ -35,11 +39,21 @@ var requiredCapabilitiesV2 = []string{
 	"observation_mode_v2",
 }
 
-var capabilitiesV2 = []string{
+var legacyCapabilitiesV2 = []string{
 	"adaptive_settle_v2",
 	"ax_state_v2",
 	"clipboard_payload_v2",
 	"observation_mode_v2",
+}
+
+var capabilitiesV2 = []string{
+	"adaptive_settle_v2",
+	"application_launch_v1",
+	"ax_state_v2",
+	"clipboard_payload_v2",
+	"global_clipboard_v1",
+	"observation_mode_v2",
+	"session_full_trust_v1",
 }
 
 // SupportedV2Capabilities returns the canonical v2 set with supported extensions.
@@ -47,26 +61,29 @@ func SupportedV2Capabilities() []string {
 	return append([]string(nil), capabilitiesV2...)
 }
 
-// ValidCapabilities accepts v1, the v2 base, or the base with supported extensions.
+// ValidCapabilities accepts legacy v1/v2 contexts or the complete full-trust set.
 func ValidCapabilities(capabilities []string) bool {
 	return len(capabilities) == 0 ||
 		slices.Equal(capabilities, requiredCapabilitiesV2) ||
+		slices.Equal(capabilities, legacyCapabilitiesV2) ||
 		slices.Equal(capabilities, capabilitiesV2)
 }
 
 // ActivatePayload is the zero-secret control-plane request for one device generation.
 type ActivatePayload struct {
-	ProtocolVersion   int    `json:"protocol_version"`
-	UserID            string `json:"user_id"`
-	DeviceID          string `json:"device_id"`
-	ToolSessionID     string `json:"tool_session_id"`
-	DeviceSessionID   string `json:"device_session_id"`
-	NodeID            string `json:"node_id"`
-	Platform          string `json:"platform"`
-	Generation        uint64 `json:"generation"`
-	ExpiresAt         string `json:"expires_at"`
-	RuntimeBackend    string `json:"runtime_backend"`
-	RuntimeResourceID string `json:"runtime_resource_id,omitempty"`
+	ProtocolVersion            int    `json:"protocol_version"`
+	AuthorizationMode          string `json:"authorization_mode"`
+	AuthorizationPolicyVersion int    `json:"authorization_policy_version"`
+	UserID                     string `json:"user_id"`
+	DeviceID                   string `json:"device_id"`
+	ToolSessionID              string `json:"tool_session_id"`
+	DeviceSessionID            string `json:"device_session_id"`
+	NodeID                     string `json:"node_id"`
+	Platform                   string `json:"platform"`
+	Generation                 uint64 `json:"generation"`
+	ExpiresAt                  string `json:"expires_at"`
+	RuntimeBackend             string `json:"runtime_backend"`
+	RuntimeResourceID          string `json:"runtime_resource_id,omitempty"`
 }
 
 // DeactivatePayload identifies the terminal generation that revokes local activation state.
@@ -78,16 +95,18 @@ type DeactivatePayload struct {
 
 // ContextPayload carries the active generation binding and its short authorization lease.
 type ContextPayload struct {
-	ProtocolVersion int      `json:"protocol_version"`
-	UserID          string   `json:"user_id"`
-	DeviceID        string   `json:"device_id"`
-	ToolSessionID   string   `json:"tool_session_id"`
-	DeviceSessionID string   `json:"device_session_id"`
-	NodeID          string   `json:"node_id"`
-	Platform        string   `json:"platform"`
-	Generation      uint64   `json:"generation"`
-	LeaseUntil      string   `json:"lease_until"`
-	Capabilities    []string `json:"capabilities"`
+	ProtocolVersion            int      `json:"protocol_version"`
+	AuthorizationMode          string   `json:"authorization_mode"`
+	AuthorizationPolicyVersion int      `json:"authorization_policy_version"`
+	UserID                     string   `json:"user_id"`
+	DeviceID                   string   `json:"device_id"`
+	ToolSessionID              string   `json:"tool_session_id"`
+	DeviceSessionID            string   `json:"device_session_id"`
+	NodeID                     string   `json:"node_id"`
+	Platform                   string   `json:"platform"`
+	Generation                 uint64   `json:"generation"`
+	LeaseUntil                 string   `json:"lease_until"`
+	Capabilities               []string `json:"capabilities"`
 }
 
 // DecodeActivatePayload strictly validates an activation task without accepting paths or secrets.
@@ -98,6 +117,13 @@ func DecodeActivatePayload(payload map[string]any, expectedNodeID string, now ti
 	}
 	if decoded.ProtocolVersion != protocolVersion {
 		return ActivatePayload{}, errors.New("unsupported device-control protocol version")
+	}
+	if !normalizeAndValidateAuthorization(
+		&decoded.AuthorizationMode,
+		&decoded.AuthorizationPolicyVersion,
+		true,
+	) {
+		return ActivatePayload{}, errors.New("device-control authorization is invalid")
 	}
 	for name, value := range map[string]string{
 		"user_id": decoded.UserID, "device_id": decoded.DeviceID,
@@ -157,6 +183,13 @@ func DecodeContextPayload(payload map[string]any, expectedNodeID string, now tim
 	if decoded.ProtocolVersion != protocolVersion {
 		return ContextPayload{}, errors.New("unsupported device-control protocol version")
 	}
+	if !normalizeAndValidateAuthorization(
+		&decoded.AuthorizationMode,
+		&decoded.AuthorizationPolicyVersion,
+		true,
+	) {
+		return ContextPayload{}, errors.New("device-control authorization is invalid")
+	}
 	for name, value := range map[string]string{
 		"user_id": decoded.UserID, "device_id": decoded.DeviceID,
 		"tool_session_id": decoded.ToolSessionID, "device_session_id": decoded.DeviceSessionID,
@@ -172,7 +205,11 @@ func DecodeContextPayload(payload map[string]any, expectedNodeID string, now tim
 	if decoded.Platform != "macos" || decoded.Generation == 0 || decoded.Generation > MaximumActiveDeviceSessionGeneration {
 		return ContextPayload{}, errors.New("context platform or generation is invalid")
 	}
-	if !ValidCapabilities(decoded.Capabilities) {
+	if !ValidCapabilitiesForAuthorization(
+		decoded.AuthorizationMode,
+		decoded.AuthorizationPolicyVersion,
+		decoded.Capabilities,
+	) {
 		return ContextPayload{}, errors.New("device-control capabilities are invalid or incomplete")
 	}
 	leaseUntil, err := time.Parse(time.RFC3339Nano, decoded.LeaseUntil)
@@ -180,6 +217,31 @@ func DecodeContextPayload(payload map[string]any, expectedNodeID string, now tim
 		return ContextPayload{}, errors.New("lease_until is outside the short lease window")
 	}
 	return decoded, nil
+}
+
+// ValidCapabilitiesForAuthorization binds capability semantics to the explicit authorization mode.
+func ValidCapabilitiesForAuthorization(mode string, policyVersion int, capabilities []string) bool {
+	if policyVersion != 1 {
+		return false
+	}
+	switch mode {
+	case AuthorizationModePerApplicationApproval:
+		return len(capabilities) == 0 ||
+			slices.Equal(capabilities, requiredCapabilitiesV2) ||
+			slices.Equal(capabilities, legacyCapabilitiesV2)
+	case AuthorizationModeSessionFullTrust:
+		return slices.Equal(capabilities, capabilitiesV2)
+	default:
+		return false
+	}
+}
+
+func normalizeAndValidateAuthorization(mode *string, policyVersion *int, allowLegacyOmission bool) bool {
+	if allowLegacyOmission && *mode == "" && *policyVersion == 0 {
+		*mode = AuthorizationModePerApplicationApproval
+		*policyVersion = 1
+	}
+	return (*mode == AuthorizationModePerApplicationApproval || *mode == AuthorizationModeSessionFullTrust) && *policyVersion == 1
 }
 
 // Activate atomically stores one validated generation beneath the configured managed root.
