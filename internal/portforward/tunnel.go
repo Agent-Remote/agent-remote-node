@@ -167,12 +167,27 @@ func Serve(ctx context.Context, config Config) error {
 	releaseContext, cancelRelease := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelRelease()
 	totals := snapshotCounters(usage)
-	_ = config.Client.ReleasePortForward(releaseContext, config.ForwardID, api.ReleasePortForwardRequest{
+	releasePortForward(releaseContext, config.Client, config.ForwardID, api.ReleasePortForwardRequest{
 		Generation: finalLease.Generation, BytesUpTotal: totals.BytesUpTotal,
 		BytesDownTotal: totals.BytesDownTotal, ConnectionCountTotal: totals.ConnectionCountTotal,
 		Reason: "ssh_disconnected",
 	})
 	return nil
+}
+
+func releasePortForward(ctx context.Context, client API, forwardID string, request api.ReleasePortForwardRequest) {
+	for attempt := 0; attempt < 3; attempt++ {
+		if client.ReleasePortForward(ctx, forwardID, request) == nil {
+			return
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
 }
 
 func (h *handler) ServeHTTP(response http.ResponseWriter, request *http.Request) {

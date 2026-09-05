@@ -26,6 +26,8 @@ type fakeAPI struct {
 	lease         api.PortForwardLease
 	redeem        api.RedeemPortForwardRequest
 	released      api.ReleasePortForwardRequest
+	releaseErrors []error
+	releaseCalls  int
 	renewErr      error
 	renewErrors   []error
 	renewRequests []api.RenewPortForwardRequest
@@ -53,8 +55,22 @@ func (f *fakeAPI) RenewPortForward(_ context.Context, _ string, request api.Rene
 func (f *fakeAPI) ReleasePortForward(_ context.Context, _ string, request api.ReleasePortForwardRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.releaseCalls++
 	f.released = request
+	if len(f.releaseErrors) > 0 {
+		err := f.releaseErrors[0]
+		f.releaseErrors = f.releaseErrors[1:]
+		return err
+	}
 	return nil
+}
+
+func TestReleasePortForwardRetriesTransientFailures(t *testing.T) {
+	client := &fakeAPI{releaseErrors: []error{errors.New("first"), errors.New("second")}}
+	releasePortForward(context.Background(), client, "forward-1", api.ReleasePortForwardRequest{Generation: 3})
+	if client.releaseCalls != 3 || client.released.Generation != 3 {
+		t.Fatalf("release was not retried with the original generation: calls=%d request=%#v", client.releaseCalls, client.released)
+	}
 }
 
 type tcpRuntimeDialer struct {
