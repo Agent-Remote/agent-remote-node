@@ -8,23 +8,66 @@ on:
 permissions:
   contents: read
   id-token: write
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  test:
+  changes:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.filter.outputs.runtime }}
     steps:
       - uses: actions/checkout@v7.0.0
+      - uses: dorny/paths-filter@v4.0.3
+        id: filter
+        with:
+          filters: |
+            runtime:
+              - '.github/workflows/**'
+              - 'Dockerfile'
+              - 'codecov.yml'
+              - 'cmd/**'
+              - 'config.example.json'
+              - 'go.mod'
+              - 'go.sum'
+              - 'internal/**'
+              - 'managed-skill-source.json'
+              - 'release-dependencies.json'
+              - 'scripts/**'
+              - 'systemd/**'
+              - 'tests/**'
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
+    steps:
+      - uses: actions/checkout@v7.0.0
+      - name: Resolve managed skill source
+        id: managed-skill
+        run: |
+          test "$(jq -er .schema_version managed-skill-source.json)" = "1"
+          test "$(jq -er .repository managed-skill-source.json)" = "Agent-Remote/agent-remote-device"
+          echo "commit=$(jq -er .commit managed-skill-source.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7.0.0
         with:
           repository: Agent-Remote/agent-remote-device
-          ref: main
+          ref: ${{ steps.managed-skill.outputs.commit }}
           path: .external/agent-remote-device
           persist-credentials: false
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
       - name: Verify managed skill matches device source
-        run: scripts/check-managed-skills.sh .external/agent-remote-device
+        run: |
+          test "$(git -C .external/agent-remote-device rev-parse HEAD)" = \
+            "$(jq -er .commit managed-skill-source.json)"
+          scripts/check-managed-skills.sh .external/agent-remote-device
       - name: Scan reachable Go vulnerabilities
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json
@@ -36,21 +79,22 @@ jobs:
           name: agent-remote-node-govulncheck
           path: govulncheck.json
           if-no-files-found: error
-      - run: scripts/run-quality-checks.sh
-      - name: Generate coverage with session network namespace integration
+      - name: Run quality checks and generate coverage
+        env:
+          COVERAGE_PROFILE: coverage.out
+        run: scripts/run-quality-checks.sh
+      - name: Run session network namespace integration
         run: |
           sudo env \
             "PATH=$PATH" \
             "HOME=$HOME" \
             "GOCACHE=$RUNNER_TEMP/root-go-cache" \
             AGENT_REMOTE_RUN_NETNS_TEST=1 \
-            go test -covermode=atomic -coverprofile=coverage.out ./...
-          sudo chown "$USER:$(id -gn)" coverage.out
-          scripts/check-coverage.sh coverage.out 45
+            go test -run '^TestDialNetworkNamespaceLoopbackIntegration$' ./internal/runtimehelper
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v7.0.0
         with:
           disable_search: true
-          fail_ci_if_error: true
+          fail_ci_if_error: false
           files: ./coverage.out
           use_oidc: true

@@ -13,8 +13,12 @@ if [[ -n "$unformatted" ]]; then
 fi
 
 go vet ./...
-coverage_profile=$(mktemp)
-trap 'rm -f "$coverage_profile"' EXIT
+if [[ -n "${COVERAGE_PROFILE:-}" ]]; then
+  coverage_profile="$COVERAGE_PROFILE"
+else
+  coverage_profile=$(mktemp)
+  trap 'rm -f "$coverage_profile"' EXIT
+fi
 go test -covermode=atomic -coverprofile="$coverage_profile" ./...
 scripts/check-coverage.sh "$coverage_profile" 45
 if scripts/check-coverage.sh "$coverage_profile" 100 >/dev/null 2>&1; then
