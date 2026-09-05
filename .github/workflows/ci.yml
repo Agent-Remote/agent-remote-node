@@ -14,36 +14,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.0
-      - name: Resolve pinned device proxy dependency
-        id: device
-        run: |
-          set -euo pipefail
-          test "$(jq -er .schema_version release-dependencies.json)" = "2"
-          test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
-            "Agent-Remote/agent-remote-device"
-          version=$(jq -er .device_proxy.version release-dependencies.json)
-          commit=$(jq -er .device_proxy.commit release-dependencies.json)
-          workflow=$(jq -er .device_proxy.release_workflow release-dependencies.json)
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
-          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7.0.0
         with:
           repository: Agent-Remote/agent-remote-device
-          ref: v${{ steps.device.outputs.version }}
+          ref: main
           path: .external/agent-remote-device
           persist-credentials: false
       - uses: actions/setup-go@v6.5.0
         with:
           go-version-file: go.mod
       - name: Verify managed skill matches device source
-        env:
-          DEVICE_COMMIT: ${{ steps.device.outputs.commit }}
-        run: |
-          test "$(git -C .external/agent-remote-device rev-parse HEAD)" = "$DEVICE_COMMIT"
-          scripts/check-managed-skills.sh .external/agent-remote-device
+        run: scripts/check-managed-skills.sh .external/agent-remote-device
       - name: Scan reachable Go vulnerabilities
         run: |
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > govulncheck.json

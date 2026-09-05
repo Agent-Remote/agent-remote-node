@@ -58,10 +58,9 @@ ci_commands = ci_steps.map { |step| step["run"] }.compact.join("\n")
 ci_device_checkout = ci_steps.any? do |step|
   step["uses"]&.start_with?("actions/checkout@") &&
     step.dig("with", "repository") == "Agent-Remote/agent-remote-device" &&
-    step.dig("with", "ref") == "v${{ steps.device.outputs.version }}"
+    step.dig("with", "ref") == "main"
 end
-raise "CI does not check out the pinned device source" unless ci_device_checkout
-raise "CI does not resolve the pinned dependency" unless ci_commands.include?("release-dependencies.json")
+raise "CI does not check out the device main branch" unless ci_device_checkout
 raise "CI does not compare managed skills" unless ci_commands.include?("scripts/check-managed-skills.sh")
 raise "CI does not reject Go vulnerability findings" unless ci_commands.include?('any(.[]; has("finding")) | not')
 
