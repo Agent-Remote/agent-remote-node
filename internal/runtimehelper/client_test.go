@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -133,6 +134,15 @@ func TestClientDialSessionLoopbackReceivesConnectedFileDescriptor(t *testing.T) 
 		_, _, writeErr := unixConnection.WriteMsgUnix(response, syscall.UnixRights(int(file.Fd())), nil)
 		if writeErr != nil {
 			done <- writeErr
+			return
+		}
+		var acknowledgement [1]byte
+		if _, readErr := io.ReadFull(connection, acknowledgement[:]); readErr != nil {
+			done <- readErr
+			return
+		}
+		if acknowledgement[0] != fileDescriptorTransferAck {
+			done <- errors.New("unexpected file descriptor acknowledgement")
 			return
 		}
 		buffer := make([]byte, 4)

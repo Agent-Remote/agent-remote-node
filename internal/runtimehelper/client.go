@@ -19,6 +19,7 @@ const (
 	ProtocolVersion            = 1
 	maxHelperResponseBytes     = 1 << 20
 	maxHelperDialResponseBytes = 8 << 10
+	fileDescriptorTransferAck  = byte(0x06)
 )
 
 // Request is the versioned local runtime-helper request envelope.
@@ -172,6 +173,10 @@ func (c Client) DialSessionLoopback(ctx context.Context, requestID string, paylo
 	_ = file.Close()
 	if err != nil {
 		return nil, fmt.Errorf("adopt runtime helper connection: %w", err)
+	}
+	if _, err := connection.Write([]byte{fileDescriptorTransferAck}); err != nil {
+		_ = forwardedConnection.Close()
+		return nil, fmt.Errorf("acknowledge runtime helper connection: %w", err)
 	}
 	return forwardedConnection, nil
 }

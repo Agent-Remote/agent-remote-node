@@ -14,9 +14,13 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
-const maxHelperRequestBytes = 1 << 20
+const (
+	maxHelperRequestBytes    = 1 << 20
+	fileDescriptorAckTimeout = 5 * time.Second
+)
 
 // Server exposes the privileged engine only on a root-owned Unix socket.
 type Server struct {
@@ -201,6 +205,15 @@ func (s *Server) handleSessionLoopback(ctx context.Context, connection net.Conn,
 	data = append(data, '\n')
 	written, _, err := unixConnection.WriteMsgUnix(data, syscall.UnixRights(int(file.Fd())), nil)
 	if err != nil || written != len(data) {
+		return
+	}
+	ackDeadline := time.Now().Add(fileDescriptorAckTimeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(ackDeadline) {
+		ackDeadline = contextDeadline
+	}
+	_ = connection.SetReadDeadline(ackDeadline)
+	var acknowledgement [1]byte
+	if _, err := io.ReadFull(connection, acknowledgement[:]); err != nil || acknowledgement[0] != fileDescriptorTransferAck {
 		return
 	}
 }
