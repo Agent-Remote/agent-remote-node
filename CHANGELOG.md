@@ -2,6 +2,16 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.14 - 2026-09-05
+
+- chore: pin device proxy v0.2.13 (1547f26)
+- fix: retry port-forward release reporting (b315512)
+- fix: acknowledge runtime descriptor transfers (ce5afcf)
+- ci: optimize workflow execution (40acacf)
+- ci(device-control): compare managed skill with device main (0017d47)
+- docs(device-control): sync browser action guidance (d82e685)
+- docs(device-control): sync device skill guidance (6640152)
+
 ## v0.2.13 - 2026-09-03
 
 - feat: propagate session full-trust capabilities (a6d7cf7)
