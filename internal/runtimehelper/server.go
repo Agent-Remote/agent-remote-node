@@ -192,7 +192,12 @@ func (s *Server) handleSessionLoopback(ctx context.Context, connection net.Conn,
 		return
 	}
 	defer forwardedConnection.Close()
-	file, err := forwardedConnection.File()
+	transferable, ok := forwardedConnection.(interface{ File() (*os.File, error) })
+	if !ok {
+		_ = json.NewEncoder(connection).Encode(errorResponse("RUNTIME_FAILED", "Runtime connection could not be transferred."))
+		return
+	}
+	file, err := transferable.File()
 	if err != nil {
 		_ = json.NewEncoder(connection).Encode(errorResponse("RUNTIME_FAILED", "Runtime connection could not be transferred."))
 		return

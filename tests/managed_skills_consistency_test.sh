@@ -27,3 +27,15 @@ if "$repo_root/scripts/check-managed-skills.sh" "$work/device" >/dev/null 2>&1; 
 fi
 
 echo "managed skill consistency tests passed"
+
+ego_upstream="$work/ego-lite/skills/ego-browser"
+mkdir -p "$(dirname "$ego_upstream")"
+cp -R "$repo_root/internal/managedskills/skills/ego-browser" "$ego_upstream"
+"$repo_root/scripts/check-ego-browser-skill-source.sh" "$work/ego-lite" >/dev/null
+printf '%s\n' 'drift' >> "$ego_upstream/SKILL.md"
+if "$repo_root/scripts/check-ego-browser-skill-source.sh" "$work/ego-lite" >/dev/null 2>&1; then
+  echo "official ego-browser Skill consistency check accepted content drift" >&2
+  exit 1
+fi
+
+echo "official ego-browser Skill consistency tests passed"

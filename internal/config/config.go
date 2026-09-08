@@ -9,46 +9,62 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
 )
 
 // DefaultVersion is overridden by release builds through Go ldflags.
-var DefaultVersion = "0.2.14"
+var DefaultVersion = "0.2.15"
 
 // Config contains local node runtime settings.
 type Config struct {
-	SourcePath               string   `json:"-"`
-	ServerURL                string   `json:"server_url"`
-	NodeID                   string   `json:"node_id"`
-	NodeToken                string   `json:"node_token"`
-	Version                  string   `json:"version"`
-	SupportedToolTypes       []string `json:"supported_tool_types"`
-	HeartbeatIntervalSeconds int      `json:"heartbeat_interval_seconds"`
-	PollIntervalSeconds      int      `json:"poll_interval_seconds"`
-	LedgerPath               string   `json:"ledger_path"`
-	SSHAuthorizedKeysPath    string   `json:"ssh_authorized_keys_path"`
-	AttachBinaryPath         string   `json:"attach_binary_path"`
-	WorkspaceRoot            string   `json:"workspace_root"`
-	AccountRoot              string   `json:"account_root"`
-	DockerBinaryPath         string   `json:"docker_binary_path"`
-	TmuxBinaryPath           string   `json:"tmux_binary_path"`
-	MutagenBinaryPath        string   `json:"mutagen_binary_path"`
-	BrowserRoot              string   `json:"browser_root"`
-	BrowserImage             string   `json:"browser_image"`
-	BrowserPublicBaseURL     string   `json:"browser_public_base_url"`
-	BrowserDockerNetwork     string   `json:"browser_docker_network"`
-	AllowedRuntimeBackends   []string `json:"allowed_runtime_backends"`
-	RuntimeSocketPath        string   `json:"runtime_socket_path"`
-	RuntimeBinaryPath        string   `json:"runtime_binary_path"`
-	ClaudeRuntimePath        string   `json:"claude_runtime_path"`
-	DeviceProxyPath          string   `json:"device_proxy_path"`
-	DeviceControlRoot        string   `json:"device_control_root"`
-	WireGuardInterface       string   `json:"wireguard_interface"`
-	WireGuardPrivateKeyPath  string   `json:"wireguard_private_key_path"`
-	WireGuardAddress         string   `json:"wireguard_address"`
-	WireGuardPublicKey       string   `json:"wireguard_public_key"`
-	WireGuardEndpoint        string   `json:"wireguard_endpoint"`
-	WireGuardListenPort      int      `json:"wireguard_listen_port"`
+	SourcePath                     string   `json:"-"`
+	ServerURL                      string   `json:"server_url"`
+	NodeID                         string   `json:"node_id"`
+	NodeToken                      string   `json:"node_token"`
+	Version                        string   `json:"version"`
+	SupportedToolTypes             []string `json:"supported_tool_types"`
+	HeartbeatIntervalSeconds       int      `json:"heartbeat_interval_seconds"`
+	PollIntervalSeconds            int      `json:"poll_interval_seconds"`
+	LedgerPath                     string   `json:"ledger_path"`
+	SSHAuthorizedKeysPath          string   `json:"ssh_authorized_keys_path"`
+	AttachBinaryPath               string   `json:"attach_binary_path"`
+	WorkspaceRoot                  string   `json:"workspace_root"`
+	AccountRoot                    string   `json:"account_root"`
+	DockerBinaryPath               string   `json:"docker_binary_path"`
+	TmuxBinaryPath                 string   `json:"tmux_binary_path"`
+	MutagenBinaryPath              string   `json:"mutagen_binary_path"`
+	BrowserRoot                    string   `json:"browser_root"`
+	BrowserImage                   string   `json:"browser_image"`
+	BrowserPublicBaseURL           string   `json:"browser_public_base_url"`
+	BrowserDockerNetwork           string   `json:"browser_docker_network"`
+	AllowedRuntimeBackends         []string `json:"allowed_runtime_backends"`
+	RuntimeSocketPath              string   `json:"runtime_socket_path"`
+	RuntimeBinaryPath              string   `json:"runtime_binary_path"`
+	ClaudeRuntimePath              string   `json:"claude_runtime_path"`
+	DeviceProxyPath                string   `json:"device_proxy_path"`
+	DeviceControlRoot              string   `json:"device_control_root"`
+	EgoBrowserEnabled              bool     `json:"ego_browser_enabled"`
+	EgoBrowserWrapperPath          string   `json:"ego_browser_wrapper_path"`
+	EgoBrowserBrokerSocket         string   `json:"ego_browser_broker_socket"`
+	EgoBrowserBrokerRoot           string   `json:"ego_browser_broker_root"`
+	EgoBrowserProtocolVersion      string   `json:"ego_browser_protocol_version"`
+	EgoBrowserWrapperVersion       string   `json:"ego_browser_wrapper_version"`
+	EgoBrowserSkillPath            string   `json:"ego_browser_skill_path"`
+	EgoBrowserSkillVersion         string   `json:"ego_browser_skill_version"`
+	EgoBrowserSkillTreeSHA256      string   `json:"ego_browser_skill_tree_sha256"`
+	EgoBrowserLeaseSeconds         int      `json:"ego_browser_lease_seconds"`
+	EgoBrowserRenewIntervalSeconds int      `json:"ego_browser_renew_interval_seconds"`
+	EgoBrowserRenewGraceSeconds    int      `json:"ego_browser_renew_grace_seconds"`
+	EgoBrowserMaxParallelRequests  int      `json:"ego_browser_max_parallel_requests"`
+	EgoBrowserMaxScriptBytes       int      `json:"ego_browser_max_script_bytes"`
+	EgoBrowserMaxExecuteTimeoutMS  int      `json:"ego_browser_max_execute_timeout_ms"`
+	WireGuardInterface             string   `json:"wireguard_interface"`
+	WireGuardPrivateKeyPath        string   `json:"wireguard_private_key_path"`
+	WireGuardAddress               string   `json:"wireguard_address"`
+	WireGuardPublicKey             string   `json:"wireguard_public_key"`
+	WireGuardEndpoint              string   `json:"wireguard_endpoint"`
+	WireGuardListenPort            int      `json:"wireguard_listen_port"`
 }
 
 // WithDefaults fills optional config values.
@@ -113,6 +129,48 @@ func (c Config) WithDefaults() Config {
 	if c.DeviceControlRoot == "" {
 		c.DeviceControlRoot = "/var/lib/agent-remote/device-sessions"
 	}
+	if c.EgoBrowserWrapperPath == "" {
+		c.EgoBrowserWrapperPath = "/opt/agent-remote/ego-browser/current/bin/ego-browser"
+	}
+	if c.EgoBrowserBrokerSocket == "" {
+		c.EgoBrowserBrokerSocket = "/run/agent-remote-node/ego-browser-broker.sock"
+	}
+	if c.EgoBrowserBrokerRoot == "" {
+		c.EgoBrowserBrokerRoot = "/var/lib/agent-remote-node/ego-browser"
+	}
+	if c.EgoBrowserProtocolVersion == "" {
+		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
+	}
+	if c.EgoBrowserWrapperVersion == "" {
+		c.EgoBrowserWrapperVersion = "0.1.0"
+	}
+	if c.EgoBrowserSkillPath == "" {
+		c.EgoBrowserSkillPath = "/opt/agent-remote/ego-browser/current/skill/ego-browser"
+	}
+	if c.EgoBrowserSkillVersion == "" {
+		c.EgoBrowserSkillVersion = egobrowserartifact.OfficialSkillVersion
+	}
+	if c.EgoBrowserSkillTreeSHA256 == "" {
+		c.EgoBrowserSkillTreeSHA256 = egobrowserartifact.OfficialSkillTreeSHA256
+	}
+	if c.EgoBrowserLeaseSeconds <= 0 {
+		c.EgoBrowserLeaseSeconds = 60
+	}
+	if c.EgoBrowserRenewIntervalSeconds <= 0 {
+		c.EgoBrowserRenewIntervalSeconds = 20
+	}
+	if c.EgoBrowserRenewGraceSeconds <= 0 {
+		c.EgoBrowserRenewGraceSeconds = 10
+	}
+	if c.EgoBrowserMaxParallelRequests <= 0 {
+		c.EgoBrowserMaxParallelRequests = 4
+	}
+	if c.EgoBrowserMaxScriptBytes <= 0 {
+		c.EgoBrowserMaxScriptBytes = 1 << 20
+	}
+	if c.EgoBrowserMaxExecuteTimeoutMS <= 0 {
+		c.EgoBrowserMaxExecuteTimeoutMS = 120_000
+	}
 	if c.WireGuardInterface == "" {
 		c.WireGuardInterface = "agent-remote"
 	}
@@ -168,6 +226,34 @@ func (c Config) Validate(requireToken bool) error {
 			return errors.New("allowed_runtime_backends contains a duplicate backend")
 		}
 		seenBackends[backend] = true
+	}
+	if c.EgoBrowserEnabled {
+		if c.EgoBrowserProtocolVersion != "ego-browser-bridge-v1" {
+			return errors.New("ego_browser_protocol_version is unsupported")
+		}
+		if c.EgoBrowserSkillVersion != egobrowserartifact.OfficialSkillVersion ||
+			c.EgoBrowserSkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
+			return errors.New("ego-browser official Skill version or digest is unsupported")
+		}
+		for name, value := range map[string]string{
+			"ego_browser_wrapper_path":  c.EgoBrowserWrapperPath,
+			"ego_browser_skill_path":    c.EgoBrowserSkillPath,
+			"ego_browser_broker_socket": c.EgoBrowserBrokerSocket,
+			"ego_browser_broker_root":   c.EgoBrowserBrokerRoot,
+		} {
+			if !filepath.IsAbs(value) || strings.Contains(value, "..") {
+				return errors.New(name + " must be an absolute path without parent traversal")
+			}
+		}
+		if c.EgoBrowserLeaseSeconds < 10 || c.EgoBrowserLeaseSeconds > 300 ||
+			c.EgoBrowserRenewIntervalSeconds < 5 ||
+			c.EgoBrowserRenewIntervalSeconds >= c.EgoBrowserLeaseSeconds ||
+			c.EgoBrowserRenewGraceSeconds < 1 || c.EgoBrowserRenewGraceSeconds > 60 ||
+			c.EgoBrowserMaxParallelRequests < 1 || c.EgoBrowserMaxParallelRequests > 4 ||
+			c.EgoBrowserMaxScriptBytes < 1 || c.EgoBrowserMaxScriptBytes > 1<<20 ||
+			c.EgoBrowserMaxExecuteTimeoutMS < 1 || c.EgoBrowserMaxExecuteTimeoutMS > 120_000 {
+			return errors.New("ego-browser limits are invalid")
+		}
 	}
 	return nil
 }

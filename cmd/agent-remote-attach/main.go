@@ -20,7 +20,6 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/portforward"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
-	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
 func main() {
@@ -106,31 +105,44 @@ func run(args []string) error {
 		tmuxSessionName = response.Data.TmuxSessionName
 		forwardSSHAgent = response.Data.ForwardSSHAgent
 	}
-	argsForTmux := tmuxsession.AttachArgs("", tmuxSessionName)
-	command := cfg.TmuxBinaryPath
-	if runtimeBackend == "native" {
-		command = "sudo"
-		argsForTmux = []string{"-n", cfg.RuntimeBinaryPath, "attach", "--session", runtimeSessionID}
-		if forwardSSHAgent {
-			if socket := strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")); socket != "" {
-				argsForTmux = append(argsForTmux, "--ssh-agent-sock", socket)
-			}
-		}
+	command, argsForTmux, err := attachInvocation(
+		cfg, targetKind, runtimeBackend, runtimeSessionID, tmuxSessionName,
+		forwardSSHAgent, strings.TrimSpace(os.Getenv("SSH_AUTH_SOCK")),
+	)
+	if err != nil {
+		return err
 	}
 	if *dryRun {
 		fmt.Printf("%s %s\n", command, strings.Join(argsForTmux, " "))
 		return nil
-	}
-	if runtimeBackend != "native" {
-		if err := tmuxsession.Configure(cfg.TmuxBinaryPath, "", tmuxSessionName); err != nil {
-			return err
-		}
 	}
 	cmd := exec.Command(command, argsForTmux...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+func attachInvocation(
+	cfg config.Config,
+	targetKind string,
+	runtimeBackend string,
+	runtimeSessionID string,
+	tmuxSessionName string,
+	forwardSSHAgent bool,
+	sshAgentSocket string,
+) (string, []string, error) {
+	if runtimeBackend != "native" && runtimeBackend != "docker_sandbox" {
+		return "", nil, fmt.Errorf("unsupported runtime backend %q", runtimeBackend)
+	}
+	arguments := []string{
+		"-n", cfg.RuntimeBinaryPath, "attach", "--session", runtimeSessionID,
+		"--runtime-backend", runtimeBackend,
+	}
+	if forwardSSHAgent && sshAgentSocket != "" {
+		arguments = append(arguments, "--ssh-agent-sock", sshAgentSocket)
+	}
+	return "sudo", arguments, nil
 }
 
 func runTunnelGateway(cfg config.Config, deviceID string, sshKeyID string, forwardID string, dryRun bool) error {

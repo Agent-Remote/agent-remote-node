@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,55 @@ func TestRunTunnelRequiresForcedCommandSSHKeyIdentity(t *testing.T) {
 	err = run([]string{"--config", configPath, "--device", "device-1", "--dry-run"})
 	if err == nil || !strings.Contains(err.Error(), "SSH key is required") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestAttachInvocationUsesTrustedHelperForEveryToolSessionBackend(t *testing.T) {
+	cfg := config.Config{RuntimeBinaryPath: "/usr/local/bin/agent-remote-runtime", TmuxBinaryPath: "/usr/bin/tmux"}.WithDefaults()
+	for _, backend := range []string{"native", "docker_sandbox"} {
+		command, arguments, err := attachInvocation(
+			cfg, "session", backend, "session_1", "task-controlled-tmux", true, "/tmp/agent.sock",
+		)
+		if err != nil {
+			t.Fatalf("%s attach invocation failed: %v", backend, err)
+		}
+		if command != "sudo" {
+			t.Fatalf("%s tool session bypassed the trusted helper: %s %#v", backend, command, arguments)
+		}
+		joined := strings.Join(arguments, "\x00")
+		for _, expected := range []string{
+			cfg.RuntimeBinaryPath, "--session\x00session_1", "--runtime-backend\x00" + backend,
+			"--ssh-agent-sock\x00/tmp/agent.sock",
+		} {
+			if !strings.Contains(joined, expected) {
+				t.Fatalf("%s attach invocation omitted %q: %#v", backend, expected, arguments)
+			}
+		}
+		if strings.Contains(joined, "task-controlled-tmux") {
+			t.Fatalf("%s helper invocation trusted the control-plane tmux name: %#v", backend, arguments)
+		}
+	}
+}
+
+func TestAttachInvocationUsesTrustedHelperForDockerBinding(t *testing.T) {
+	cfg := config.Config{RuntimeBinaryPath: "/usr/local/bin/agent-remote-runtime", TmuxBinaryPath: "/usr/bin/tmux"}.WithDefaults()
+	command, arguments, err := attachInvocation(
+		cfg, "binding", "docker_sandbox", "binding_1", "managed-binding-tmux", false, "",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if command != "sudo" || !slices.Equal(arguments, []string{
+		"-n", cfg.RuntimeBinaryPath, "attach", "--session", "binding_1",
+		"--runtime-backend", "docker_sandbox",
+	}) {
+		t.Fatalf("unexpected Docker binding attach invocation: %s %#v", command, arguments)
+	}
+	if slices.Contains(arguments, "managed-binding-tmux") {
+		t.Fatalf("Docker binding attach trusted the control-plane tmux name: %#v", arguments)
+	}
+	if _, _, err := attachInvocation(cfg, "session", "unsupported", "session_1", "tmux", false, ""); err == nil {
+		t.Fatal("unsupported attach backend was accepted")
 	}
 }
 

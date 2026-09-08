@@ -3,12 +3,14 @@ package runtime
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
 
@@ -29,7 +31,7 @@ func TestStringMapDropsNonStringValues(t *testing.T) {
 	}
 }
 
-func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
+func TestProbeCapabilitiesAdvertisesFeaturesForBothRuntimeBackends(t *testing.T) {
 	proxyPath := filepath.Join(t.TempDir(), "agent-remote-device-proxy")
 	if err := os.WriteFile(proxyPath, []byte("managed proxy"), 0o700); err != nil {
 		t.Fatal(err)
@@ -46,10 +48,10 @@ func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !capabilities.SessionPortForwarding.Supported {
-		t.Fatalf("native port forwarding was not advertised: %#v", capabilities)
+		t.Fatalf("session port forwarding was not advertised: %#v", capabilities)
 	}
-	if len(capabilities.SessionPortForwarding.Backends) != 1 || capabilities.SessionPortForwarding.Backends[0] != "native" {
-		t.Fatalf("unsafe backend capability: %#v", capabilities.SessionPortForwarding)
+	if !slices.Equal(capabilities.SessionPortForwarding.Backends, []string{"native", "docker_sandbox"}) {
+		t.Fatalf("incomplete backend capability: %#v", capabilities.SessionPortForwarding)
 	}
 	if capabilities.SessionPortForwarding.MaxStreams != 128 {
 		t.Fatalf("unexpected max streams: %#v", capabilities.SessionPortForwarding)
@@ -60,8 +62,8 @@ func TestProbeCapabilitiesAdvertisesNativeSessionPortForwarding(t *testing.T) {
 	if len(capabilities.DeviceControl.Platforms) != 1 || capabilities.DeviceControl.Platforms[0] != "macos" {
 		t.Fatalf("unexpected device platforms: %#v", capabilities.DeviceControl)
 	}
-	if len(capabilities.DeviceControl.Backends) != 1 || capabilities.DeviceControl.Backends[0] != "native" {
-		t.Fatalf("unsafe device-control backend: %#v", capabilities.DeviceControl)
+	if !slices.Equal(capabilities.DeviceControl.Backends, []string{"native", "docker_sandbox"}) {
+		t.Fatalf("incomplete device-control backends: %#v", capabilities.DeviceControl)
 	}
 	if !slices.Equal(capabilities.DeviceControl.Capabilities, deviceControlCapabilitiesV2) {
 		t.Fatalf("unexpected device-control capabilities: %#v", capabilities.DeviceControl)
@@ -85,6 +87,54 @@ func TestProbeCapabilitiesFailsClosedWithoutNativeNetworkNamespace(t *testing.T)
 	}
 	if capabilities.DeviceControl.Supported || len(capabilities.DeviceControl.ProtocolVersions) != 0 || len(capabilities.DeviceControl.Platforms) != 0 || len(capabilities.DeviceControl.Capabilities) != 0 {
 		t.Fatalf("device control must fail closed: %#v", capabilities.DeviceControl)
+	}
+}
+
+func TestProbeCapabilitiesKeepsDockerFeaturesWithoutNativeNetworkNamespace(t *testing.T) {
+	proxyPath := filepath.Join(t.TempDir(), "agent-remote-device-proxy")
+	if err := os.WriteFile(proxyPath, []byte("managed proxy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketPath, done := serveRuntimeProbe(t, map[string]any{
+		"backends":       []string{"native", "docker_sandbox"},
+		"native":         map[string]bool{"network_ns": false},
+		"docker_sandbox": map[string]bool{"docker": true, "daemon": true},
+	})
+	capabilities := probeCapabilities([]string{"native", "docker_sandbox"}, socketPath, proxyPath)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"docker_sandbox"}
+	if !slices.Equal(capabilities.SessionPortForwarding.Backends, want) ||
+		!slices.Equal(capabilities.DeviceControl.Backends, want) {
+		t.Fatalf("Docker features were not retained: %#v", capabilities)
+	}
+}
+
+func TestProbeEgoBrowserRequiresVerifiedWrapperAndSkill(t *testing.T) {
+	config := EgoBrowserProbeConfig{
+		Enabled: true, WrapperPath: "/opt/agent-remote/ego-browser/current/bin/ego-browser",
+		ProtocolVersion: "ego-browser-bridge-v1", WrapperVersion: "0.1.0",
+		SkillPath:       "/opt/agent-remote/ego-browser/current/skill/ego-browser",
+		SkillVersion:    egobrowserartifact.OfficialSkillVersion,
+		SkillTreeSHA256: egobrowserartifact.OfficialSkillTreeSHA256,
+		MaxScriptBytes:  1 << 20, MaxExecuteTimeoutMS: 120_000,
+	}
+	rejected := probeEgoBrowserWithVerifier(config, func(egobrowserartifact.RuntimeConfig) error {
+		return errors.New("tampered")
+	})
+	if rejected.Supported || len(rejected.ProtocolVersions) != 0 {
+		t.Fatalf("unverified artifact was advertised: %#v", rejected)
+	}
+	accepted := probeEgoBrowserWithVerifier(config, func(candidate egobrowserartifact.RuntimeConfig) error {
+		if candidate.SkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
+			return errors.New("wrong Skill digest")
+		}
+		return nil
+	})
+	if !accepted.Supported || accepted.SkillVersion != egobrowserartifact.OfficialSkillVersion ||
+		accepted.SkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
+		t.Fatalf("verified artifact was not advertised: %#v", accepted)
 	}
 }
 

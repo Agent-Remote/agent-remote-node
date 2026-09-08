@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,6 +23,7 @@ type Client struct {
 	baseURL    string
 	nodeToken  string
 	httpClient *http.Client
+	tlsConfig  *tls.Config
 }
 
 // NewClient creates an API client.
@@ -32,6 +34,26 @@ func NewClient(baseURL string, nodeToken string) Client {
 		httpClient: &http.Client{
 			Timeout: 15 * time.Second,
 		},
+	}
+}
+
+// NewClientWithTLSConfig creates a client with explicit private trust roots.
+// HTTP and WebSocket connections use the same verified TLS configuration.
+func NewClientWithTLSConfig(baseURL string, nodeToken string, tlsConfig *tls.Config) Client {
+	if tlsConfig == nil {
+		return NewClient(baseURL, nodeToken)
+	}
+	configuration := tlsConfig.Clone()
+	return Client{
+		baseURL:   strings.TrimRight(baseURL, "/"),
+		nodeToken: nodeToken,
+		httpClient: &http.Client{
+			Timeout: 15 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: configuration.Clone(),
+			},
+		},
+		tlsConfig: configuration,
 	}
 }
 
@@ -106,6 +128,21 @@ type RuntimeCapabilities struct {
 	ProbeErrors           []string                        `json:"probe_errors"`
 	SessionPortForwarding SessionPortForwardingCapability `json:"session_port_forwarding"`
 	DeviceControl         DeviceControlCapability         `json:"device_control"`
+	EgoBrowserBridge      EgoBrowserBridgeCapability      `json:"ego_browser_bridge"`
+}
+
+// EgoBrowserBridgeCapability describes the Linux wrapper available to a Node broker.
+type EgoBrowserBridgeCapability struct {
+	Supported           bool     `json:"supported"`
+	ProtocolVersions    []string `json:"protocol_versions"`
+	Backends            []string `json:"backends"`
+	WrapperVersion      string   `json:"wrapper_version,omitempty"`
+	SkillVersion        string   `json:"skill_version,omitempty"`
+	SkillTreeSHA256     string   `json:"skill_tree_sha256,omitempty"`
+	RemotePlatform      string   `json:"remote_platform,omitempty"`
+	LocalPlatform       string   `json:"local_platform,omitempty"`
+	MaxScriptBytes      int      `json:"max_script_bytes,omitempty"`
+	MaxExecuteTimeoutMS int      `json:"max_execute_timeout_ms,omitempty"`
 }
 
 // SessionPortForwardingCapability describes the tunnel protocols and runtime backends the node can safely serve.
@@ -145,6 +182,109 @@ type DeviceRelayMaterialResponse struct {
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 }
+
+// EgoBrowserBinding contains the non-secret metadata a Node broker needs.
+type EgoBrowserBinding struct {
+	BindingID          string `json:"binding_id"`
+	EgoBrowserDeviceID string `json:"ego_browser_device_id"`
+	// EncryptionPublicKey is the Bridge's independent X25519 public key.
+	EncryptionPublicKey           string   `json:"encryption_public_key"`
+	ToolSessionID                 string   `json:"tool_session_id"`
+	NodeID                        string   `json:"node_id"`
+	Status                        string   `json:"status"`
+	ControlChannel                string   `json:"control_channel"`
+	RelayBindingKind              string   `json:"relay_binding_kind"`
+	AuthorizationMode             string   `json:"authorization_mode"`
+	AuthorizationPolicyVersion    int      `json:"authorization_policy_version"`
+	Generation                    uint64   `json:"generation"`
+	ReleaseProfile                string   `json:"release_profile"`
+	SignerCertificateSHA256       string   `json:"signer_certificate_sha256"`
+	CredentialProfile             string   `json:"credential_profile"`
+	RemotePlatform                string   `json:"remote_platform"`
+	LocalPlatform                 string   `json:"local_platform"`
+	BridgeProtocolVersion         string   `json:"bridge_protocol_version"`
+	LocalRuntimeVersion           *string  `json:"local_runtime_version"`
+	EgoLiteRuntimeVersion         *string  `json:"ego_lite_runtime_version"`
+	SkillVersion                  *string  `json:"skill_version"`
+	TaskSpaceLabel                *string  `json:"task_space_label"`
+	AllowlistRevision             uint64   `json:"allowlist_revision"`
+	AllowlistRootsDigest          *string  `json:"allowlist_roots_digest"`
+	LearningBundleDigest          *string  `json:"learning_bundle_digest"`
+	ConcurrencyMode               string   `json:"concurrency_mode"`
+	MaxParallelRequests           int      `json:"max_parallel_requests"`
+	Capabilities                  []string `json:"capabilities"`
+	LeaseUntil                    *string  `json:"lease_until"`
+	LeaseHealth                   string   `json:"lease_health"`
+	LeaseGraceUntil               *string  `json:"lease_grace_until"`
+	LeaseRenewIntervalSeconds     int      `json:"lease_renew_interval_seconds"`
+	LeaseRenewFailureGraceSeconds int      `json:"lease_renew_failure_grace_seconds"`
+	AbsoluteTTLUntil              string   `json:"absolute_ttl_until"`
+}
+
+// EgoBrowserBindingListResponse is the Node binding metadata response.
+type EgoBrowserBindingListResponse struct {
+	Data struct {
+		Items []EgoBrowserBinding `json:"items"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
+// EgoBrowserNodeBinding is an alias kept for callers that use the API role name.
+type EgoBrowserNodeBinding = EgoBrowserBinding
+
+// EgoBrowserNodeBindingListResponse is the Node-facing binding list response alias.
+type EgoBrowserNodeBindingListResponse = EgoBrowserBindingListResponse
+
+// EgoBrowserRelayTicketRequest requests one short-lived wrapper relay ticket.
+type EgoBrowserRelayTicketRequest struct {
+	Generation         uint64  `json:"generation"`
+	Role               string  `json:"role,omitempty"`
+	EgoBrowserDeviceID *string `json:"ego_browser_device_id,omitempty"`
+	ProofChallenge     *string `json:"proof_challenge,omitempty"`
+	ProofSignature     *string `json:"proof_signature,omitempty"`
+}
+
+// EgoBrowserRelayTicket contains one-time relay connection material.
+type EgoBrowserRelayTicket struct {
+	Role             string `json:"role"`
+	Generation       uint64 `json:"generation"`
+	RelayBindingKind string `json:"relay_binding_kind"`
+	RelayPath        string `json:"relay_path"`
+	RelayTicket      string `json:"relay_ticket"`
+	ExpiresAt        string `json:"expires_at"`
+}
+
+// EgoBrowserRelayTicketResponse wraps one-time relay connection material.
+type EgoBrowserRelayTicketResponse struct {
+	Data      EgoBrowserRelayTicket `json:"data"`
+	RequestID string                `json:"request_id"`
+}
+
+// EgoBrowserNodeRenewRequest reports the broker's current capability revision.
+type EgoBrowserNodeRenewRequest struct {
+	Generation           uint64  `json:"generation"`
+	AllowlistRevision    uint64  `json:"allowlist_revision"`
+	LearningBundleDigest *string `json:"learning_bundle_digest"`
+}
+
+// EgoBrowserRenewRequest is a short alias for the Node renewal payload.
+type EgoBrowserRenewRequest = EgoBrowserNodeRenewRequest
+
+// EgoBrowserNodeRenewResponse contains the renewed lease metadata.
+type EgoBrowserNodeRenewResponse struct {
+	Data struct {
+		BindingID        string  `json:"binding_id"`
+		Generation       uint64  `json:"generation"`
+		LeaseUntil       *string `json:"lease_until"`
+		LeaseHealth      string  `json:"lease_health"`
+		LeaseGraceUntil  *string `json:"lease_grace_until"`
+		AbsoluteTTLUntil string  `json:"absolute_ttl_until"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
+// EgoBrowserRenewResponse is a short alias for the Node renewal response.
+type EgoBrowserRenewResponse = EgoBrowserNodeRenewResponse
 
 // TaskEnvelope is a leased task.
 type TaskEnvelope struct {
@@ -399,6 +539,9 @@ func (c Client) OpenDeviceRelay(ctx context.Context, deviceSessionID string, rel
 	if err != nil {
 		return nil, err
 	}
+	if c.tlsConfig != nil {
+		configuration.TlsConfig = c.tlsConfig.Clone()
+	}
 	configuration.Header.Set("authorization", "Bearer "+relayTicket)
 	connection, err := configuration.DialContext(ctx)
 	if err != nil {
@@ -406,6 +549,79 @@ func (c Client) OpenDeviceRelay(ctx context.Context, deviceSessionID string, rel
 	}
 	connection.PayloadType = websocket.BinaryFrame
 	connection.MaxPayloadBytes = 4 << 20
+	return connection, nil
+}
+
+// ListEgoBrowserBindings returns live browser bindings assigned to this Node.
+func (c Client) ListEgoBrowserBindings(ctx context.Context) (EgoBrowserBindingListResponse, error) {
+	var response EgoBrowserBindingListResponse
+	err := c.do(ctx, http.MethodGet, "/api/v1/node-api/ego-browser/bindings", nil, &response, true)
+	return response, err
+}
+
+// IssueEgoBrowserRelayTicket exchanges the current binding generation for a one-time wrapper ticket.
+func (c Client) IssueEgoBrowserRelayTicket(ctx context.Context, bindingID string, request EgoBrowserRelayTicketRequest) (EgoBrowserRelayTicketResponse, error) {
+	var response EgoBrowserRelayTicketResponse
+	if bindingID == "" {
+		return response, errors.New("ego-browser binding ID is required")
+	}
+	// A Node may only represent the remote wrapper role.  Do not let task data
+	// select the local Bridge role or submit a second device identity.
+	request.Role = "wrapper"
+	request.EgoBrowserDeviceID = nil
+	request.ProofChallenge = nil
+	request.ProofSignature = nil
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/ego-browser/bindings/"+url.PathEscape(bindingID)+"/relay-ticket", request, &response, true)
+	return response, err
+}
+
+// RenewEgoBrowserBinding extends a binding lease using expected generation and capability metadata.
+func (c Client) RenewEgoBrowserBinding(ctx context.Context, bindingID string, request EgoBrowserNodeRenewRequest) (EgoBrowserNodeRenewResponse, error) {
+	var response EgoBrowserNodeRenewResponse
+	if bindingID == "" {
+		return response, errors.New("ego-browser binding ID is required")
+	}
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/ego-browser/bindings/"+url.PathEscape(bindingID)+"/renew", request, &response, true)
+	return response, err
+}
+
+// OpenEgoBrowserRelay consumes a wrapper ticket and opens the fixed binary relay path.
+func (c Client) OpenEgoBrowserRelay(ctx context.Context, bindingID string, relayPath string, relayTicket string) (io.ReadWriteCloser, error) {
+	expectedPath := "/api/v1/ego-browser/bindings/" + url.PathEscape(bindingID) + "/relay"
+	if bindingID == "" || relayPath != expectedPath || relayTicket == "" {
+		return nil, errors.New("ego-browser relay endpoint or ticket is invalid")
+	}
+	base, err := url.Parse(c.baseURL)
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return nil, errors.New("server URL cannot be used for an ego-browser relay")
+	}
+	websocketURL := *base
+	if base.Scheme == "https" {
+		websocketURL.Scheme = "wss"
+	} else {
+		websocketURL.Scheme = "ws"
+	}
+	websocketURL.Path = relayPath
+	websocketURL.RawQuery = ""
+	websocketURL.Fragment = ""
+	origin := *base
+	origin.Path = "/"
+	origin.RawQuery = ""
+	origin.Fragment = ""
+	configuration, err := websocket.NewConfig(websocketURL.String(), origin.String())
+	if err != nil {
+		return nil, err
+	}
+	if c.tlsConfig != nil {
+		configuration.TlsConfig = c.tlsConfig.Clone()
+	}
+	configuration.Header.Set("authorization", "Bearer "+relayTicket)
+	connection, err := configuration.DialContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	connection.PayloadType = websocket.BinaryFrame
+	connection.MaxPayloadBytes = 16 * 1024 * 1024
 	return connection, nil
 }
 

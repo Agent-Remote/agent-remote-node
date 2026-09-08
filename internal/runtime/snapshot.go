@@ -13,15 +13,29 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
 
 var deviceControlCapabilitiesV2 = devicecontrol.SupportedV2Capabilities()
 
-// Snapshot captures current node resource and runtime status.
-func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string) (api.ResourceStatus, api.RuntimeStatus) {
+// EgoBrowserProbeConfig describes the optional remote wrapper installation.
+type EgoBrowserProbeConfig struct {
+	Enabled             bool
+	WrapperPath         string
+	ProtocolVersion     string
+	WrapperVersion      string
+	SkillPath           string
+	SkillVersion        string
+	SkillTreeSHA256     string
+	MaxScriptBytes      int
+	MaxExecuteTimeoutMS int
+}
+
+// Snapshot captures node status, including optional ego-browser capability metadata.
+func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string, egoBrowser ...EgoBrowserProbeConfig) (api.ResourceStatus, api.RuntimeStatus) {
 	resources := hostResources()
-	capabilities := probeCapabilities(allowedBackends, runtimeSocketPath, deviceProxyPath)
+	capabilities := probeCapabilities(allowedBackends, runtimeSocketPath, deviceProxyPath, egoBrowser...)
 	status := api.RuntimeStatus{
 		DockerOK:              capabilities.DockerSandbox["docker"] && capabilities.DockerSandbox["daemon"],
 		TmuxOK:                capabilities.Native["tmux"] || capabilities.DockerSandbox["tmux"],
@@ -33,14 +47,18 @@ func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPat
 	return resources, status
 }
 
-func probeCapabilities(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string) api.RuntimeCapabilities {
+func probeCapabilities(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string, egoBrowser ...EgoBrowserProbeConfig) api.RuntimeCapabilities {
 	capabilities := api.RuntimeCapabilities{
-		Backends:      []string{},
-		Native:        map[string]bool{},
-		DockerSandbox: map[string]bool{},
-		BrowserDocker: map[string]bool{},
-		Dependencies:  map[string]string{},
-		ProbeErrors:   []string{},
+		Backends:         []string{},
+		Native:           map[string]bool{},
+		DockerSandbox:    map[string]bool{},
+		BrowserDocker:    map[string]bool{},
+		Dependencies:     map[string]string{},
+		ProbeErrors:      []string{},
+		EgoBrowserBridge: api.EgoBrowserBridgeCapability{ProtocolVersions: []string{}, Backends: []string{}, RemotePlatform: "linux", LocalPlatform: "macos"},
+	}
+	if len(egoBrowser) > 0 {
+		capabilities.EgoBrowserBridge = probeEgoBrowser(egoBrowser[0])
 	}
 	allowed := make(map[string]bool, len(allowedBackends))
 	for _, backend := range allowedBackends {
@@ -62,11 +80,12 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 			capabilities.Backends = append(capabilities.Backends, backend)
 		}
 	}
-	if slices.Contains(capabilities.Backends, "native") && capabilities.Native["network_ns"] {
+	portForwardBackends := supportedFeatureBackends(capabilities, true)
+	if len(portForwardBackends) > 0 {
 		capabilities.SessionPortForwarding = api.SessionPortForwardingCapability{
 			Supported:        true,
 			ProtocolVersions: []int{1},
-			Backends:         []string{"native"},
+			Backends:         portForwardBackends,
 			MaxStreams:       128,
 		}
 	} else {
@@ -75,12 +94,13 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 			Backends:         []string{},
 		}
 	}
-	if slices.Contains(capabilities.Backends, "native") && capabilities.Native["network_ns"] && executableFile(deviceProxyPath) {
+	deviceControlBackends := supportedFeatureBackends(capabilities, true)
+	if len(deviceControlBackends) > 0 && executableFile(deviceProxyPath) {
 		capabilities.DeviceControl = api.DeviceControlCapability{
 			Supported:        true,
 			ProtocolVersions: []int{1},
 			Platforms:        []string{"macos"},
-			Backends:         []string{"native"},
+			Backends:         deviceControlBackends,
 			Capabilities:     append([]string(nil), deviceControlCapabilitiesV2...),
 		}
 	} else {
@@ -91,7 +111,62 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 			Capabilities:     []string{},
 		}
 	}
+	if capabilities.EgoBrowserBridge.Supported {
+		capabilities.EgoBrowserBridge.Backends = supportedFeatureBackends(capabilities, false)
+		capabilities.EgoBrowserBridge.Supported = len(capabilities.EgoBrowserBridge.Backends) > 0
+	}
 	return capabilities
+}
+
+func supportedFeatureBackends(capabilities api.RuntimeCapabilities, requireNativeNetworkNamespace bool) []string {
+	backends := make([]string, 0, 2)
+	for _, backend := range capabilities.Backends {
+		switch backend {
+		case "native":
+			if !requireNativeNetworkNamespace || capabilities.Native["network_ns"] {
+				backends = append(backends, backend)
+			}
+		case "docker_sandbox":
+			backends = append(backends, backend)
+		}
+	}
+	return backends
+}
+
+func probeEgoBrowser(config EgoBrowserProbeConfig) api.EgoBrowserBridgeCapability {
+	return probeEgoBrowserWithVerifier(config, egobrowserartifact.Verify)
+}
+
+func probeEgoBrowserWithVerifier(config EgoBrowserProbeConfig, verify func(egobrowserartifact.RuntimeConfig) error) api.EgoBrowserBridgeCapability {
+	result := api.EgoBrowserBridgeCapability{
+		ProtocolVersions: []string{},
+		Backends:         []string{},
+		RemotePlatform:   "linux",
+		LocalPlatform:    "macos",
+	}
+	if !config.Enabled {
+		return result
+	}
+	if config.ProtocolVersion != "ego-browser-bridge-v1" {
+		return result
+	}
+	if config.WrapperVersion == "" || config.MaxScriptBytes <= 0 || config.MaxExecuteTimeoutMS <= 0 {
+		return result
+	}
+	if err := verify(egobrowserartifact.RuntimeConfig{
+		WrapperPath: config.WrapperPath, WrapperVersion: config.WrapperVersion,
+		SkillPath: config.SkillPath, SkillVersion: config.SkillVersion, SkillTreeSHA256: config.SkillTreeSHA256,
+	}); err != nil {
+		return result
+	}
+	result.Supported = true
+	result.ProtocolVersions = []string{config.ProtocolVersion}
+	result.WrapperVersion = config.WrapperVersion
+	result.SkillVersion = config.SkillVersion
+	result.SkillTreeSHA256 = config.SkillTreeSHA256
+	result.MaxScriptBytes = config.MaxScriptBytes
+	result.MaxExecuteTimeoutMS = config.MaxExecuteTimeoutMS
+	return result
 }
 
 func executableFile(path string) bool {

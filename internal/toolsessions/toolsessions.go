@@ -7,9 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
@@ -57,6 +62,16 @@ type CreatePayload struct {
 	RuntimeBackend                 string                      `json:"runtime_backend"`
 	RuntimePolicy                  map[string]any              `json:"runtime_policy"`
 	DeviceControl                  *DeviceControlConfiguration `json:"device_control"`
+	EgoBrowserEnabled              bool                        `json:"ego_browser_enabled"`
+	EgoBrowserWrapperPath          string                      `json:"ego_browser_wrapper_path"`
+	EgoBrowserBrokerSocket         string                      `json:"ego_browser_broker_socket"`
+	EgoBrowserBrokerNonce          string                      `json:"ego_browser_broker_nonce"`
+	EgoBrowserProtocolVersion      string                      `json:"ego_browser_protocol_version"`
+	EgoBrowserWrapperVersion       string                      `json:"ego_browser_wrapper_version"`
+	EgoBrowserSkillPath            string                      `json:"ego_browser_skill_path"`
+	EgoBrowserSkillVersion         string                      `json:"ego_browser_skill_version"`
+	EgoBrowserSkillTreeSHA256      string                      `json:"ego_browser_skill_tree_sha256"`
+	EgoBrowserTaskSpace            string                      `json:"ego_browser_task_space"`
 }
 
 // CreateResult describes the prepared tool session.
@@ -73,6 +88,17 @@ type CreateResult struct {
 	TmuxStarted         bool   `json:"tmux_started"`
 	RuntimeBackend      string `json:"runtime_backend"`
 	RuntimeResourceID   string `json:"runtime_resource_id"`
+}
+
+// SandboxRuntime contains root-validated execution details that a task payload
+// cannot choose directly.
+type SandboxRuntime struct {
+	UID              int
+	GID              int
+	SetfaclPath      string
+	Mounts           []string
+	Environment      []string
+	ManagedArguments []string
 }
 
 // StopPayload describes a stop_tool_session task payload.
@@ -131,8 +157,9 @@ func DecodeCreatePayload(payload map[string]any) (CreatePayload, error) {
 		decoded.RuntimeBackend = "docker_sandbox"
 	}
 	if decoded.DeviceControl != nil {
-		if decoded.ToolType != "claude" || decoded.RuntimeBackend != "native" {
-			return CreatePayload{}, errors.New("device control requires a native Claude session")
+		if decoded.ToolType != "claude" ||
+			(decoded.RuntimeBackend != "native" && decoded.RuntimeBackend != "docker_sandbox") {
+			return CreatePayload{}, errors.New("device control requires a supported Claude session")
 		}
 		if decoded.DeviceControl.ProtocolVersion != 1 {
 			return CreatePayload{}, errors.New("device-control protocol version is unsupported")
@@ -164,7 +191,7 @@ func DecodeStopPayload(payload map[string]any) (StopPayload, error) {
 }
 
 // Prepare creates the workspace/account directories and starts a tmux-held sandbox exec.
-func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmuxBinary string, payload CreatePayload) (CreateResult, error) {
+func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmuxBinary string, payload CreatePayload, runtime SandboxRuntime) (CreateResult, error) {
 	workspacePath, err := resolvePath(workspaceRoot, payload.UserID, filepath.Join("workspaces", payload.WorkspaceID, "files"), payload.WorkspaceRemotePath, "workspace_remote_path")
 	if err != nil {
 		return CreateResult{}, err
@@ -183,22 +210,36 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 			return CreateResult{}, err
 		}
 	}
-	for _, dir := range []string{workspacePath, accountPath, filepath.Join(accountPath, ".claude")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+	for root, dir := range map[string]string{
+		workspaceRoot: workspacePath,
+		accountRoot:   accountPath,
+	} {
+		if err := prepareSandboxDirectory(root, dir, runtime); err != nil {
+			return CreateResult{}, err
+		}
+	}
+	if err := prepareSandboxDirectory(accountRoot, filepath.Join(accountPath, ".claude"), runtime); err != nil {
+		return CreateResult{}, err
+	}
+	if payload.ToolType == "claude" {
+		if err := managedskills.InstallClaude(accountPath, sandboxOwnership(runtime)); err != nil {
 			return CreateResult{}, err
 		}
 	}
 	if developerProfilePath != "" {
-		if err := prepareDeveloperCredentialProfile(developerProfilePath, payload.DeveloperCredentials); err != nil {
+		if err := prepareSandboxDirectory(accountRoot, developerProfilePath, runtime); err != nil {
+			return CreateResult{}, err
+		}
+		if err := prepareDeveloperCredentialProfile(developerProfilePath, payload.DeveloperCredentials, runtime); err != nil {
 			return CreateResult{}, err
 		}
 	}
 	if payload.SyncGit {
-		if err := ensureGitReady(workspacePath); err != nil {
+		if err := ensureGitReady(workspacePath, runtime); err != nil {
 			return CreateResult{}, err
 		}
 	}
-	if err := ensureFile(filepath.Join(accountPath, ".claude.json"), []byte("{}\n")); err != nil {
+	if err := ensureFile(filepath.Join(accountPath, ".claude.json"), []byte("{}\n"), runtime); err != nil {
 		return CreateResult{}, err
 	}
 	markerPath := filepath.Join(workspacePath, ".agent-remote-session.json")
@@ -216,18 +257,18 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 		"sandbox_name":                      payload.SandboxName,
 		"timezone":                          payload.Timezone,
 		"locale":                            payload.Locale,
-		"command":                           sessionCommand(payload),
+		"command":                           sessionCommand(payload, runtime.ManagedArguments),
 		"prepared_at":                       time.Now().UTC().Format(time.RFC3339),
 	}
 	data, err := json.MarshalIndent(marker, "", "  ")
 	if err != nil {
 		return CreateResult{}, err
 	}
-	if err := os.WriteFile(markerPath, append(data, '\n'), 0o600); err != nil {
+	if err := writeOwnedFile(markerPath, append(data, '\n'), 0o600, runtime); err != nil {
 		return CreateResult{}, err
 	}
 
-	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, workspacePath, accountPath, developerProfilePath, payload)
+	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, workspacePath, accountPath, developerProfilePath, payload, runtime)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -279,14 +320,14 @@ func Stop(dockerBinary string, tmuxBinary string, payload StopPayload) (StopResu
 	}, nil
 }
 
-func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) (bool, error) {
+func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload, runtime SandboxRuntime) (bool, error) {
 	if tmuxBinary == "" || payload.TmuxSessionName == "" {
 		return false, nil
 	}
 	if _, err := exec.LookPath(tmuxBinary); err != nil {
 		return false, nil
 	}
-	if err := ensureSandbox(dockerBinary, workspacePath, accountPath, developerProfilePath, payload); err != nil {
+	if err := ensureSandbox(dockerBinary, workspacePath, accountPath, developerProfilePath, payload, runtime); err != nil {
 		return false, err
 	}
 	if err := exec.Command(tmuxBinary, "has-session", "-t", payload.TmuxSessionName).Run(); err == nil {
@@ -295,9 +336,9 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		}
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload)))...)
+	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload, runtime)))...)
 	cmd.Dir = workspacePath
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(clearManagedEnvironment(os.Environ()),
 		"AGENT_REMOTE_WORKSPACE_PATH="+workspacePath,
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,
 		"AGENT_REMOTE_DEVELOPER_CREDENTIAL_PROFILE_PATH="+developerProfilePath,
@@ -306,6 +347,7 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		"LANG="+payload.Locale,
 		"LC_ALL="+payload.Locale,
 	)
+	cmd.Env = append(cmd.Env, runtime.Environment...)
 	if err := cmd.Run(); err != nil {
 		return false, err
 	}
@@ -315,14 +357,11 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 	return true, nil
 }
 
-func ensureSandbox(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) error {
+func ensureSandbox(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload, runtime SandboxRuntime) error {
 	if _, err := exec.LookPath(dockerBinary); err != nil {
 		return err
 	}
-	args := []string{"sandbox", "create", "--name", payload.SandboxName, sandboxAgent(payload), workspacePath, accountPath}
-	if developerProfilePath != "" {
-		args = append(args, developerProfilePath)
-	}
+	args := sandboxCreateArgs(workspacePath, accountPath, developerProfilePath, payload, runtime)
 	cmd := exec.Command(dockerBinary, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(string(output), "already exists") || strings.Contains(string(output), "already in use") {
@@ -333,7 +372,20 @@ func ensureSandbox(dockerBinary string, workspacePath string, accountPath string
 	return nil
 }
 
-func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload) []string {
+func sandboxCreateArgs(workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload, runtime SandboxRuntime) []string {
+	args := []string{"sandbox", "create", "--name", payload.SandboxName, sandboxAgent(payload), workspacePath, accountPath}
+	if developerProfilePath != "" {
+		args = append(args, developerProfilePath)
+	}
+	for _, mount := range runtime.Mounts {
+		if mount != "" && !slices.Contains(args, mount) {
+			args = append(args, mount)
+		}
+	}
+	return args
+}
+
+func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath string, developerProfilePath string, payload CreatePayload, runtime SandboxRuntime) []string {
 	args := []string{
 		dockerBinary,
 		"sandbox",
@@ -344,6 +396,15 @@ func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath s
 		"-e", "LANG=" + payload.Locale,
 		"-e", "LC_ALL=" + payload.Locale,
 	}
+	if runtime.UID > 0 && runtime.GID > 0 {
+		args = append(args, "-u", strconv.Itoa(runtime.UID)+":"+strconv.Itoa(runtime.GID))
+	}
+	for _, entry := range runtime.Environment {
+		key, _, ok := strings.Cut(entry, "=")
+		if ok && validEnvironmentKey(key) {
+			args = append(args, "-e", key)
+		}
+	}
 	if developerProfilePath != "" {
 		args = append(args,
 			"-e", "GH_CONFIG_DIR="+filepath.Join(developerProfilePath, "gh"),
@@ -352,21 +413,45 @@ func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath s
 		)
 	}
 	args = append(args, "-w", workspacePath, payload.SandboxName)
-	return append(args, sessionCommand(payload)...)
+	return append(args, sessionCommand(payload, runtime.ManagedArguments)...)
 }
 
-func prepareDeveloperCredentialProfile(path string, credentials *DeveloperCredentials) error {
+func clearManagedEnvironment(environ []string) []string {
+	result := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(key, "EGO_BROWSER_") && !strings.HasPrefix(key, "AGENT_REMOTE_DEVICE_") {
+			result = append(result, entry)
+		}
+	}
+	return result
+}
+
+func validEnvironmentKey(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if character == '_' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func prepareDeveloperCredentialProfile(path string, credentials *DeveloperCredentials, sandboxRuntime SandboxRuntime) error {
 	if credentials == nil {
 		return nil
 	}
 	for _, dir := range []string{path, filepath.Join(path, "home"), filepath.Join(path, "gh"), filepath.Join(path, ".ssh")} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := ensureOwnedDirectory(dir, sandboxRuntime); err != nil {
 			return err
 		}
 	}
 	gitconfig := gitConfig(credentials.GitIdentity)
 	if gitconfig != "" {
-		if err := os.WriteFile(filepath.Join(path, "home", ".gitconfig"), []byte(gitconfig), 0o600); err != nil {
+		if err := writeOwnedFile(filepath.Join(path, "home", ".gitconfig"), []byte(gitconfig), 0o600, sandboxRuntime); err != nil {
 			return err
 		}
 	}
@@ -389,7 +474,7 @@ func gitConfig(identity map[string]any) string {
 	return strings.Join(lines, "\n") + "\n"
 }
 
-func ensureGitReady(workspacePath string) error {
+func ensureGitReady(workspacePath string, sandboxRuntime SandboxRuntime) error {
 	gitPath := filepath.Join(workspacePath, ".git")
 	info, err := os.Stat(gitPath)
 	if err != nil || !info.IsDir() {
@@ -415,10 +500,10 @@ func ensureGitReady(workspacePath string) error {
 	if len(locks) > 0 {
 		return fmt.Errorf("workspace Git metadata has active lock files: %s", strings.Join(locks, ", "))
 	}
-	return ensureIndependentGitIndex(workspacePath)
+	return ensureIndependentGitIndex(workspacePath, sandboxRuntime)
 }
 
-func ensureIndependentGitIndex(workspacePath string) error {
+func ensureIndependentGitIndex(workspacePath string, sandboxRuntime SandboxRuntime) error {
 	indexPath := filepath.Join(workspacePath, ".git", "index")
 	if _, err := os.Stat(indexPath); err == nil {
 		return nil
@@ -429,6 +514,11 @@ func ensureIndependentGitIndex(workspacePath string) error {
 		base := []string{"-c", "core.fsmonitor=false", "-C", workspacePath}
 		cmd := exec.Command("git", append(base, args...)...)
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		if runtime.GOOS == "linux" && os.Geteuid() == 0 && sandboxRuntime.UID > 0 && sandboxRuntime.GID > 0 {
+			cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+				Uid: uint32(sandboxRuntime.UID), Gid: uint32(sandboxRuntime.GID), Groups: []uint32{uint32(sandboxRuntime.GID)},
+			}}
+		}
 		return cmd.Run()
 	}
 	if err := runGit("rev-parse", "--verify", "--quiet", "HEAD^{tree}"); err == nil {
@@ -443,14 +533,22 @@ func ensureIndependentGitIndex(workspacePath string) error {
 	return nil
 }
 
-func sessionCommand(payload CreatePayload) []string {
+func sessionCommand(payload CreatePayload, managedArguments []string) []string {
+	var command []string
 	if len(payload.Template.Command) > 0 {
-		return payload.Template.Command
+		command = append([]string(nil), payload.Template.Command...)
+	} else if len(payload.Argv) > 0 {
+		command = append([]string{payload.ToolType}, payload.Argv...)
+	} else {
+		command = []string{payload.ToolType}
 	}
-	if len(payload.Argv) > 0 {
-		return append([]string{payload.ToolType}, payload.Argv...)
+	if len(managedArguments) == 0 || len(command) == 0 {
+		return command
 	}
-	return []string{payload.ToolType}
+	result := make([]string, 0, len(command)+len(managedArguments))
+	result = append(result, command[0])
+	result = append(result, managedArguments...)
+	return append(result, command[1:]...)
 }
 
 func sandboxAgent(payload CreatePayload) string {
@@ -494,13 +592,104 @@ func mapControlPlanePath(root string, candidate string) (string, bool) {
 	return filepath.Join(root, relative), true
 }
 
-func ensureFile(path string, defaultContent []byte) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
+func ensureFile(path string, defaultContent []byte, sandboxRuntime SandboxRuntime) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("managed session file is not a regular file")
+		}
+		return applyOwnership(path, sandboxRuntime)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.WriteFile(path, defaultContent, 0o600)
+	return writeOwnedFile(path, defaultContent, 0o600, sandboxRuntime)
+}
+
+func sandboxOwnership(sandboxRuntime SandboxRuntime) *managedskills.Ownership {
+	if sandboxRuntime.UID <= 0 || sandboxRuntime.GID <= 0 {
+		return nil
+	}
+	return &managedskills.Ownership{UID: sandboxRuntime.UID, GID: sandboxRuntime.GID}
+}
+
+func prepareSandboxDirectory(root string, path string, sandboxRuntime SandboxRuntime) error {
+	if !isPathInside(root, path) {
+		return errors.New("sandbox directory is outside its managed root")
+	}
+	if err := ensureOwnedDirectory(path, sandboxRuntime); err != nil {
+		return err
+	}
+	if sandboxRuntime.SetfaclPath == "" || sandboxRuntime.UID <= 0 {
+		return nil
+	}
+	uid := strconv.Itoa(sandboxRuntime.UID)
+	for _, parent := range managedParentDirectories(root, path) {
+		if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-m", "u:"+uid+":--x", parent).CombinedOutput(); err != nil {
+			return fmt.Errorf("grant sandbox parent access: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-R", "-m", "u:"+uid+":rwX", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("grant sandbox data access: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-m", "d:u:"+uid+":rwX", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("grant sandbox default access: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func managedParentDirectories(root string, path string) []string {
+	root = filepath.Clean(root)
+	current := filepath.Dir(filepath.Clean(path))
+	var reverse []string
+	for current != root && isPathInside(root, current) {
+		reverse = append(reverse, current)
+		current = filepath.Dir(current)
+	}
+	if current == root {
+		reverse = append(reverse, root)
+	}
+	parents := make([]string, len(reverse))
+	for index := range reverse {
+		parents[len(reverse)-1-index] = reverse[index]
+	}
+	return parents
+}
+
+func ensureOwnedDirectory(path string, sandboxRuntime SandboxRuntime) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("managed session directory is not a directory")
+	}
+	return applyOwnership(path, sandboxRuntime)
+}
+
+func writeOwnedFile(path string, content []byte, mode os.FileMode, sandboxRuntime SandboxRuntime) error {
+	info, err := os.Lstat(path)
+	if err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return errors.New("managed session file is not a regular file")
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.WriteFile(path, content, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	return applyOwnership(path, sandboxRuntime)
+}
+
+func applyOwnership(path string, sandboxRuntime SandboxRuntime) error {
+	if sandboxRuntime.UID <= 0 || sandboxRuntime.GID <= 0 {
+		return nil
+	}
+	return os.Lchown(path, sandboxRuntime.UID, sandboxRuntime.GID)
 }
 
 func isPathInside(root string, candidate string) bool {

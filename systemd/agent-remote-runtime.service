@@ -1,5 +1,5 @@
 [Unit]
-Description=agent-remote privileged native runtime helper
+Description=agent-remote privileged runtime helper
 After=network-online.target
 Wants=network-online.target
 

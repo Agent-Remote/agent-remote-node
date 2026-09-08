@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -18,6 +19,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
+	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
 )
 
 func TestInitializeGitIndexFromHead(t *testing.T) {
@@ -125,16 +127,18 @@ func TestParseRuntimePolicyAppliesDefaultsAndLowerLimits(t *testing.T) {
 }
 
 func TestCleanupResourcesIsIdempotentForMissingSession(t *testing.T) {
-	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
-	result, err := engine.cleanupResources(context.Background(), map[string]any{
-		"runtime_backend": "native",
-		"session_ids":     []any{"session_1"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["cleaned_count"] != 1 {
-		t.Fatalf("unexpected cleanup result: %#v", result)
+	for _, backend := range []string{"native", "docker_sandbox"} {
+		engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
+		result, err := engine.cleanupResources(context.Background(), map[string]any{
+			"runtime_backend": backend,
+			"session_ids":     []any{"session_1"},
+		})
+		if err != nil {
+			t.Fatalf("%s cleanup failed: %v", backend, err)
+		}
+		if result["cleaned_count"] != 1 || result["runtime_backend"] != backend {
+			t.Fatalf("unexpected %s cleanup result: %#v", backend, result)
+		}
 	}
 }
 
@@ -151,7 +155,7 @@ func TestDialSessionLoopbackRejectsUnmanagedTargets(t *testing.T) {
 		},
 		"backend": {
 			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
-			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "docker_sandbox", "port": 5173},
+			Payload: map[string]any{"session_id": "session-1", "runtime_backend": "unsupported", "port": 5173},
 		},
 		"port": {
 			Version: ProtocolVersion, RequestID: "request-1", Operation: "dial_session_loopback",
@@ -176,6 +180,92 @@ func TestDialSessionLoopbackRejectsUnmanagedTargets(t *testing.T) {
 				t.Fatal("expected unmanaged target to be rejected")
 			}
 		})
+	}
+}
+
+func TestDockerLoopbackProxyCommandUsesTrustedRuntimeIdentity(t *testing.T) {
+	config := EngineConfig{DockerBinaryPath: "/usr/bin/docker"}.WithDefaults()
+	spec := DockerSessionSpec{SandboxName: "managed-sandbox", RuntimeUID: 1200, RuntimeGID: 1300}
+	command := dockerLoopbackProxyCommand(config, spec, 5173)
+	want := []string{
+		"/usr/bin/docker", "sandbox", "exec", "-i", "-u", "1200:1300", "managed-sandbox",
+		"node", "-e", dockerLoopbackProxyScript(), "5173",
+	}
+	if !slices.Equal(command, want) {
+		t.Fatalf("unexpected Docker loopback command: %#v", command)
+	}
+	if strings.Contains(strings.Join(command, "\x00"), "EGO_BROWSER_BROKER_NONCE") {
+		t.Fatalf("Docker loopback command contains managed secrets: %#v", command)
+	}
+}
+
+func TestStdioProxyReturnsTransferableDuplexConnection(t *testing.T) {
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		t.Skip("cat is unavailable")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	connection, err := startStdioProxy(ctx, cat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	transferable, ok := connection.(interface{ File() (*os.File, error) })
+	if !ok {
+		t.Fatalf("stdio proxy connection cannot transfer an FD: %T", connection)
+	}
+	file, err := transferable.File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = file.Close()
+	if _, err := connection.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 4)
+	if _, err := io.ReadFull(connection, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer) != "ping" {
+		t.Fatalf("unexpected stdio proxy response %q", buffer)
+	}
+}
+
+func TestDockerSessionLoopbackUsesTrustedSpec(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	docker := writeTestCommand(t, "docker", "exec cat")
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir(), DockerBinaryPath: docker})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "managed-sandbox",
+		RuntimeUID: 1200, RuntimeGID: 1300,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	connection, err := engine.DialSessionLoopback(context.Background(), Request{
+		Version: ProtocolVersion, RequestID: "request_1", Operation: "dial_session_loopback",
+		Payload: map[string]any{
+			"session_id": spec.SessionID, "runtime_backend": "docker_sandbox", "port": 5173,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.Write([]byte("docker")); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, len("docker"))
+	if _, err := io.ReadFull(connection, buffer); err != nil {
+		t.Fatal(err)
+	}
+	if string(buffer) != "docker" {
+		t.Fatalf("unexpected Docker loopback response %q", buffer)
 	}
 }
 
@@ -215,8 +305,10 @@ func TestDockerSessionSpecRoundTripAndRemoval(t *testing.T) {
 	}
 	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
 	spec := DockerSessionSpec{
-		SessionID: "session_1", TmuxSessionName: "ar-claude-test",
-		SandboxName: "agent-remote-claude-test", BootID: "boot-1",
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "agent-remote-claude-test",
+		BootID: "boot-1", RuntimeUID: 1000, RuntimeGID: 1000,
 	}
 	if err := engine.saveDockerSessionSpec(spec); err != nil {
 		t.Fatal(err)
@@ -233,6 +325,304 @@ func TestDockerSessionSpecRoundTripAndRemoval(t *testing.T) {
 	}
 	if _, err := engine.loadDockerSessionSpec(spec.SessionID); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected removed Docker session spec, got %v", err)
+	}
+}
+
+func TestDockerSessionSpecRejectsUnmanagedSSHAgentDirectory(t *testing.T) {
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "agent-remote-claude-test",
+		RuntimeUID: 1000, RuntimeGID: 1000, SSHMode: "agent_forwarding",
+		SSHAgentDirectory: "/tmp/task-controlled-agent",
+	}
+	if err := engine.validateDockerSessionSpec(spec, spec.SessionID); err == nil {
+		t.Fatal("unmanaged Docker SSH agent directory was accepted")
+	}
+}
+
+func TestDockerSessionSpecRequiresKindAndRejectsBindingFeatures(t *testing.T) {
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
+	base := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "agent-remote-claude-test",
+		RuntimeUID: 1000, RuntimeGID: 1000,
+	}
+	if err := engine.validateDockerSessionSpec(base, base.SessionID); err == nil {
+		t.Fatal("versioned Docker session spec without a kind was accepted")
+	}
+	base.Kind = dockerSessionKindBinding
+	base.SSHMode = "disabled"
+	if err := engine.validateDockerSessionSpec(base, base.SessionID); err == nil {
+		t.Fatal("Docker binding spec with tool-session features was accepted")
+	}
+}
+
+func TestSaveDockerDeviceSessionSpecRestoresRuntimeTraversalACL(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	stateRoot := t.TempDir()
+	logPath := filepath.Join(t.TempDir(), "setfacl.log")
+	setfaclPath := writeTestCommand(t, "setfacl", `printf '%s\n' "$*" >> "$ACL_LOG"`)
+	t.Setenv("ACL_LOG", logPath)
+	proxyPath := "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
+	engine := NewEngine(EngineConfig{StateRoot: stateRoot, SetfaclPath: setfaclPath, DeviceProxyPath: proxyPath})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1", TmuxSessionName: "session-tmux",
+		SandboxName: "session-sandbox", RuntimeUID: 1234, RuntimeGID: 1234,
+		DeviceControlProtocolVersion: 1,
+		DeviceControlDirectory:       filepath.Join(stateRoot, "docker-sessions", "session_1", "device-control"),
+		DeviceProxyPath:              proxyPath,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := strings.Join([]string{
+		"-m u:1234:--x " + stateRoot,
+		"-m u:1234:--x " + filepath.Join(stateRoot, "docker-sessions"),
+		"-m u:1234:--x " + filepath.Join(stateRoot, "docker-sessions", "session_1"),
+		"",
+	}, "\n")
+	if string(data) != want {
+		t.Fatalf("unexpected Docker state traversal ACLs: got %q, want %q", data, want)
+	}
+}
+
+func TestPrepareDockerSessionRuntimeMountsManagedSSHAgentDirectory(t *testing.T) {
+	if runtime.GOOS == "linux" || os.Geteuid() == 0 {
+		t.Skip("portable ownership assertions run on a non-root Unix host")
+	}
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Uid == "0" {
+		current, err = user.Lookup("nobody")
+		if err != nil {
+			t.Skip("a non-root runtime identity is unavailable")
+		}
+	}
+	engine := NewEngine(EngineConfig{StateRoot: t.TempDir(), NodeUser: current.Username})
+	decoded := toolsessions.CreatePayload{
+		SessionID: "session_1", UserID: "user_1", TmuxSessionName: "ar-claude-test",
+		SandboxName: "agent-remote-claude-test",
+		DeveloperCredentials: &toolsessions.DeveloperCredentials{
+			ProfileID: "profile_1", SSHMode: "agent_forwarding",
+		},
+	}
+	spec, runtimeConfig, err := engine.prepareDockerSessionRuntime(nil, decoded, egoBrowserRuntimeContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedDirectory := filepath.Join(engine.config.StateRoot, "docker-sessions", decoded.SessionID, "ssh-agent")
+	if spec.SSHMode != "agent_forwarding" || spec.SSHAgentDirectory != expectedDirectory {
+		t.Fatalf("unexpected Docker SSH agent spec: %#v", spec)
+	}
+	if !slices.Contains(runtimeConfig.Mounts, expectedDirectory) ||
+		!slices.Contains(runtimeConfig.Environment, "SSH_AUTH_SOCK="+filepath.Join(expectedDirectory, "agent.sock")) {
+		t.Fatalf("Docker SSH agent context was not mounted: %#v", runtimeConfig)
+	}
+}
+
+func TestListSessionsIncludesVersionedDockerSpecs(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	engine := NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), TmuxBinaryPath: writeTestCommand(t, "tmux", "exit 1"),
+	})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "agent-remote-claude-test",
+		BootID: "different-boot", RuntimeUID: 1000, RuntimeGID: 1000,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.listSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := result["sessions"].([]map[string]any)
+	if len(sessions) != 1 || sessions[0]["session_id"] != spec.SessionID ||
+		sessions[0]["runtime_backend"] != "docker_sandbox" || sessions[0]["runtime_resource_id"] != spec.SandboxName {
+		t.Fatalf("versioned Docker session was not reconciled: %#v", sessions)
+	}
+}
+
+func TestDockerStopSessionIgnoresUntrustedResourceNamesWhenSpecIsMissing(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "commands.log")
+	command := writeTestCommand(t, "runtime-command", `printf '%s\n' "$*" >> "$COMMAND_LOG"`)
+	t.Setenv("COMMAND_LOG", logPath)
+	engine := NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), DockerBinaryPath: command, TmuxBinaryPath: command,
+	})
+	result, err := engine.dockerStopSession(map[string]any{
+		"session_id": "session_1", "runtime_backend": "docker_sandbox",
+		"tmux_session_name": "task-controlled-tmux", "sandbox_name": "task-controlled-sandbox",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["runtime_resource_id"] != "" || result["tmux_stopped"] != false || result["sandbox_removed"] != false {
+		t.Fatalf("unexpected idempotent Docker stop result: %#v", result)
+	}
+	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing Docker spec allowed a task-controlled command: %v", err)
+	}
+}
+
+func TestListSessionsExcludesDockerBindingSpecs(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	engine := NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), TmuxBinaryPath: writeTestCommand(t, "tmux", "exit 0"),
+	})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindBinding,
+		SessionID: "binding_1", UserID: "user_1", TmuxSessionName: "binding-tmux",
+		SandboxName: "binding-sandbox", RuntimeUID: 1000, RuntimeGID: 1000,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.listSessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sessions := result["sessions"].([]map[string]any); len(sessions) != 0 {
+		t.Fatalf("Docker binding leaked into tool-session reconciliation: %#v", sessions)
+	}
+}
+
+func TestDockerPrepareAccountPersistsTrustedBindingSpec(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker binding specs require a root helper on Linux")
+	}
+	identity, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Uid == "0" {
+		identity, err = user.Lookup("nobody")
+		if err != nil {
+			t.Skip("a non-root Docker runtime identity is unavailable")
+		}
+	}
+	engine := NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), AccountRoot: t.TempDir(), NodeUser: identity.Username,
+		TmuxBinaryPath: "agent-remote-missing-tmux",
+		SetfaclPath:    writeTestCommand(t, "setfacl", "exit 0"),
+	})
+	result, err := engine.dockerPrepareAccount(map[string]any{
+		"binding_id": "binding_1", "tool_account_id": "account_1", "tool_type": "claude",
+		"user_id": "user_1", "tmux_session_name": "binding-tmux",
+		"runtime_backend": "docker_sandbox",
+		"template":        map[string]any{"sandbox_agent": "claude", "command": []any{"claude"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["runtime_resource_id"] == "" {
+		t.Fatalf("Docker binding omitted its runtime resource: %#v", result)
+	}
+	spec, err := engine.loadDockerSessionSpec("binding_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spec.Kind != dockerSessionKindBinding || spec.RuntimeUID <= 0 ||
+		spec.SandboxName != result["runtime_resource_id"] {
+		t.Fatalf("unexpected Docker binding spec: %#v", spec)
+	}
+}
+
+func TestInspectSessionSupportsDockerSandbox(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	engine := NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), TmuxBinaryPath: writeTestCommand(t, "tmux", "exit 0"),
+	})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1", TmuxSessionName: "session-tmux",
+		SandboxName: "session-sandbox", RuntimeUID: 1000, RuntimeGID: 1000,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.inspectSession(map[string]any{
+		"session_id": spec.SessionID, "runtime_backend": "docker_sandbox",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["active"] != true || result["runtime_backend"] != "docker_sandbox" ||
+		result["runtime_resource_id"] != spec.SandboxName {
+		t.Fatalf("unexpected Docker inspection: %#v", result)
+	}
+}
+
+func TestProbeDeclaresDockerOwnershipDependencies(t *testing.T) {
+	current, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := writeTestCommand(t, "available", "exit 0")
+	engine := NewEngine(EngineConfig{
+		DockerBinaryPath: command, TmuxBinaryPath: command, SetfaclPath: command,
+		NodeUser: current.Username, StateRoot: t.TempDir(),
+	})
+	result, err := engine.probe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	checks := result["docker_sandbox"].(map[string]bool)
+	for _, dependency := range []string{"docker", "daemon", "docker_sandbox", "tmux", "git", "setfacl", "runtime_identity"} {
+		if !checks[dependency] {
+			t.Fatalf("Docker probe omitted required dependency %q: %#v", dependency, checks)
+		}
+	}
+}
+
+func TestCleanupResourcesRemovesVersionedDockerSession(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("Docker session specs require root-owned runtime state on Linux")
+	}
+	engine := NewEngine(EngineConfig{
+		StateRoot:        t.TempDir(),
+		TmuxBinaryPath:   writeTestCommand(t, "tmux", "exit 0"),
+		DockerBinaryPath: writeTestCommand(t, "docker", "exit 0"),
+	})
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,
+		SessionID: "session_1", UserID: "user_1",
+		TmuxSessionName: "ar-claude-test", SandboxName: "agent-remote-claude-test",
+		RuntimeUID: 1000, RuntimeGID: 1000,
+	}
+	if err := engine.saveDockerSessionSpec(spec); err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.cleanupResources(context.Background(), map[string]any{
+		"runtime_backend": "docker_sandbox", "session_ids": []any{spec.SessionID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["cleaned_count"] != 1 || result["runtime_backend"] != "docker_sandbox" {
+		t.Fatalf("unexpected Docker cleanup result: %#v", result)
+	}
+	if _, err := engine.loadDockerSessionSpec(spec.SessionID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Docker session state survived cleanup: %v", err)
 	}
 }
 
@@ -285,7 +675,7 @@ func TestCleanupResourcesRejectsImplicitScope(t *testing.T) {
 	engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
 	for _, payload := range []map[string]any{
 		{"runtime_backend": "native"},
-		{"runtime_backend": "docker_sandbox", "session_ids": []any{"session_1"}},
+		{"runtime_backend": "unsupported", "session_ids": []any{"session_1"}},
 	} {
 		if _, err := engine.cleanupResources(context.Background(), payload); err == nil {
 			t.Fatalf("expected payload to be rejected: %#v", payload)
@@ -377,7 +767,7 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude", "/home/runtime/.claude")
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/account/.claude.json", "/home/runtime/.claude/.claude.json")
 	assertArgumentSequence(t, args, "--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude")
-	assertArgumentSequence(t, args, "--setenv", "PATH", "/opt/agent-remote/runtime/bin:/usr/local/bin:/usr/bin:/bin")
+	assertArgumentSequence(t, args, "--setenv", "PATH", "/opt/agent-remote/runtime/bin:/opt/agent-remote/ego-browser/bin:/usr/local/bin:/usr/bin:/bin")
 	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/passwd", "/etc/passwd")
 	assertArgumentSequence(t, args, "--ro-bind", "/runtime-state/session/group", "/etc/group")
 	assertArgumentSequence(t, args, "--bind", "/accounts/user/developer-profile", "/developer-profile")
@@ -385,6 +775,83 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--setenv", "GH_CONFIG_DIR", "/developer-profile/gh")
 	assertArgumentSequence(t, args, "--bind", "/runtime-state/session/ssh-agent", "/run/agent-remote/ssh-agent")
 	assertArgumentSequence(t, args, "--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock")
+}
+
+func TestBubblewrapOvermountsOfficialEgoBrowserSkillReadOnly(t *testing.T) {
+	spec := SessionSpec{
+		RuntimeRoot: "/runtime", WorkspacePath: "/workspace-host", AccountPath: "/account-host",
+		SessionRoot: "/runtime-state/session", Timezone: "UTC", Locale: "en_US.UTF-8",
+		RuntimeCommand:         "/opt/agent-remote/runtime/bin/claude",
+		EgoBrowserEnabled:      true,
+		EgoBrowserWrapperPath:  "/opt/agent-remote/ego-browser/current/bin/ego-browser",
+		EgoBrowserSkillPath:    "/opt/agent-remote/ego-browser/current/skill/ego-browser",
+		EgoBrowserBrokerSocket: "/run/agent-remote-node/ego-browser-broker.sock",
+	}
+	args := bubblewrapArgs(EngineConfig{}, spec)
+	assertArgumentSequence(t, args, "--ro-bind", spec.EgoBrowserWrapperPath, egoBrowserSandboxWrapperPath)
+	assertArgumentSequence(t, args, "--ro-bind", spec.EgoBrowserSkillPath, egoBrowserSandboxSkillPath)
+	accountMount := argumentSequenceIndex(args, "--bind", "/account-host/.claude", "/home/runtime/.claude")
+	skillMount := argumentSequenceIndex(args, "--ro-bind", spec.EgoBrowserSkillPath, egoBrowserSandboxSkillPath)
+	if accountMount < 0 || skillMount <= accountMount {
+		t.Fatalf("official Skill must overmount the writable account tree: %#v", args)
+	}
+}
+
+func TestEgoBrowserContextRejectsTaskSuppliedBindingIdentity(t *testing.T) {
+	_, err := parseEgoBrowserRuntimeContext(map[string]any{
+		"ego_browser_binding_id": "task-controlled-binding",
+	}, EngineConfig{})
+	if err == nil || !strings.Contains(err.Error(), "unsupported ego-browser context field") {
+		t.Fatalf("task-supplied browser binding identity was accepted: %v", err)
+	}
+}
+
+func TestDockerRuntimeAcceptsEnabledEgoBrowserContext(t *testing.T) {
+	config := EngineConfig{
+		EgoBrowserEnabled:         true,
+		EgoBrowserWrapperPath:     "/managed/bin/ego-browser",
+		EgoBrowserBrokerSocket:    "/managed/run/broker.sock",
+		EgoBrowserProtocolVersion: "ego-browser-bridge-v1",
+		EgoBrowserWrapperVersion:  "1.2.3",
+		EgoBrowserSkillPath:       "/managed/skill/ego-browser",
+		EgoBrowserSkillVersion:    "1.2.3",
+		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
+	}
+	context, err := parseEgoBrowserRuntimeContext(map[string]any{
+		"ego_browser_enabled":           true,
+		"ego_browser_wrapper_path":      config.EgoBrowserWrapperPath,
+		"ego_browser_broker_socket":     config.EgoBrowserBrokerSocket,
+		"ego_browser_broker_nonce":      "broker-minted-nonce",
+		"ego_browser_protocol_version":  config.EgoBrowserProtocolVersion,
+		"ego_browser_wrapper_version":   config.EgoBrowserWrapperVersion,
+		"ego_browser_skill_path":        config.EgoBrowserSkillPath,
+		"ego_browser_skill_version":     config.EgoBrowserSkillVersion,
+		"ego_browser_skill_tree_sha256": config.EgoBrowserSkillTreeSHA256,
+		"ego_browser_task_space":        "agent-remote:session-test",
+	}, config)
+	if err != nil {
+		t.Fatalf("Docker-compatible ego-browser context was rejected: %v", err)
+	}
+	if !context.Enabled || context.BrokerNonce != "broker-minted-nonce" {
+		t.Fatalf("unexpected Docker-compatible ego-browser context: %#v", context)
+	}
+}
+
+func TestDockerRuntimeAcceptsExplicitlyDisabledEgoBrowserContextWhenBridgeIsDisabled(t *testing.T) {
+	context, err := parseEgoBrowserRuntimeContext(map[string]any{
+		"session_id": "session-test", "tool_type": "claude", "ego_browser_enabled": false,
+		"ego_browser_wrapper_path": "", "ego_browser_broker_socket": "",
+		"ego_browser_broker_nonce": "", "ego_browser_protocol_version": "",
+		"ego_browser_wrapper_version": "", "ego_browser_skill_path": "",
+		"ego_browser_skill_version": "", "ego_browser_skill_tree_sha256": "",
+		"ego_browser_task_space": "",
+	}, EngineConfig{})
+	if err != nil {
+		t.Fatalf("Docker runtime rejected disabled ego-browser context: %v", err)
+	}
+	if context.Enabled {
+		t.Fatalf("disabled ego-browser context was enabled: %#v", context)
+	}
 }
 
 // TestManagedDeviceControlUsesOnlyFixedMCPAndSandboxPaths verifies fixed managed runtime paths.
@@ -499,7 +966,8 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 		t.Fatal(err)
 	}
 	contextPath := filepath.Join(spec.DeviceControlDirectory, "context.json")
-	context, err := loadManagedDeviceContext(contextPath, spec)
+	contextSpec := nativeManagedSessionContextSpec(spec)
+	context, err := loadManagedDeviceContext(contextPath, contextSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -510,27 +978,27 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 		t.Fatalf("unexpected authorization identity: %#v", context)
 	}
 	context.Generation = devicecontrol.MaximumDeviceSessionGeneration
-	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+	if err := writeManagedDeviceContext(contextPath, context, contextSpec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadManagedDeviceContext(contextPath, spec); err == nil {
+	if _, err := loadManagedDeviceContext(contextPath, contextSpec); err == nil {
 		t.Fatal("expected terminal-only generation context rejection")
 	}
 	context.Generation = 1
-	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+	if err := writeManagedDeviceContext(contextPath, context, contextSpec); err != nil {
 		t.Fatal(err)
 	}
 	context.NextSequence = 7
 	context.CurrentScreenshotGeneration = 5
 	context.CurrentStateGeneration = 9
-	if err := writeManagedDeviceContext(contextPath, context, spec); err != nil {
+	if err := writeManagedDeviceContext(contextPath, context, contextSpec); err != nil {
 		t.Fatal(err)
 	}
 	payload["lease_until"] = now.Add(90 * time.Second).Format(time.RFC3339Nano)
 	if _, err := engine.updateDeviceControlContext(payload); err != nil {
 		t.Fatal(err)
 	}
-	renewed, err := loadManagedDeviceContext(contextPath, spec)
+	renewed, err := loadManagedDeviceContext(contextPath, contextSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -566,7 +1034,7 @@ func TestDeviceControlContextUpdatesPreserveGenerationStateAndClearSafely(t *tes
 	if _, err := engine.updateDeviceControlContext(payload); err != nil {
 		t.Fatal(err)
 	}
-	secondGeneration, err := loadManagedDeviceContext(contextPath, spec)
+	secondGeneration, err := loadManagedDeviceContext(contextPath, contextSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -636,10 +1104,11 @@ func TestDeviceControlContextSerializesEmptyCapabilitiesAsArray(t *testing.T) {
 		t.Fatal(err)
 	}
 	contextPath := filepath.Join(spec.DeviceControlDirectory, "context.json")
+	contextSpec := nativeManagedSessionContextSpec(spec)
 	if err := os.WriteFile(contextPath, legacyData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	legacy, err := loadManagedDeviceContext(contextPath, spec)
+	legacy, err := loadManagedDeviceContext(contextPath, contextSpec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -655,7 +1124,7 @@ func TestDeviceControlContextSerializesEmptyCapabilitiesAsArray(t *testing.T) {
 	if err := os.WriteFile(contextPath, partialData, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := loadManagedDeviceContext(contextPath, spec); err == nil {
+	if _, err := loadManagedDeviceContext(contextPath, contextSpec); err == nil {
 		t.Fatal("expected partially specified persisted authorization rejection")
 	}
 }
@@ -816,6 +1285,15 @@ func assertArgumentSequence(t *testing.T, args []string, expected ...string) {
 		}
 	}
 	t.Fatalf("expected argument sequence %#v in %#v", expected, args)
+}
+
+func argumentSequenceIndex(args []string, expected ...string) int {
+	for index := 0; index+len(expected) <= len(args); index++ {
+		if slices.Equal(args[index:index+len(expected)], expected) {
+			return index
+		}
+	}
+	return -1
 }
 
 func TestGrantSpecAccessAddsRuntimeAndNodeTraverseACLToStateParents(t *testing.T) {

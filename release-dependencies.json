@@ -1,9 +1,14 @@
 {
-  "schema_version": 2,
+  "schema_version": 3,
   "device_proxy": {
     "repository": "Agent-Remote/agent-remote-device",
     "release_workflow": "release.yml",
     "version": "0.2.13",
     "commit": "96342329b9bffff8fe343f548ef372ec3bfa85a6"
+  },
+  "ego_browser_wrapper": {
+    "repository": "Agent-Remote/agent-remote-ego-browser",
+    "release_workflow": "release.yml",
+    "version": "0.1.0"
   }
 }

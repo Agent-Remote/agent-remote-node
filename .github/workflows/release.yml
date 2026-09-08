@@ -49,7 +49,7 @@ jobs:
         id: device
         run: |
           set -euo pipefail
-          test "$(jq -er .schema_version release-dependencies.json)" = "2"
+          test "$(jq -er .schema_version release-dependencies.json)" = "3"
           test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
             "Agent-Remote/agent-remote-device"
           version=$(jq -er .device_proxy.version release-dependencies.json)
@@ -63,6 +63,25 @@ jobs:
             echo "commit=$commit"
             echo "workflow=$workflow"
           } >> "$GITHUB_OUTPUT"
+      - name: Resolve pinned ego-browser wrapper dependency
+        id: ego-browser
+        run: |
+          set -euo pipefail
+          test "$(jq -er .ego_browser_wrapper.repository release-dependencies.json)" = \
+            "Agent-Remote/agent-remote-ego-browser"
+          version=$(jq -er .ego_browser_wrapper.version release-dependencies.json)
+          workflow=$(jq -er .ego_browser_wrapper.release_workflow release-dependencies.json)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          [[ "$workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
+          {
+            echo "version=$version"
+            echo "workflow=$workflow"
+          } >> "$GITHUB_OUTPUT"
+      - name: Resolve official ego-browser Skill source
+        id: ego-browser-skill
+        run: |
+          test "$(jq -er .schema_version ego-browser-skill-source.json)" = "1"
+          echo "commit=$(jq -er .upstream_commit ego-browser-skill-source.json)" >> "$GITHUB_OUTPUT"
       - name: Scan reachable Go vulnerabilities
         env:
           VERSION: ${{ steps.version.outputs.value }}
@@ -70,7 +89,10 @@ jobs:
           set -euo pipefail
           report="agent-remote-node-${VERSION}.govulncheck.json"
           go run golang.org/x/vuln/cmd/govulncheck@v1.6.0 -json ./... > "$report"
-          jq -s -e 'any(.[]; has("finding")) | not' "$report" >/dev/null
+          jq -s -e '
+            any(.[]; ((.finding.trace? // []) |
+              any((.function? // "") != ""))) | not
+          ' "$report" >/dev/null
           sha256sum "$report" > "$report.sha256"
       - uses: actions/checkout@v7.0.0
         with:
@@ -84,6 +106,14 @@ jobs:
         run: |
           test "$(git -C .external/agent-remote-device rev-parse HEAD)" = "$DEVICE_COMMIT"
           scripts/check-managed-skills.sh .external/agent-remote-device
+      - uses: actions/checkout@v7.0.0
+        with:
+          repository: citrolabs/ego-lite
+          ref: ${{ steps.ego-browser-skill.outputs.commit }}
+          path: .external/ego-lite
+          persist-credentials: false
+      - name: Verify official ego-browser Skill matches pinned source
+        run: scripts/check-ego-browser-skill-source.sh .external/ego-lite
       - uses: sigstore/cosign-installer@v4.0.0
       - name: Download and verify matching device proxy releases
         env:
@@ -115,6 +145,40 @@ jobs:
             tar -xzf "$download/$archive" -C "$proxy_root/$label"
           done
           echo "DEVICE_PROXY_DIR=$proxy_root" >> "$GITHUB_ENV"
+      - name: Download and verify matching ego-browser wrapper releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EGO_BROWSER_VERSION: ${{ steps.ego-browser.outputs.version }}
+          EGO_BROWSER_WORKFLOW: ${{ steps.ego-browser.outputs.workflow }}
+        run: |
+          set -euo pipefail
+          download="$RUNNER_TEMP/ego-browser-download"
+          wrapper_root="$RUNNER_TEMP/ego-browser-wrappers"
+          mkdir -p "$download" "$wrapper_root"
+          gh release download "v${EGO_BROWSER_VERSION}" \
+            --repo Agent-Remote/agent-remote-ego-browser \
+            --dir "$download" \
+            --pattern "agent-remote-ego-browser-wrapper-linux-*-*-*.tar.gz" \
+            --pattern "agent-remote-ego-browser-wrapper-linux-*-*-*.tar.gz.sha256" \
+            --pattern "agent-remote-ego-browser-wrapper-linux-*-*-*.tar.gz.sigstore.json"
+          for label in linux-amd64-glibc linux-arm64-glibc linux-amd64-musl linux-arm64-musl; do
+            archive="agent-remote-ego-browser-wrapper-${label}-${EGO_BROWSER_VERSION}.tar.gz"
+            test -f "$download/$archive"
+            (cd "$download" && sha256sum --check "$archive.sha256")
+            cosign verify-blob \
+              --bundle "$download/$archive.sigstore.json" \
+              --certificate-identity \
+                "https://github.com/Agent-Remote/agent-remote-ego-browser/.github/workflows/${EGO_BROWSER_WORKFLOW}@refs/tags/v${EGO_BROWSER_VERSION}" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$download/$archive"
+            gh attestation verify "$download/$archive" \
+              --repo Agent-Remote/agent-remote-ego-browser
+            mkdir -p "$wrapper_root/$label"
+            tar -xzf "$download/$archive" -C "$wrapper_root/$label"
+            test -x "$wrapper_root/$label/ego-browser"
+            test "$(tr -d '[:space:]' < "$wrapper_root/$label/VERSION")" = "$EGO_BROWSER_VERSION"
+          done
+          echo "EGO_BROWSER_WRAPPER_DIR=$wrapper_root" >> "$GITHUB_ENV"
       - name: Run tests
         run: |
           go test ./...

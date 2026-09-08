@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.15 - 2026-09-08
+
+- Release metadata update.
+
 ## v0.2.14 - 2026-09-05
 
 - chore: pin device proxy v0.2.13 (1547f26)

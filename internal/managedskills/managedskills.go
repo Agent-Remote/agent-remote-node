@@ -4,12 +4,17 @@ package managedskills
 import (
 	"bytes"
 	"crypto/rand"
-	_ "embed"
+	"crypto/sha256"
+	"embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 )
 
 const (
@@ -17,6 +22,16 @@ const (
 	deviceSkillReferencesDirectory = deviceSkillDirectory + "/references"
 	deviceSkillPath                = deviceSkillDirectory + "/SKILL.md"
 	deviceBrowserReferencePath     = deviceSkillReferencesDirectory + "/browser.md"
+	egoBrowserSkillDirectory       = ".claude/skills/ego-browser"
+	egoBrowserEmbeddedRoot         = "skills/ego-browser"
+	// EgoBrowserSkillVersion is the exact reviewed upstream Skill release.
+	EgoBrowserSkillVersion = "1.2.3"
+	// EgoBrowserSkillSourceCommit pins the upstream tree used by this Node release.
+	EgoBrowserSkillSourceCommit = "36053d07001a910cb806a15d42d00fdea1cdea3d"
+	// EgoBrowserSkillDocumentSHA256 pins the upstream SKILL.md bytes.
+	EgoBrowserSkillDocumentSHA256 = "44c119634df847861486c3b104cda3c2faa9dd4c71dbb3a854429098be962293"
+	// EgoBrowserSkillTreeSHA256 pins every path and byte in the managed Skill tree.
+	EgoBrowserSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
 )
 
 //go:embed skills/agent-remote-device/SKILL.md
@@ -24,6 +39,9 @@ var deviceSkill []byte
 
 //go:embed skills/agent-remote-device/references/browser.md
 var deviceBrowserReference []byte
+
+//go:embed skills/ego-browser
+var egoBrowserSkill embed.FS
 
 type managedFile struct {
 	path    string
@@ -39,6 +57,10 @@ type Ownership struct {
 // InstallClaude installs or updates Agent Remote-owned Claude skills without
 // changing any other account configuration.
 func InstallClaude(accountPath string, ownership *Ownership) error {
+	egoBrowserFiles, err := verifiedEgoBrowserSkillFiles()
+	if err != nil {
+		return fmt.Errorf("verify official ego-browser Skill %s: %w", EgoBrowserSkillVersion, err)
+	}
 	root, err := os.OpenRoot(accountPath)
 	if err != nil {
 		return fmt.Errorf("open Claude account root: %w", err)
@@ -49,6 +71,7 @@ func InstallClaude(accountPath string, ownership *Ownership) error {
 		".claude/skills",
 		deviceSkillDirectory,
 		deviceSkillReferencesDirectory,
+		egoBrowserSkillDirectory,
 	} {
 		if err := ensureDirectory(root, path, ownership); err != nil {
 			return fmt.Errorf("prepare managed skill directory %s: %w", path, err)
@@ -62,7 +85,68 @@ func InstallClaude(accountPath string, ownership *Ownership) error {
 			return fmt.Errorf("install managed skill file %s: %w", file.path, err)
 		}
 	}
+	for _, file := range egoBrowserFiles {
+		if err := ensureDirectory(root, filepath.Dir(file.path), ownership); err != nil {
+			return fmt.Errorf("prepare official ego-browser Skill directory: %w", err)
+		}
+		if err := installManagedFile(root, file, ownership); err != nil {
+			return fmt.Errorf("install official ego-browser Skill file %s: %w", file.path, err)
+		}
+	}
 	return nil
+}
+
+func verifiedEgoBrowserSkillFiles() ([]managedFile, error) {
+	files := make([]managedFile, 0, 16)
+	treeDigest := sha256.New()
+	err := fs.WalkDir(egoBrowserSkill, egoBrowserEmbeddedRoot, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("embedded path %s is not a regular file", path)
+		}
+		content, err := egoBrowserSkill.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		relative, found := strings.CutPrefix(path, egoBrowserEmbeddedRoot+"/")
+		if !found || relative == "" || !fs.ValidPath(relative) {
+			return fmt.Errorf("embedded path %s is invalid", path)
+		}
+		treeDigest.Write([]byte(relative))
+		treeDigest.Write([]byte{0})
+		treeDigest.Write([]byte(strconv.Itoa(len(content))))
+		treeDigest.Write([]byte{0})
+		treeDigest.Write(content)
+		treeDigest.Write([]byte{0})
+		files = append(files, managedFile{
+			path:    filepath.Join(egoBrowserSkillDirectory, filepath.FromSlash(relative)),
+			content: content,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, errors.New("official Skill tree is empty")
+	}
+	document := files[0]
+	if filepath.ToSlash(document.path) != egoBrowserSkillDirectory+"/SKILL.md" {
+		return nil, errors.New("official Skill document is missing")
+	}
+	documentDigest := sha256.Sum256(document.content)
+	if hex.EncodeToString(documentDigest[:]) != EgoBrowserSkillDocumentSHA256 {
+		return nil, errors.New("official Skill document digest mismatch")
+	}
+	if hex.EncodeToString(treeDigest.Sum(nil)) != EgoBrowserSkillTreeSHA256 {
+		return nil, errors.New("official Skill tree digest mismatch")
+	}
+	return files, nil
 }
 
 func installManagedFile(root *os.Root, file managedFile, ownership *Ownership) error {

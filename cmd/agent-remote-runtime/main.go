@@ -71,17 +71,26 @@ func syncCommand(args []string) error {
 func attach(args []string) error {
 	fs := flag.NewFlagSet("attach", flag.ContinueOnError)
 	sessionID := fs.String("session", "", "session ID")
+	runtimeBackend := fs.String("runtime-backend", "", "managed runtime backend")
 	stateRoot := fs.String("state-root", "/var/lib/agent-remote-runtime", "runtime state root")
+	nodeConfigPath := fs.String("node-config", "/etc/agent-remote-node/config.json", "node configuration path")
 	sshAgentSocket := fs.String("ssh-agent-sock", "", "verified forwarded SSH agent socket")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *sessionID == "" {
-		return errors.New("session is required")
+	if *sessionID == "" || *runtimeBackend == "" {
+		return errors.New("session and runtime-backend are required")
+	}
+	runtimeConfig := runtimehelper.EngineConfig{
+		StateRoot: *stateRoot, NodeConfigPath: *nodeConfigPath,
+	}
+	if err := applyBrowserConfig(&runtimeConfig, *nodeConfigPath); err != nil {
+		return err
 	}
 	return runtimehelper.AttachSession(
-		runtimehelper.EngineConfig{StateRoot: *stateRoot},
+		runtimeConfig,
 		*sessionID,
+		*runtimeBackend,
 		*sshAgentSocket,
 	)
 }
@@ -114,6 +123,7 @@ func serve(args []string) error {
 	}
 	config := runtimehelper.EngineConfig{
 		StateRoot:           *stateRoot,
+		NodeConfigPath:      *nodeConfigPath,
 		WorkspaceRoot:       *workspaceRoot,
 		AccountRoot:         *accountRoot,
 		RuntimeBinaryPath:   os.Args[0],
@@ -148,6 +158,15 @@ func applyBrowserConfig(runtimeConfig *runtimehelper.EngineConfig, path string) 
 	runtimeConfig.BrowserImage = nodeConfig.BrowserImage
 	runtimeConfig.BrowserPublicBaseURL = nodeConfig.BrowserPublicBaseURL
 	runtimeConfig.BrowserDockerNetwork = nodeConfig.BrowserDockerNetwork
+	runtimeConfig.EgoBrowserEnabled = nodeConfig.EgoBrowserEnabled
+	runtimeConfig.EgoBrowserWrapperPath = nodeConfig.EgoBrowserWrapperPath
+	runtimeConfig.EgoBrowserBrokerSocket = nodeConfig.EgoBrowserBrokerSocket
+	runtimeConfig.EgoBrowserBrokerRoot = nodeConfig.EgoBrowserBrokerRoot
+	runtimeConfig.EgoBrowserProtocolVersion = nodeConfig.EgoBrowserProtocolVersion
+	runtimeConfig.EgoBrowserWrapperVersion = nodeConfig.EgoBrowserWrapperVersion
+	runtimeConfig.EgoBrowserSkillPath = nodeConfig.EgoBrowserSkillPath
+	runtimeConfig.EgoBrowserSkillVersion = nodeConfig.EgoBrowserSkillVersion
+	runtimeConfig.EgoBrowserSkillTreeSHA256 = nodeConfig.EgoBrowserSkillTreeSHA256
 	return nil
 }
 
@@ -173,13 +192,20 @@ func executeSpec(args []string, action func(runtimehelper.EngineConfig, string) 
 	fs := flag.NewFlagSet("spec", flag.ContinueOnError)
 	specPath := fs.String("spec", "", "validated session spec")
 	stateRoot := fs.String("state-root", "/var/lib/agent-remote-runtime", "runtime state root")
+	nodeConfigPath := fs.String("node-config", "/etc/agent-remote-node/config.json", "node configuration path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *specPath == "" {
 		return errors.New("spec is required")
 	}
-	return action(runtimehelper.EngineConfig{StateRoot: *stateRoot, RuntimeBinaryPath: os.Args[0]}, *specPath)
+	runtimeConfig := runtimehelper.EngineConfig{
+		StateRoot: *stateRoot, RuntimeBinaryPath: os.Args[0], NodeConfigPath: *nodeConfigPath,
+	}
+	if err := applyBrowserConfig(&runtimeConfig, *nodeConfigPath); err != nil {
+		return err
+	}
+	return action(runtimeConfig, *specPath)
 }
 
 func lookupGroupID(name string) (int, error) {

@@ -2,8 +2,8 @@ package toolsessions
 
 import "testing"
 
-// TestDecodeCreatePayloadAcceptsOnlyNativeClaudeDeviceControl verifies strict tool-session decoding.
-func TestDecodeCreatePayloadAcceptsOnlyNativeClaudeDeviceControl(t *testing.T) {
+// TestDecodeCreatePayloadAcceptsDeviceControlForEveryRuntimeBackend verifies strict tool-session decoding.
+func TestDecodeCreatePayloadAcceptsDeviceControlForEveryRuntimeBackend(t *testing.T) {
 	payload := map[string]any{
 		"session_id": "session_1", "tool_account_id": "account_1", "tool_type": "claude",
 		"user_id": "user_1", "workspace_id": "workspace_1", "tmux_session_name": "tmux_1",
@@ -18,8 +18,17 @@ func TestDecodeCreatePayloadAcceptsOnlyNativeClaudeDeviceControl(t *testing.T) {
 		t.Fatalf("unexpected device-control configuration: %#v", decoded.DeviceControl)
 	}
 
+	dockerPayload := make(map[string]any, len(payload))
+	for key, value := range payload {
+		dockerPayload[key] = value
+	}
+	dockerPayload["runtime_backend"] = "docker_sandbox"
+	if _, err := DecodeCreatePayload(dockerPayload); err != nil {
+		t.Fatalf("Docker device control was rejected: %v", err)
+	}
+
 	for _, change := range []func(map[string]any){
-		func(value map[string]any) { value["runtime_backend"] = "docker_sandbox" },
+		func(value map[string]any) { value["runtime_backend"] = "unsupported" },
 		func(value map[string]any) { value["tool_type"] = "future_tool" },
 		func(value map[string]any) { value["device_control"] = map[string]any{"protocol_version": float64(2)} },
 	} {

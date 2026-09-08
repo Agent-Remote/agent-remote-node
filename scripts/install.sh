@@ -38,6 +38,7 @@ NODEJS_VERSION="${NODEJS_VERSION:-}"
 NODEJS_SOURCE="${NODEJS_SOURCE:-}"
 NODEJS_SHA256="${NODEJS_SHA256:-}"
 DEVICE_RUNTIME_ROOT="${DEVICE_RUNTIME_ROOT:-/opt/agent-remote/device}"
+EGO_BROWSER_RUNTIME_ROOT="${EGO_BROWSER_RUNTIME_ROOT:-/opt/agent-remote/ego-browser}"
 PACKAGED_ROOT=""
 WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
 WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
@@ -110,7 +111,7 @@ Options:
   --nodejs-version VALUE  Pin an official Node.js version, or use with --nodejs-source.
   --nodejs-source PATH    Pinned Node.js .tar.gz archive path or URL.
   --nodejs-sha256 HASH    Required checksum for --nodejs-source.
-  --no-dependencies       Do not install native runtime OS packages.
+  --no-dependencies       Do not install OS packages for selected runtimes.
   --no-claude             Do not install the managed Claude runtime.
   --no-nodejs             Do not install the managed Node.js runtime.
   --no-start              Install and register without starting services.
@@ -149,6 +150,7 @@ Environment:
   NODEJS_SOURCE            Same as --nodejs-source.
   NODEJS_SHA256            Same as --nodejs-sha256.
   DEVICE_RUNTIME_ROOT      Managed device proxy runtime root.
+  EGO_BROWSER_RUNTIME_ROOT Managed ego-browser wrapper and Skill runtime root.
   INSTALL_DEPENDENCIES=0     Same as --no-dependencies.
   INSTALL_CLAUDE=0           Same as --no-claude.
   INSTALL_NODEJS=0           Same as --no-nodejs.
@@ -444,7 +446,7 @@ install_system_dependencies() {
     return
   fi
   if [ "$(uname -s)" != "Linux" ]; then
-    echo "native runtime dependency installation is only supported on Linux" >&2
+    echo "runtime dependency installation is only supported on Linux" >&2
     exit 1
   fi
   if [ ! -r /etc/os-release ]; then
@@ -457,22 +459,22 @@ install_system_dependencies() {
   case "$distro" in
     debian)
       if [ "${version_id%%.*}" -lt 12 ]; then
-        echo "native runtime requires Debian 12+" >&2
+        echo "automatic runtime dependency installation requires Debian 12+" >&2
         exit 1
       fi
       ;;
     ubuntu)
       if [ "${version_id%%.*}" -lt 22 ]; then
-        echo "native runtime requires Ubuntu 22.04+" >&2
+        echo "automatic runtime dependency installation requires Ubuntu 22.04+" >&2
         exit 1
       fi
       ;;
     *)
-      echo "automatic native dependency installation supports Debian 12+ and Ubuntu 22.04+; found $distro $version_id" >&2
+      echo "automatic runtime dependency installation supports Debian 12+ and Ubuntu 22.04+; found $distro $version_id" >&2
       exit 1
       ;;
   esac
-  echo "Installing native runtime dependencies"
+  echo "Installing runtime dependencies"
   run_as_root apt-get update
   if backend_enabled native; then
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
@@ -481,7 +483,8 @@ install_system_dependencies() {
       openssh-server patch pkg-config procps psmisc python3 python3-pip python3-venv ripgrep rsync sed sqlite3 \
       strace tar tmux tree unzip util-linux wget which wireguard-tools xz-utils zip
   else
-    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends wireguard-tools
+    run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
+      acl ca-certificates git openssh-client openssh-server tmux util-linux wireguard-tools
   fi
   if ! backend_enabled native; then
     return
@@ -758,6 +761,7 @@ install_packaged() {
   require_file "$package_dir/scripts/install-claude-runtime.sh"
   require_file "$package_dir/scripts/install-nodejs-runtime.sh"
   require_file "$package_dir/scripts/install-device-proxy.sh"
+  require_file "$package_dir/scripts/install-ego-browser-runtime.sh"
   if [ "$VERSION" = "latest" ] && [ -f "$package_dir/VERSION" ]; then
     VERSION="$(tr -d '[:space:]' < "$package_dir/VERSION")"
   fi
@@ -772,16 +776,19 @@ install_packaged() {
   fi
   check_dependency tmux
   check_dependency sshd
-  check_dependency bwrap
-  check_dependency systemd-run
-  check_dependency nft
-  check_dependency ip
   check_dependency setfacl
-  check_dependency mount
-  check_dependency umount
   check_dependency cp
   check_dependency wg
   check_dependency wg-quick
+  if backend_enabled native; then
+    check_dependency bwrap
+    check_dependency systemd-run
+    check_dependency nft
+    check_dependency ip
+    check_dependency mount
+    check_dependency umount
+    check_dependency mountpoint
+  fi
   check_native_prerequisites
   if [ "$(uname -s)" = "Linux" ] && [ ! -c /dev/net/tun ]; then
     echo "warn missing /dev/net/tun; WireGuard tunnel support may be unavailable" >&2
@@ -795,12 +802,14 @@ install_packaged() {
   run_as_root install -m 0755 "$package_dir/scripts/install-claude-runtime.sh" "$PREFIX/lib/agent-remote-node/install-claude-runtime.sh"
   run_as_root install -m 0755 "$package_dir/scripts/install-nodejs-runtime.sh" "$PREFIX/lib/agent-remote-node/install-nodejs-runtime.sh"
   run_as_root install -m 0755 "$package_dir/scripts/install-device-proxy.sh" "$PREFIX/lib/agent-remote-node/install-device-proxy.sh"
+  run_as_root install -m 0755 "$package_dir/scripts/install-ego-browser-runtime.sh" "$PREFIX/lib/agent-remote-node/install-ego-browser-runtime.sh"
 
   # Install the managed device proxy immediately while the extracted package
   # directory is still available. The proxy file is architecture-specific and
   # lives in the temporary download directory; installing it before the longer
   # Claude/Node.js runtime downloads avoids race conditions with temp cleanup.
   install_managed_device_proxy
+  install_managed_ego_browser_runtime
 
   if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
     run_as_root install -d -m 0750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR" "$STATE_DIR" "$DATA_DIR"
@@ -915,7 +924,7 @@ install_managed_nodejs() {
 }
 
 install_managed_device_proxy() {
-  if ! backend_enabled native || [ "$(uname -s)" != "Linux" ]; then
+  if [ "$(uname -s)" != "Linux" ]; then
     return
   fi
   local source checksum installer proxy_version
@@ -940,6 +949,50 @@ install_managed_device_proxy() {
     --sha256 "$checksum"
   if [ ! -x "$DEVICE_RUNTIME_ROOT/current/bin/agent-remote-device-proxy" ]; then
     echo "managed device proxy installation did not produce an executable" >&2
+    exit 1
+  fi
+}
+
+install_managed_ego_browser_runtime() {
+  if [ "$(uname -s)" != "Linux" ]; then
+    return
+  fi
+  local root installer wrapper_version wrapper_sha256 skill_version skill_tree_sha256 source_manifest_sha256
+  root="$PACKAGED_ROOT/ego-browser"
+  for path in \
+    "$root/ego-browser" \
+    "$root/VERSION" \
+    "$root/WRAPPER_SHA256" \
+    "$root/SKILL_VERSION" \
+    "$root/SKILL_TREE_SHA256" \
+    "$root/SOURCE_MANIFEST_SHA256" \
+    "$root/ego-browser-skill-source.json" \
+    "$root/skill/ego-browser/SKILL.md"; do
+    require_file "$path"
+  done
+  if [ ! -x "$root/ego-browser" ] || [ -L "$root/ego-browser" ] || [ -L "$root/skill/ego-browser" ]; then
+    echo "packaged ego-browser runtime contains an unsafe wrapper or Skill path" >&2
+    exit 1
+  fi
+  wrapper_version="$(tr -d '[:space:]' < "$root/VERSION")"
+  wrapper_sha256="$(tr -d '[:space:]' < "$root/WRAPPER_SHA256")"
+  skill_version="$(tr -d '[:space:]' < "$root/SKILL_VERSION")"
+  skill_tree_sha256="$(tr -d '[:space:]' < "$root/SKILL_TREE_SHA256")"
+  source_manifest_sha256="$(tr -d '[:space:]' < "$root/SOURCE_MANIFEST_SHA256")"
+  installer="$PREFIX/lib/agent-remote-node/install-ego-browser-runtime.sh"
+  run_as_root "$installer" \
+    --runtime-root "$EGO_BROWSER_RUNTIME_ROOT" \
+    --version "$wrapper_version" \
+    --wrapper-source "$root/ego-browser" \
+    --wrapper-sha256 "$wrapper_sha256" \
+    --skill-source "$root/skill/ego-browser" \
+    --skill-version "$skill_version" \
+    --skill-tree-sha256 "$skill_tree_sha256" \
+    --source-manifest "$root/ego-browser-skill-source.json" \
+    --source-manifest-sha256 "$source_manifest_sha256"
+  if [ ! -x "$EGO_BROWSER_RUNTIME_ROOT/current/bin/ego-browser" ] || \
+     [ ! -f "$EGO_BROWSER_RUNTIME_ROOT/current/skill/ego-browser/SKILL.md" ]; then
+    echo "managed ego-browser runtime installation is incomplete" >&2
     exit 1
   fi
 }
@@ -1080,6 +1133,10 @@ fi
 if backend_enabled native; then
   echo "  Claude: $CLAUDE_RUNTIME_ROOT/current/bin/claude"
   echo "  Node.js: $CLAUDE_RUNTIME_ROOT/current/bin/node"
+fi
+if [ "$(uname -s)" = "Linux" ]; then
+  echo "  ego-browser: $EGO_BROWSER_RUNTIME_ROOT/current/bin/ego-browser"
+  echo "  ego-browser Skill: $EGO_BROWSER_RUNTIME_ROOT/current/skill/ego-browser"
 fi
 if [ "$NODE_READY" = "1" ] && [ "$START_SERVICES" = "1" ]; then
   echo "  services: active"

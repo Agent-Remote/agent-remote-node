@@ -46,7 +46,7 @@ jobs:
         id: device
         run: |
           set -euo pipefail
-          test "$(jq -er .schema_version release-dependencies.json)" = "2"
+          test "$(jq -er .schema_version release-dependencies.json)" = "3"
           test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
             "Agent-Remote/agent-remote-device"
           version=$(jq -er .device_proxy.version release-dependencies.json)
@@ -55,8 +55,19 @@ jobs:
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
           [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
           [[ "$workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
+          test "$(jq -er .ego_browser_wrapper.repository release-dependencies.json)" = \
+            "Agent-Remote/agent-remote-ego-browser"
+          ego_version=$(jq -er .ego_browser_wrapper.version release-dependencies.json)
+          ego_workflow=$(jq -er .ego_browser_wrapper.release_workflow release-dependencies.json)
+          [[ "$ego_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          [[ "$ego_workflow" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.ya?ml$ ]]
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Resolve official ego-browser Skill source
+        id: ego-browser-skill
+        run: |
+          test "$(jq -er .schema_version ego-browser-skill-source.json)" = "1"
+          echo "commit=$(jq -er .upstream_commit ego-browser-skill-source.json)" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v7.0.0
         with:
           repository: Agent-Remote/agent-remote-device
@@ -69,6 +80,14 @@ jobs:
         run: |
           test "$(git -C .external/agent-remote-device rev-parse HEAD)" = "$DEVICE_COMMIT"
           scripts/check-managed-skills.sh .external/agent-remote-device
+      - uses: actions/checkout@v7.0.0
+        with:
+          repository: citrolabs/ego-lite
+          ref: ${{ steps.ego-browser-skill.outputs.commit }}
+          path: .external/ego-lite
+          persist-credentials: false
+      - name: Verify official ego-browser Skill matches pinned source
+        run: scripts/check-ego-browser-skill-source.sh .external/ego-lite
       - name: Prepare version files
         run: scripts/prepare-release.sh "${{ steps.version.outputs.value }}"
       - name: Commit and tag

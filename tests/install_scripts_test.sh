@@ -3,7 +3,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-remote-install-test.XXXXXX")"
-trap 'rm -rf "$WORK"' EXIT
+cleanup_work() {
+  chmod -R u+w "$WORK" 2>/dev/null || true
+  rm -rf "$WORK"
+}
+trap cleanup_work EXIT
 
 fail() {
   echo "install script test failed: $*" >&2
@@ -18,8 +22,28 @@ sha256_file() {
   fi
 }
 
+sha256_stream() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum | awk '{print $1}'
+  else
+    shasum -a 256 | awk '{print $1}'
+  fi
+}
+
+skill_tree_sha256() {
+  local root="$1"
+  while IFS= read -r -d '' file; do
+    relative="${file#"$root"/}"
+    size="$(wc -c < "$file" | tr -d '[:space:]')"
+    printf '%s\0%s\0' "$relative" "$size"
+    command cat -- "$file"
+    printf '\0'
+  done < <(find "$root" -type f -print0 | LC_ALL=C sort -z) | sha256_stream
+}
+
 bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" \
-  "$ROOT/scripts/install-nodejs-runtime.sh" "$ROOT/scripts/build-release.sh"
+  "$ROOT/scripts/install-nodejs-runtime.sh" "$ROOT/scripts/install-ego-browser-runtime.sh" \
+  "$ROOT/scripts/build-release.sh"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--registration-token' || fail "one-command help is incomplete"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--nodejs-version' || fail "Node.js install help is incomplete"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
@@ -37,6 +61,11 @@ for package in build-essential file git gh jq openssh-client python3 ripgrep rsy
     fail "native developer dependency ${package} is not installed by default"
 done
 grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
+grep -q 'acl ca-certificates git openssh-client openssh-server tmux util-linux wireguard-tools' "$ROOT/scripts/install.sh" || \
+  fail "Docker-only runtime dependencies are incomplete"
+if sed -n '/^install_managed_device_proxy()/,/^}/p' "$ROOT/scripts/install.sh" | grep -q 'backend_enabled native'; then
+  fail "Docker-only installs still skip the managed device proxy"
+fi
 grep -q 'wg-quick@' "$ROOT/scripts/install.sh" || fail "WireGuard interface service is not enabled"
 grep -q 'systemctl restart agent-remote-runtime.service' "$ROOT/scripts/install.sh" || \
   fail "runtime helper is not restarted during upgrades"
@@ -211,17 +240,100 @@ if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-device-proxy.sh" \
   fail "same device proxy version with different content was accepted"
 fi
 
+fake_ego_wrapper="$WORK/ego-browser"
+cat > "$fake_ego_wrapper" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+chmod 0755 "$fake_ego_wrapper"
+ego_wrapper_checksum="$(sha256_file "$fake_ego_wrapper")"
+ego_skill_source="$ROOT/internal/managedskills/skills/ego-browser"
+ego_skill_version="1.2.3"
+ego_skill_digest="$(skill_tree_sha256 "$ego_skill_source")"
+ego_source_manifest="$ROOT/ego-browser-skill-source.json"
+ego_source_manifest_checksum="$(sha256_file "$ego_source_manifest")"
+ego_runtime_root="$WORK/ego-browser-runtime"
+ALLOW_NON_ROOT=1 "$ROOT/scripts/install-ego-browser-runtime.sh" \
+  --runtime-root "$ego_runtime_root" \
+  --version 0.1.0 \
+  --wrapper-source "$fake_ego_wrapper" \
+  --wrapper-sha256 "$ego_wrapper_checksum" \
+  --skill-source "$ego_skill_source" \
+  --skill-version "$ego_skill_version" \
+  --skill-tree-sha256 "$ego_skill_digest" \
+  --source-manifest "$ego_source_manifest" \
+  --source-manifest-sha256 "$ego_source_manifest_checksum" >/dev/null
+[ -x "$ego_runtime_root/current/bin/ego-browser" ] || fail "ego-browser wrapper was not installed"
+[ "$(cat "$ego_runtime_root/current/SKILL_VERSION")" = "$ego_skill_version" ] || \
+  fail "ego-browser Skill version metadata is wrong"
+[ "$(cat "$ego_runtime_root/current/SKILL_TREE_SHA256")" = "$ego_skill_digest" ] || \
+  fail "ego-browser Skill digest metadata is wrong"
+[ "$(skill_tree_sha256 "$ego_runtime_root/current/skill/ego-browser")" = "$ego_skill_digest" ] || \
+  fail "installed ego-browser Skill bytes drifted"
+ALLOW_NON_ROOT=1 "$ROOT/scripts/install-ego-browser-runtime.sh" \
+  --runtime-root "$ego_runtime_root" \
+  --version 0.1.0 \
+  --wrapper-source "$fake_ego_wrapper" \
+  --wrapper-sha256 "$ego_wrapper_checksum" \
+  --skill-source "$ego_skill_source" \
+  --skill-version "$ego_skill_version" \
+  --skill-tree-sha256 "$ego_skill_digest" \
+  --source-manifest "$ego_source_manifest" \
+  --source-manifest-sha256 "$ego_source_manifest_checksum" >/dev/null
+fake_ego_wrapper_changed="$WORK/ego-browser-changed"
+cp "$fake_ego_wrapper" "$fake_ego_wrapper_changed"
+printf '\n# changed\n' >> "$fake_ego_wrapper_changed"
+chmod 0755 "$fake_ego_wrapper_changed"
+if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-ego-browser-runtime.sh" \
+  --runtime-root "$ego_runtime_root" \
+  --version 0.1.0 \
+  --wrapper-source "$fake_ego_wrapper_changed" \
+  --wrapper-sha256 "$(sha256_file "$fake_ego_wrapper_changed")" \
+  --skill-source "$ego_skill_source" \
+  --skill-version "$ego_skill_version" \
+  --skill-tree-sha256 "$ego_skill_digest" \
+  --source-manifest "$ego_source_manifest" \
+  --source-manifest-sha256 "$ego_source_manifest_checksum" >/dev/null 2>&1; then
+  fail "same ego-browser version with different wrapper bytes was accepted"
+fi
+unsafe_skill="$WORK/unsafe-ego-skill"
+cp -R "$ego_skill_source" "$unsafe_skill"
+ln -s SKILL.md "$unsafe_skill/alias.md"
+if ALLOW_NON_ROOT=1 "$ROOT/scripts/install-ego-browser-runtime.sh" \
+  --runtime-root "$WORK/unsafe-ego-runtime" \
+  --version 0.1.0 \
+  --wrapper-source "$fake_ego_wrapper" \
+  --wrapper-sha256 "$ego_wrapper_checksum" \
+  --skill-source "$unsafe_skill" \
+  --skill-version "$ego_skill_version" \
+  --skill-tree-sha256 "$ego_skill_digest" \
+  --source-manifest "$ego_source_manifest" \
+  --source-manifest-sha256 "$ego_source_manifest_checksum" >/dev/null 2>&1; then
+  fail "ego-browser Skill symlink was accepted"
+fi
+
 package="$WORK/package"
-mkdir -p "$package/scripts" "$package/device"
+mkdir -p "$package/scripts" "$package/device" "$package/ego-browser/skill"
 cp "$ROOT/scripts/install.sh" "$package/install.sh"
 cp "$ROOT/scripts/install-claude-runtime.sh" "$package/scripts/install-claude-runtime.sh"
 cp "$ROOT/scripts/install-nodejs-runtime.sh" "$package/scripts/install-nodejs-runtime.sh"
 cp "$ROOT/scripts/install-device-proxy.sh" "$package/scripts/install-device-proxy.sh"
+cp "$ROOT/scripts/install-ego-browser-runtime.sh" "$package/scripts/install-ego-browser-runtime.sh"
 cp "$fake_device_proxy" "$package/device/agent-remote-device-proxy"
+cp "$fake_ego_wrapper" "$package/ego-browser/ego-browser"
+cp -R "$ego_skill_source" "$package/ego-browser/skill/ego-browser"
+cp "$ego_source_manifest" "$package/ego-browser/ego-browser-skill-source.json"
 cp "$ROOT/config.example.json" "$package/config.example.json"
 printf '7.7.7\n' > "$package/VERSION"
 printf '1.2.3\n' > "$package/device/VERSION"
-chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh" "$package/scripts/install-device-proxy.sh" "$package/device/agent-remote-device-proxy"
+printf '0.1.0\n' > "$package/ego-browser/VERSION"
+printf '%s\n' "$ego_wrapper_checksum" > "$package/ego-browser/WRAPPER_SHA256"
+printf '%s\n' "$ego_skill_version" > "$package/ego-browser/SKILL_VERSION"
+printf '%s\n' "$ego_skill_digest" > "$package/ego-browser/SKILL_TREE_SHA256"
+printf '%s\n' "$ego_source_manifest_checksum" > "$package/ego-browser/SOURCE_MANIFEST_SHA256"
+chmod 0755 "$package/install.sh" "$package/scripts/install-claude-runtime.sh" "$package/scripts/install-nodejs-runtime.sh" \
+  "$package/scripts/install-device-proxy.sh" "$package/scripts/install-ego-browser-runtime.sh" \
+  "$package/device/agent-remote-device-proxy" "$package/ego-browser/ego-browser"
 
 cat > "$package/agent-remote-node" <<'EOF'
 #!/bin/sh
@@ -258,6 +370,7 @@ export FAKE_NODE_LOG="$WORK/node.log"
 ALLOW_NON_ROOT=1 STRICT_PREREQUISITES=0 INSTALL_DEPENDENCIES=0 \
 NODEJS_OS_OVERRIDE=Linux NODEJS_ARCH_OVERRIDE=x86_64 \
 CLAUDE_RUNTIME_ROOT="$managed_claude" \
+EGO_BROWSER_RUNTIME_ROOT="$WORK/managed-ego-browser" \
   "$package/install.sh" \
   --prefix "$prefix" --config-dir "$config_dir" --state-dir "$state_dir" --data-dir "$data_dir" \
   --server-url https://control.example --node-id node_1 --registration-token registration_test \
@@ -275,12 +388,17 @@ grep -q -- "--claude-runtime-path $managed_claude/current/bin/claude" "$FAKE_NOD
 
 release_dir="$WORK/release"
 proxy_dir="$WORK/device-proxies/linux-amd64-glibc"
-mkdir -p "$proxy_dir"
+ego_wrapper_dir="$WORK/ego-wrappers/linux-amd64-glibc"
+mkdir -p "$proxy_dir" "$ego_wrapper_dir"
 cp "$fake_device_proxy" "$proxy_dir/agent-remote-device-proxy"
 chmod 0755 "$proxy_dir/agent-remote-device-proxy"
 printf '1.2.3\n' > "$proxy_dir/VERSION"
+cp "$fake_ego_wrapper" "$ego_wrapper_dir/ego-browser"
+chmod 0755 "$ego_wrapper_dir/ego-browser"
+printf '0.1.0\n' > "$ego_wrapper_dir/VERSION"
 GOCACHE="$WORK/go-cache" VERSION=9.9.9 OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
   DEVICE_PROXY_DIR="$WORK/device-proxies" \
+  EGO_BROWSER_WRAPPER_DIR="$WORK/ego-wrappers" \
   "$ROOT/scripts/build-release.sh" >/dev/null
 release_package="$release_dir/agent-remote-node-9.9.9-linux-amd64-glibc"
 for packaged_file in \
@@ -291,9 +409,18 @@ for packaged_file in \
   install.sh \
   scripts/install-claude-runtime.sh \
   scripts/install-nodejs-runtime.sh \
-  scripts/install-device-proxy.sh \
-  device/agent-remote-device-proxy \
-  device/VERSION \
+	  scripts/install-device-proxy.sh \
+	  scripts/install-ego-browser-runtime.sh \
+	  device/agent-remote-device-proxy \
+	  device/VERSION \
+	  ego-browser/ego-browser \
+	  ego-browser/VERSION \
+	  ego-browser/WRAPPER_SHA256 \
+	  ego-browser/SKILL_VERSION \
+	  ego-browser/SKILL_TREE_SHA256 \
+	  ego-browser/SOURCE_MANIFEST_SHA256 \
+	  ego-browser/ego-browser-skill-source.json \
+	  ego-browser/skill/ego-browser/SKILL.md \
   systemd/agent-remote-node.service \
   systemd/agent-remote-runtime.service \
   systemd/agent-remote-runtime.sudoers; do

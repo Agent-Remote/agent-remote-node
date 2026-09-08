@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "name": "ego-browser",
+  "version": "1.2.3",
+  "upstream_repository": "https://github.com/citrolabs/ego-lite",
+  "upstream_tag": "v1.2.3",
+  "upstream_commit": "36053d07001a910cb806a15d42d00fdea1cdea3d",
+  "source_path": "skills/ego-browser",
+  "skill_document_sha256": "44c119634df847861486c3b104cda3c2faa9dd4c71dbb3a854429098be962293",
+  "tree_digest_algorithm": "sha256(path + NUL + decimal_size + NUL + content + NUL), paths sorted as UTF-8 bytes",
+  "tree_sha256": "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
+}

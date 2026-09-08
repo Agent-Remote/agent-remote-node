@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowser"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	noderuntime "github.com/Agent-Remote/agent-remote-node/internal/runtime"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
@@ -24,23 +26,51 @@ import (
 
 // Worker executes node heartbeats, task polling, and reconciliation.
 type Worker struct {
-	cfg     config.Config
-	client  api.Client
-	ledger  *ledger.Ledger
-	bridges *devicecontrol.BridgeManager
+	cfg           config.Config
+	client        api.Client
+	ledger        *ledger.Ledger
+	bridges       *devicecontrol.BridgeManager
+	browserBroker *egobrowser.Broker
+	brokerErr     error
 }
 
 // New creates a Worker.
 func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker {
+	cfg = cfg.WithDefaults()
+	var broker *egobrowser.Broker
+	var brokerErr error
+	if cfg.EgoBrowserEnabled {
+		broker, brokerErr = egobrowser.New(egobrowser.Config{
+			Enabled:                true,
+			NodeID:                 cfg.NodeID,
+			SocketPath:             cfg.EgoBrowserBrokerSocket,
+			StateRoot:              cfg.EgoBrowserBrokerRoot,
+			Client:                 client,
+			ControlPlaneConfigured: cfg.ServerURL != "" && cfg.NodeToken != "",
+			LeaseSeconds:           cfg.EgoBrowserLeaseSeconds,
+			RenewIntervalSeconds:   cfg.EgoBrowserRenewIntervalSeconds,
+			RenewGraceSeconds:      cfg.EgoBrowserRenewGraceSeconds,
+			MaxParallelRequests:    cfg.EgoBrowserMaxParallelRequests,
+			MaxScriptBytes:         cfg.EgoBrowserMaxScriptBytes,
+			MaxExecuteTimeoutMS:    cfg.EgoBrowserMaxExecuteTimeoutMS,
+			WrapperVersion:         cfg.EgoBrowserWrapperVersion,
+		})
+	}
 	return Worker{
-		cfg: cfg.WithDefaults(), client: client, ledger: taskLedger,
-		bridges: devicecontrol.NewBridgeManager(client),
+		cfg: cfg, client: client, ledger: taskLedger,
+		bridges: devicecontrol.NewBridgeManager(client), browserBroker: broker, brokerErr: brokerErr,
 	}
 }
 
+// EgoBrowserBroker returns the Node-local browser broker, when enabled.
+func (w Worker) EgoBrowserBroker() *egobrowser.Broker { return w.browserBroker }
+
 // Heartbeat sends a single heartbeat.
 func (w Worker) Heartbeat(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
+	resources, runtimeStatus := noderuntime.Snapshot(
+		w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
+		w.egoBrowserProbeConfig(),
+	)
 	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
@@ -87,7 +117,10 @@ func (w Worker) PollOnce(ctx context.Context) error {
 
 // Reconcile submits a basic node snapshot.
 func (w Worker) Reconcile(ctx context.Context) error {
-	resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
+	resources, runtimeStatus := noderuntime.Snapshot(
+		w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
+		w.egoBrowserProbeConfig(),
+	)
 	sessions := []any{}
 	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") || slices.Contains(w.cfg.AllowedRuntimeBackends, "docker_sandbox") {
 		result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
@@ -119,6 +152,9 @@ func (w Worker) Run(ctx context.Context) error {
 }
 
 func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollInterval time.Duration) error {
+	if w.brokerErr != nil {
+		return egoBrowserBrokerError("initialize ego-browser broker", w.brokerErr)
+	}
 	var loops sync.WaitGroup
 	startLoop := func(name string, interval time.Duration, stopAfterSuccess bool, operation func(context.Context) error) {
 		loops.Add(1)
@@ -134,13 +170,52 @@ func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollIn
 	if w.cfg.WireGuardPublicKey != "" {
 		startLoop("WireGuard peer sync", heartbeatInterval, false, w.syncWireGuardPeers)
 	}
+	if w.browserBroker != nil {
+		loops.Add(1)
+		go func() {
+			defer loops.Done()
+			if err := w.browserBroker.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("ego-browser broker stopped error=%s", egoBrowserBrokerLogCode(err))
+			}
+		}()
+	}
 
 	<-ctx.Done()
+	if w.browserBroker != nil {
+		_ = w.browserBroker.Close()
+	}
 	if w.bridges != nil {
 		w.bridges.StopAll()
 	}
 	loops.Wait()
 	return ctx.Err()
+}
+
+func egoBrowserBrokerLogCode(err error) string {
+	switch {
+	case errors.Is(err, egobrowser.ErrDisabled):
+		return "disabled"
+	case errors.Is(err, egobrowser.ErrUnavailable):
+		return "unavailable"
+	case errors.Is(err, egobrowser.ErrLeaseRenewalRequired):
+		return "lease_renewal_required"
+	case errors.Is(err, egobrowser.ErrLeaseExpired):
+		return "lease_expired"
+	case errors.Is(err, egobrowser.ErrRevoked):
+		return "binding_revoked"
+	case errors.Is(err, egobrowser.ErrReplay):
+		return "replay"
+	case errors.Is(err, egobrowser.ErrConcurrency):
+		return "concurrency_conflict"
+	case errors.Is(err, egobrowser.ErrProtocol):
+		return "protocol_error"
+	default:
+		return "broker_error"
+	}
+}
+
+func egoBrowserBrokerError(operation string, err error) error {
+	return fmt.Errorf("%s: %s", operation, egoBrowserBrokerLogCode(err))
 }
 
 func runOperationLoop(
@@ -225,7 +300,7 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	}
 	result, err := w.executeKnownTask(ctx, task)
 	if err != nil {
-		taskError := map[string]any{"code": "NODE_TASK_FAILED", "message": err.Error()}
+		taskError := contentSafeTaskError(task, err)
 		_ = w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError})
 		return w.client.FailTask(ctx, task.TaskID, taskError)
 	}
@@ -235,17 +310,30 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	return w.client.CompleteTask(ctx, task.TaskID, result)
 }
 
+func contentSafeTaskError(task api.TaskEnvelope, err error) map[string]any {
+	if task.TaskType == "cancel_ego_browser_request" {
+		return map[string]any{
+			"code":    "EGO_BROWSER_CANCELLATION_FAILED",
+			"message": "Cancellation could not be confirmed.",
+		}
+	}
+	return map[string]any{"code": "NODE_TASK_FAILED", "message": err.Error()}
+}
+
 func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (map[string]any, error) {
 	switch task.TaskType {
 	case "reconcile_state":
-		resources, runtimeStatus := noderuntime.Snapshot(w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath)
+		resources, runtimeStatus := noderuntime.Snapshot(
+			w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
+			w.egoBrowserProbeConfig(),
+		)
 		result := map[string]any{
 			"status":    "reconciled",
 			"resources": resources,
 			"runtime":   runtimeStatus,
 			"sessions":  []any{},
 		}
-		if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") {
+		if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") || slices.Contains(w.cfg.AllowedRuntimeBackends, "docker_sandbox") {
 			listed, err := w.callRuntimeHelper(ctx, task, "list_sessions", map[string]any{})
 			if err != nil {
 				return nil, err
@@ -351,6 +439,9 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 		if err := w.requireBackend(payload.RuntimeBackend); err != nil {
 			return nil, err
 		}
+		if w.browserBroker != nil {
+			w.browserBroker.UnregisterToolSession(payload.SessionID, "")
+		}
 		if w.bridges != nil {
 			w.bridges.StopToolSession(payload.SessionID)
 		}
@@ -420,6 +511,28 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 			return nil, err
 		}
 		return w.callRuntimeHelperExact(ctx, task, "update_device_control_context", payload)
+	case "cancel_ego_browser_request":
+		payload, err := egobrowser.DecodeCancelRequestPayload(task.Payload)
+		if err != nil {
+			return nil, err
+		}
+		if w.browserBroker == nil {
+			return nil, errors.New("ego-browser broker is unavailable")
+		}
+		cancelContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		requestActive, serverTerminalObserved, err := w.browserBroker.CancelRequestAndWait(
+			cancelContext,
+			payload.BindingID, payload.Generation, payload.RequestID, payload.Sequence,
+		)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"status":                   "cancellation_completed",
+			"request_active":           requestActive,
+			"server_terminal_observed": serverTerminalObserved,
+		}, nil
 	case "create_browser_session":
 		payload, err := browser.DecodeCreatePayload(task.Payload)
 		if err != nil {
@@ -433,9 +546,30 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 		}
 		return w.callRuntimeHelper(ctx, task, "docker_stop_browser", payload)
 	case "cleanup_resources":
+		backend, ok := task.Payload["runtime_backend"].(string)
+		if !ok {
+			return nil, errors.New("runtime_backend is required")
+		}
+		if err := w.requireBackend(backend); err != nil {
+			return nil, err
+		}
 		return w.callRuntimeHelper(ctx, task, "cleanup_resources", task.Payload)
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedTask, task.TaskType)
+	}
+}
+
+func (w Worker) egoBrowserProbeConfig() noderuntime.EgoBrowserProbeConfig {
+	return noderuntime.EgoBrowserProbeConfig{
+		Enabled:             w.cfg.EgoBrowserEnabled,
+		WrapperPath:         w.cfg.EgoBrowserWrapperPath,
+		ProtocolVersion:     w.cfg.EgoBrowserProtocolVersion,
+		WrapperVersion:      w.cfg.EgoBrowserWrapperVersion,
+		SkillPath:           w.cfg.EgoBrowserSkillPath,
+		SkillVersion:        w.cfg.EgoBrowserSkillVersion,
+		SkillTreeSHA256:     w.cfg.EgoBrowserSkillTreeSHA256,
+		MaxScriptBytes:      w.cfg.EgoBrowserMaxScriptBytes,
+		MaxExecuteTimeoutMS: w.cfg.EgoBrowserMaxExecuteTimeoutMS,
 	}
 }
 
@@ -454,10 +588,163 @@ func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, op
 	if err != nil {
 		return nil, err
 	}
+	var registration *egoBrowserSessionRegistration
+	if isEgoBrowserContextOperation(operation) {
+		registration, err = w.applyEgoBrowserRuntimeContext(mapped, operation)
+		if err != nil {
+			return nil, err
+		}
+		if registration != nil {
+			if err := w.browserBroker.PrepareSocket(); err != nil {
+				if registration.created {
+					w.browserBroker.UnregisterToolSession(registration.toolSessionID, registration.nonce)
+				}
+				return nil, egoBrowserBrokerError("prepare ego-browser broker socket", err)
+			}
+		}
+	}
 	mapped["workspace_root"] = w.cfg.WorkspaceRoot
 	mapped["account_root"] = w.cfg.AccountRoot
 	mapped["claude_runtime_path"] = w.cfg.ClaudeRuntimePath
-	return runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
+	result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
+	if err != nil && registration != nil && registration.created {
+		w.browserBroker.UnregisterToolSession(registration.toolSessionID, registration.nonce)
+	}
+	if err == nil && registration != nil {
+		runtimeUID, uidErr := takeRuntimeUID(result)
+		if uidErr == nil {
+			uidErr = w.browserBroker.AuthorizeToolSessionPeer(
+				registration.toolSessionID,
+				registration.nonce,
+				runtimeUID,
+			)
+		}
+		if uidErr != nil {
+			w.browserBroker.UnregisterToolSession(registration.toolSessionID, registration.nonce)
+			return nil, egoBrowserBrokerError("authorize ego-browser tool session", uidErr)
+		}
+	}
+	return result, err
+}
+
+func takeRuntimeUID(result map[string]any) (uint32, error) {
+	if result == nil {
+		return 0, errors.New("runtime helper omitted the ego-browser peer uid")
+	}
+	value, exists := result["runtime_uid"]
+	delete(result, "runtime_uid")
+	if !exists {
+		return 0, errors.New("runtime helper omitted the ego-browser peer uid")
+	}
+	var uid uint32
+	switch number := value.(type) {
+	case float64:
+		if number < 0 || number > float64(^uint32(0)) {
+			return 0, errors.New("runtime helper returned an invalid ego-browser peer uid")
+		}
+		uid = uint32(number)
+		if number != float64(uid) {
+			return 0, errors.New("runtime helper returned an invalid ego-browser peer uid")
+		}
+	case int:
+		if number < 0 || uint64(number) > uint64(^uint32(0)) {
+			return 0, errors.New("runtime helper returned an invalid ego-browser peer uid")
+		}
+		uid = uint32(number)
+	default:
+		return 0, errors.New("runtime helper returned an invalid ego-browser peer uid")
+	}
+	if uid == 0 {
+		return 0, errors.New("runtime helper returned root as the ego-browser peer uid")
+	}
+	return uid, nil
+}
+
+func isEgoBrowserContextOperation(operation string) bool {
+	switch operation {
+	case "prepare_account", "start_session", "docker_prepare_account", "docker_start_session":
+		return true
+	default:
+		return false
+	}
+}
+
+type egoBrowserSessionRegistration struct {
+	toolSessionID string
+	nonce         string
+	created       bool
+}
+
+func (w Worker) applyEgoBrowserRuntimeContext(payload map[string]any, operation string) (*egoBrowserSessionRegistration, error) {
+	// Never allow a task payload to choose bridge identity or carry a stale
+	// nonce. The node broker and root-owned node configuration are authoritative.
+	clearEgoBrowserRuntimeContext(payload)
+	if !w.cfg.EgoBrowserEnabled {
+		return nil, nil
+	}
+	if w.brokerErr != nil {
+		return nil, egoBrowserBrokerError("initialize ego-browser broker", w.brokerErr)
+	}
+	if w.browserBroker == nil {
+		return nil, errors.New("ego-browser broker is unavailable")
+	}
+	if toolType, _ := payload["tool_type"].(string); toolType != "" && toolType != "claude" {
+		return nil, nil
+	}
+	if operation != "start_session" && operation != "docker_start_session" {
+		return nil, nil
+	}
+	toolSessionID, _ := payload["session_id"].(string)
+	if toolSessionID == "" {
+		return nil, errors.New("ego-browser tool session identity is missing")
+	}
+	taskSpace := "agent-remote:" + toolSessionID
+	if !validTaskSpaceLabel(taskSpace) {
+		return nil, errors.New("ego-browser task space identity is invalid")
+	}
+	nonce, created, err := w.browserBroker.RegisterToolSession(toolSessionID)
+	if err != nil {
+		return nil, egoBrowserBrokerError("register ego-browser tool session", err)
+	}
+	payload["ego_browser_enabled"] = true
+	payload["ego_browser_wrapper_path"] = w.cfg.EgoBrowserWrapperPath
+	payload["ego_browser_broker_socket"] = w.browserBroker.SocketPath()
+	payload["ego_browser_broker_nonce"] = nonce
+	payload["ego_browser_protocol_version"] = w.cfg.EgoBrowserProtocolVersion
+	payload["ego_browser_wrapper_version"] = w.cfg.EgoBrowserWrapperVersion
+	payload["ego_browser_skill_path"] = w.cfg.EgoBrowserSkillPath
+	payload["ego_browser_skill_version"] = w.cfg.EgoBrowserSkillVersion
+	payload["ego_browser_skill_tree_sha256"] = w.cfg.EgoBrowserSkillTreeSHA256
+	payload["ego_browser_task_space"] = taskSpace
+	return &egoBrowserSessionRegistration{toolSessionID: toolSessionID, nonce: nonce, created: created}, nil
+}
+
+func clearEgoBrowserRuntimeContext(payload map[string]any) {
+	payload["ego_browser_enabled"] = false
+	payload["ego_browser_wrapper_path"] = ""
+	payload["ego_browser_broker_socket"] = ""
+	payload["ego_browser_broker_nonce"] = ""
+	payload["ego_browser_protocol_version"] = ""
+	payload["ego_browser_wrapper_version"] = ""
+	payload["ego_browser_skill_path"] = ""
+	payload["ego_browser_skill_version"] = ""
+	payload["ego_browser_skill_tree_sha256"] = ""
+	delete(payload, "ego_browser_binding_id")
+	payload["ego_browser_task_space"] = ""
+}
+
+func validTaskSpaceLabel(value string) bool {
+	if value == "" || len(value) > 128 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("-_:", character) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (w Worker) callRuntimeHelperExact(ctx context.Context, task api.TaskEnvelope, operation string, payload any) (map[string]any, error) {

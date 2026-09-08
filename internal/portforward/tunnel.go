@@ -314,7 +314,8 @@ func maintainLease(
 }
 
 func validateLease(forwardID string, lease api.PortForwardLease) error {
-	if lease.ForwardID != forwardID || lease.SessionID == "" || lease.RuntimeBackend != "native" ||
+	if lease.ForwardID != forwardID || lease.SessionID == "" ||
+		(lease.RuntimeBackend != "native" && lease.RuntimeBackend != "docker_sandbox") ||
 		lease.RuntimeResourceID == "" || lease.RemotePort < 1 || lease.RemotePort > 65535 ||
 		lease.Generation < 1 || lease.MaxStreams < 1 || lease.MaxStreams > 1024 ||
 		lease.BytesPerSecond < 0 || lease.ControlPlaneGraceSeconds < 0 {

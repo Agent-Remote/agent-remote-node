@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -52,7 +54,12 @@ func TestPrepareBindingCreatesAccountArchive(t *testing.T) {
 		Verifier: "claude",
 	}
 
-	result, err := PrepareBinding(root, "docker", "agent-remote-missing-tmux", payload)
+	uid, gid := os.Getuid(), os.Getgid()
+	if uid == 0 {
+		uid, gid = 12345, 12345
+	}
+	runtime := SandboxRuntime{UID: uid, GID: gid}
+	result, err := PrepareBinding(root, "docker", "agent-remote-missing-tmux", payload, runtime)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +74,7 @@ func TestPrepareBindingCreatesAccountArchive(t *testing.T) {
 			t.Fatalf("expected %s to exist: %v", relativePath, err)
 		}
 	}
-	command := sandboxExecCommand("docker", result.AccountRemotePath, payload)
+	command := sandboxExecCommand("docker", result.AccountRemotePath, payload, runtime)
 	assertContains(t, command, "sandbox")
 	assertContains(t, command, "exec")
 	assertContains(t, command, "CLAUDE_CONFIG_DIR="+filepath.Join(result.AccountRemotePath, ".claude"))
@@ -76,6 +83,22 @@ func TestPrepareBindingCreatesAccountArchive(t *testing.T) {
 	assertContains(t, command, "agent-remote-bind-account1")
 	assertContains(t, command, "claude")
 	assertContains(t, command, "login")
+	assertContains(t, command, "-u")
+	assertContains(t, command, strconv.Itoa(runtime.UID)+":"+strconv.Itoa(runtime.GID))
+	for _, path := range []string{
+		result.MarkerPath,
+		filepath.Join(result.AccountRemotePath, ".claude.json"),
+		filepath.Join(result.AccountRemotePath, ".claude", "skills", "ego-browser", "SKILL.md"),
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if ok && (int(stat.Uid) != runtime.UID || int(stat.Gid) != runtime.GID) {
+			t.Fatalf("unexpected owner for %s: %d:%d", path, stat.Uid, stat.Gid)
+		}
+	}
 }
 
 func TestPrepareBindingRejectsOutsidePath(t *testing.T) {
@@ -86,9 +109,46 @@ func TestPrepareBindingRejectsOutsidePath(t *testing.T) {
 		ToolType:          "claude",
 		UserID:            "user_1",
 		AccountRemotePath: filepath.Join(filepath.Dir(root), "outside"),
-	})
+	}, SandboxRuntime{})
 	if err == nil {
 		t.Fatal("expected outside path to be rejected")
+	}
+}
+
+func TestDockerSandboxCommandsOmitEgoBrowserContext(t *testing.T) {
+	accountPath := "/var/lib/agent-remote/users/user/tool-accounts/claude/account"
+	payload := CreateBindingPayload{
+		ToolAccountID: "account", ToolType: "claude", EgoBrowserEnabled: true,
+		EgoBrowserWrapperPath:  "/opt/agent-remote/ego-browser/current/bin/ego-browser",
+		EgoBrowserSkillPath:    "/opt/agent-remote/ego-browser/current/skill/ego-browser",
+		EgoBrowserBrokerSocket: "/run/agent-remote-node/ego-browser-broker.sock",
+		EgoBrowserBrokerNonce:  "secret-session-capability",
+		EgoBrowserTaskSpace:    "agent-remote:session",
+	}
+	commands := append(sandboxCreateArgs(accountPath, payload), sandboxExecCommand("docker", accountPath, payload, SandboxRuntime{})...)
+	joined := strings.Join(commands, "\x00")
+	for _, forbidden := range []string{
+		"EGO_BROWSER_", payload.EgoBrowserWrapperPath, payload.EgoBrowserSkillPath,
+		payload.EgoBrowserBrokerSocket, payload.EgoBrowserBrokerNonce, payload.EgoBrowserTaskSpace,
+	} {
+		if strings.Contains(joined, forbidden) {
+			t.Fatalf("Docker sandbox command exposed ego-browser context %q: %#v", forbidden, commands)
+		}
+	}
+}
+
+func TestPrepareBindingRejectsEgoBrowserForDockerSandbox(t *testing.T) {
+	_, err := PrepareBinding(t.TempDir(), "docker", "", CreateBindingPayload{EgoBrowserEnabled: true}, SandboxRuntime{})
+	if err == nil || err.Error() != "account binding sessions do not support ego-browser" {
+		t.Fatalf("expected binding-session ego-browser error, got %v", err)
+	}
+}
+
+func TestDockerSandboxEnvironmentScrubsEveryEgoBrowserVariable(t *testing.T) {
+	environ := []string{"PATH=/usr/bin", "EGO_BROWSER_FUTURE_SECRET=secret", "LANG=C"}
+	got := clearEgoBrowserEnvironment(environ)
+	if strings.Join(got, "\x00") != "PATH=/usr/bin\x00LANG=C" {
+		t.Fatalf("unexpected scrubbed environment: %#v", got)
 	}
 }
 

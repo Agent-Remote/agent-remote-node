@@ -101,6 +101,21 @@ func testLease() api.PortForwardLease {
 	}
 }
 
+func TestValidateLeaseAcceptsEveryManagedRuntimeBackend(t *testing.T) {
+	for _, backend := range []string{"native", "docker_sandbox"} {
+		lease := testLease()
+		lease.RuntimeBackend = backend
+		if err := validateLease(lease.ForwardID, lease); err != nil {
+			t.Fatalf("%s lease was rejected: %v", backend, err)
+		}
+	}
+	lease := testLease()
+	lease.RuntimeBackend = "unsupported"
+	if err := validateLease(lease.ForwardID, lease); err == nil {
+		t.Fatal("unsupported runtime backend was accepted")
+	}
+}
+
 func TestHandshakeRejectsUnknownFieldsAndOversizedPayloads(t *testing.T) {
 	unknown := handshakeBytes(t, map[string]any{
 		"forward_id": "forward-1", "connect_token": "secret-token",

@@ -59,16 +59,17 @@ go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-
 
 `prepare_workspace` tasks install the device's stable SSH gateway key and ask the privileged runtime helper to create the workspace as the control-plane user's Linux UID. Mutagen commands are re-authorized by device and node, then run without network access in a Bubblewrap view containing only that user's data.
 
-`create_binding_session` and `create_tool_session` use the backend pinned by the control plane. Docker Sandbox remains supported. Native sessions run the managed Claude binary under a per-user UID with systemd cgroup limits, Bubblewrap filesystem isolation, a dedicated network namespace, nftables egress filtering, a quota-limited temporary filesystem, and a per-session tmux socket. Docker and browser operations also pass through the root helper; the node worker is not a member of the Docker group.
+`create_binding_session` and `create_tool_session` use the backend pinned by the control plane. Native sessions run the managed Claude binary under a per-user UID with systemd cgroup limits, Bubblewrap filesystem isolation, a dedicated network namespace, nftables egress filtering, a quota-limited temporary filesystem, and a per-session tmux socket. Docker Sandbox sessions run as the Node service's fixed non-root UID/GID, with owned account/workspace paths and numeric ACL access. Docker lifecycle state is recorded in a root-owned trusted spec, and Docker operations remain behind the privileged helper; the Node worker is not a member of the Docker group.
 
-Native developer credential profiles provide persistent Git and GitHub CLI configuration directories. SSH private keys remain on the client: only an authorized `ssh -A` attach is bridged through a session-local Unix socket, and only while that connection is active. The gateway continues to deny TCP forwarding, X11 forwarding, and user SSH rc execution.
+Developer credential profiles provide persistent Git and GitHub CLI configuration directories for both runtime backends. SSH private keys remain on the client: only an authorized `ssh -A` attach is bridged through a session-local Unix socket, and only while that connection is active. Native and Docker Sandbox attach both resolve the tmux target and SSH mode from root-owned runtime state instead of control-plane resource names. The gateway continues to deny TCP forwarding, X11 forwarding, and user SSH rc execution.
 
-Session port forwarding uses a separate no-PTY forced command and does not enable OpenSSH TCP forwarding. After redeeming a device- and SSH-key-bound one-time token, one HTTP/2 tunnel carries CONNECT streams for exactly one authorized runtime loopback port. The privileged Runtime Helper resolves the managed session network namespace itself and returns only an already-connected socket FD over `SCM_RIGHTS`; clients cannot provide a host, IP, PID, namespace path, or container ID. Heartbeats currently advertise this capability for Native Runtime only. Docker Sandbox remains disabled for forwarding until an equivalent audited network-namespace path is available.
+Session port forwarding uses a separate no-PTY forced command and does not enable OpenSSH TCP forwarding. After redeeming a device- and SSH-key-bound one-time token, one HTTP/2 tunnel carries CONNECT streams for exactly one authorized runtime loopback port. The privileged Runtime Helper resolves either the Native network namespace or the root-owned Docker Sandbox spec and returns only an already-connected socket FD over `SCM_RIGHTS`; clients cannot provide a host, IP, PID, namespace path, sandbox name, or container ID. Heartbeats advertise this capability for every healthy enabled backend.
 
 Managed macOS device control advertises the required `observation_mode_v2`,
 `ax_state_v2`, and `adaptive_settle_v2` base plus the optional
-`clipboard_payload_v2` extension only when the Native Runtime and verified device
-proxy are available. The Server selects the complete required base, includes
+`clipboard_payload_v2` extension only when at least one enabled runtime backend and the verified device
+proxy are available. The advertised backend list is exact: Native additionally requires its network
+namespace probe, while Docker Sandbox requires its full runtime probe. The Server selects the complete required base, includes
 supported extensions, or uses an empty v1 fallback; partial sets and
 same-generation capability changes are rejected. New generations use the
 supported v2 set by default, while the Server emergency switch forces the empty
@@ -77,11 +78,18 @@ the negotiated set into the owner-only managed context, starts the proxy with th
 four-tool compact MCP surface, and fixes zero-content optimization metrics at
 `/tmp/agent-remote-device-optimization.jsonl` inside the isolated session.
 
-Native account binding requires a registered device token and an active SSH key. Binding attach uses the same forced-command gateway as normal sessions and is re-authorized by the control plane on every connection.
+Account binding on either runtime backend requires a registered device token and an active SSH key. Binding attach uses the same forced-command gateway as normal sessions, is re-authorized by the control plane on every connection, and reaches Docker tmux only through the trusted helper.
 
 `create_browser_session` node tasks start a temporary Kasm Chrome container by default. The browser runtime receives timezone, locale, launch URL, incognito Chrome arguments, and a temporary VNC password. It does not mount workspace or tool-account directories. `stop_browser_session` removes the container and the temporary profile directory under `browser_root`.
 
 ## Config
+
+The immutable wrapper/Skill source contract is documented in
+`docs/ego-browser-artifacts.md`; runtime UID/ACL diagnostics, metrics, and
+recovery are in `docs/ego-browser-operations.md`. Eligible Claude tool sessions on both
+Native and Docker Sandbox receive a runtime-scoped broker capability. Docker startup verifies and
+mounts the release-pinned artifacts, refreshes the exact managed Skill tree in the account, prepends
+the wrapper directory to `PATH`, and passes the nonce only through the process environment.
 
 `register` writes the node token to the configured JSON file:
 
@@ -90,7 +98,7 @@ Native account binding requires a registered device token and an active SSH key.
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.2.14",
+  "version": "0.2.15",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -134,7 +142,7 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-This installs missing native runtime dependencies without upgrading packages that are already installed, enables IPv4 forwarding and user namespaces, configures the restricted SSH gateway, downloads Claude Code `latest` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. It records both runtime versions and SHA256 checksums, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. The default backend is `native`, so KVM and Docker are not required. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
+This installs the dependencies required by the selected backends without upgrading packages that are already installed, configures the restricted SSH gateway, installs the managed device proxy, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. With the default `native` backend it also enables IPv4 forwarding and user namespaces, downloads Claude Code `latest` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. The default does not require KVM or Docker. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
 
 The default native dependency set also provides a consistent AI development baseline on minimal VPS images: standard shell/text/file utilities, `rg`, `jq`, Git/Git LFS/GitHub CLI, archive tools, `rsync`, Python 3 with pip and venv, SQLite, a C/C++ build toolchain, and common process/network/DNS diagnostics. The installer verifies the commands after package installation and repairs a broken `awk` alternatives link by reinstalling `gawk`. These host tools are exposed read-only inside Native sessions and do not grant additional privileges.
 
@@ -164,7 +172,7 @@ Node.js defaults to the latest verified release in the 22.x line. Pin an officia
 --nodejs-version <version> --nodejs-source <archive-or-url> --nodejs-sha256 <sha256>
 ```
 
-The installer fails before enabling the worker when the host does not satisfy Linux 5.15+, systemd 249+, cgroup v2, Bubblewrap user namespaces, or the required locale. To install files without registration or startup, omit the three control-plane options and add `--no-start`. To retain Docker Sandbox compatibility, use `--runtime-backends native,docker_sandbox`; this requires an already installed Docker CLI that provides `docker sandbox`.
+The installer fails before enabling the worker when a selected backend does not satisfy its probe. Native requires Linux 5.15+, systemd 249+, cgroup v2, Bubblewrap user namespaces, and the configured locale. Docker Sandbox requires Linux, a root helper, tmux, Git, POSIX ACL tools, a valid non-root runtime identity, and an already installed Docker CLI whose daemon and `docker sandbox` command are available. Use `--runtime-backends native,docker_sandbox` for both or `--runtime-backends docker_sandbox` for Docker only. To install files without registration or startup, omit the three control-plane options and add `--no-start`.
 
 Install from an extracted release archive with the same one-command options:
 
@@ -194,7 +202,7 @@ version with different bytes is rejected, and capability remains disabled if the
 or not executable.
 
 ```sh
-VERSION=0.2.14 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+VERSION=0.2.15 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.

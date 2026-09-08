@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -24,21 +25,38 @@ type RuntimeTemplate struct {
 	Verifier     string   `json:"verifier"`
 }
 
+// SandboxRuntime contains root-validated Docker execution and ownership details.
+type SandboxRuntime struct {
+	UID         int
+	GID         int
+	SetfaclPath string
+}
+
 // CreateBindingPayload describes a create_binding_session task payload.
 type CreateBindingPayload struct {
-	BindingID         string          `json:"binding_id"`
-	ToolAccountID     string          `json:"tool_account_id"`
-	ToolType          string          `json:"tool_type"`
-	UserID            string          `json:"user_id"`
-	RegionCode        string          `json:"region_code"`
-	Timezone          string          `json:"timezone"`
-	Locale            string          `json:"locale"`
-	AccountRemotePath string          `json:"account_remote_path"`
-	TmuxSessionName   string          `json:"tmux_session_name"`
-	Template          RuntimeTemplate `json:"template"`
-	Verifier          string          `json:"verifier"`
-	RuntimeBackend    string          `json:"runtime_backend"`
-	RuntimePolicy     map[string]any  `json:"runtime_policy"`
+	BindingID                 string          `json:"binding_id"`
+	ToolAccountID             string          `json:"tool_account_id"`
+	ToolType                  string          `json:"tool_type"`
+	UserID                    string          `json:"user_id"`
+	RegionCode                string          `json:"region_code"`
+	Timezone                  string          `json:"timezone"`
+	Locale                    string          `json:"locale"`
+	AccountRemotePath         string          `json:"account_remote_path"`
+	TmuxSessionName           string          `json:"tmux_session_name"`
+	Template                  RuntimeTemplate `json:"template"`
+	Verifier                  string          `json:"verifier"`
+	RuntimeBackend            string          `json:"runtime_backend"`
+	RuntimePolicy             map[string]any  `json:"runtime_policy"`
+	EgoBrowserEnabled         bool            `json:"ego_browser_enabled"`
+	EgoBrowserWrapperPath     string          `json:"ego_browser_wrapper_path"`
+	EgoBrowserBrokerSocket    string          `json:"ego_browser_broker_socket"`
+	EgoBrowserBrokerNonce     string          `json:"ego_browser_broker_nonce"`
+	EgoBrowserProtocolVersion string          `json:"ego_browser_protocol_version"`
+	EgoBrowserWrapperVersion  string          `json:"ego_browser_wrapper_version"`
+	EgoBrowserSkillPath       string          `json:"ego_browser_skill_path"`
+	EgoBrowserSkillVersion    string          `json:"ego_browser_skill_version"`
+	EgoBrowserSkillTreeSHA256 string          `json:"ego_browser_skill_tree_sha256"`
+	EgoBrowserTaskSpace       string          `json:"ego_browser_task_space"`
 }
 
 // BindingResult describes the prepared binding session.
@@ -179,7 +197,10 @@ func DecodeImportConfigPayload(payload map[string]any) (ImportConfigPayload, err
 }
 
 // PrepareBinding creates the account config archive directory and binding shell.
-func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload CreateBindingPayload) (BindingResult, error) {
+func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload CreateBindingPayload, sandboxRuntime SandboxRuntime) (BindingResult, error) {
+	if payload.EgoBrowserEnabled {
+		return BindingResult{}, errors.New("account binding sessions do not support ego-browser")
+	}
 	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolType, payload.ToolAccountID, payload.AccountRemotePath)
 	if err != nil {
 		return BindingResult{}, err
@@ -190,16 +211,16 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 		filepath.Join(accountPath, "cache"),
 		filepath.Join(accountPath, "workspace"),
 	} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := prepareSandboxDirectory(root, dir, sandboxRuntime); err != nil {
 			return BindingResult{}, err
 		}
 	}
 	claudeJSONPath := filepath.Join(accountPath, ".claude.json")
-	if err := ensureFile(claudeJSONPath, []byte("{}\n")); err != nil {
+	if err := ensureFile(claudeJSONPath, []byte("{}\n"), sandboxRuntime); err != nil {
 		return BindingResult{}, err
 	}
 	if payload.ToolType == "claude" {
-		if err := managedskills.InstallClaude(accountPath, nil); err != nil {
+		if err := managedskills.InstallClaude(accountPath, sandboxOwnership(sandboxRuntime)); err != nil {
 			return BindingResult{}, err
 		}
 	}
@@ -222,11 +243,11 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 	if err != nil {
 		return BindingResult{}, err
 	}
-	if err := os.WriteFile(markerPath, append(data, '\n'), 0o600); err != nil {
+	if err := writeOwnedFile(markerPath, append(data, '\n'), 0o600, sandboxRuntime); err != nil {
 		return BindingResult{}, err
 	}
 
-	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, accountPath, payload)
+	tmuxStarted, err := startTmuxSession(dockerBinary, tmuxBinary, accountPath, payload, sandboxRuntime)
 	if err != nil {
 		return BindingResult{}, err
 	}
@@ -305,7 +326,7 @@ func Verify(root string, payload VerifyPayload) (VerifyResult, error) {
 	return result, nil
 }
 
-func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string, payload CreateBindingPayload) (bool, error) {
+func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string, payload CreateBindingPayload, sandboxRuntime SandboxRuntime) (bool, error) {
 	if tmuxBinary == "" || payload.TmuxSessionName == "" {
 		return false, nil
 	}
@@ -321,9 +342,9 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string
 		}
 		return true, nil
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, accountPath, payload)))...)
+	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, accountPath, payload, sandboxRuntime)))...)
 	cmd.Dir = accountPath
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(clearEgoBrowserEnvironment(os.Environ()),
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,
 		"AGENT_REMOTE_TOOL_TYPE="+payload.ToolType,
 		"AGENT_REMOTE_REGION="+payload.RegionCode,
@@ -344,7 +365,8 @@ func ensureSandbox(dockerBinary string, accountPath string, payload CreateBindin
 	if _, err := exec.LookPath(dockerBinary); err != nil {
 		return err
 	}
-	cmd := exec.Command(dockerBinary, "sandbox", "create", "--name", containerName(payload.ToolAccountID), sandboxAgent(payload), accountPath)
+	args := sandboxCreateArgs(accountPath, payload)
+	cmd := exec.Command(dockerBinary, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		if strings.Contains(string(output), "already exists") || strings.Contains(string(output), "already in use") {
 			return nil
@@ -354,7 +376,11 @@ func ensureSandbox(dockerBinary string, accountPath string, payload CreateBindin
 	return nil
 }
 
-func sandboxExecCommand(dockerBinary string, accountPath string, payload CreateBindingPayload) []string {
+func sandboxCreateArgs(accountPath string, payload CreateBindingPayload) []string {
+	return []string{"sandbox", "create", "--name", containerName(payload.ToolAccountID), sandboxAgent(payload), accountPath}
+}
+
+func sandboxExecCommand(dockerBinary string, accountPath string, payload CreateBindingPayload, sandboxRuntime SandboxRuntime) []string {
 	command := payload.Template.Command
 	if len(command) == 0 {
 		command = []string{"claude"}
@@ -368,10 +394,23 @@ func sandboxExecCommand(dockerBinary string, accountPath string, payload CreateB
 		"-e", "TZ=" + payload.Timezone,
 		"-e", "LANG=" + payload.Locale,
 		"-e", "LC_ALL=" + payload.Locale,
-		"-w", filepath.Join(accountPath, "workspace"),
-		containerName(payload.ToolAccountID),
 	}
+	if sandboxRuntime.UID > 0 && sandboxRuntime.GID > 0 {
+		args = append(args, "-u", strconv.Itoa(sandboxRuntime.UID)+":"+strconv.Itoa(sandboxRuntime.GID))
+	}
+	args = append(args, "-w", filepath.Join(accountPath, "workspace"), containerName(payload.ToolAccountID))
 	return append(args, command...)
+}
+
+func clearEgoBrowserEnvironment(environ []string) []string {
+	result := make([]string, 0, len(environ))
+	for _, entry := range environ {
+		key, _, _ := strings.Cut(entry, "=")
+		if !strings.HasPrefix(key, "EGO_BROWSER_") {
+			result = append(result, entry)
+		}
+	}
+	return result
 }
 
 func sandboxAgent(payload CreateBindingPayload) string {
@@ -390,13 +429,100 @@ func containerName(toolAccountID string) string {
 	return "agent-remote-bind-" + suffix
 }
 
-func ensureFile(path string, defaultContent []byte) error {
-	if _, err := os.Stat(path); err == nil {
-		return nil
+func ensureFile(path string, defaultContent []byte, sandboxRuntime SandboxRuntime) error {
+	if info, err := os.Lstat(path); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("managed account file is not a regular file")
+		}
+		return applyOwnership(path, sandboxRuntime)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.WriteFile(path, defaultContent, 0o600)
+	return writeOwnedFile(path, defaultContent, 0o600, sandboxRuntime)
+}
+
+func sandboxOwnership(sandboxRuntime SandboxRuntime) *managedskills.Ownership {
+	if sandboxRuntime.UID <= 0 || sandboxRuntime.GID <= 0 {
+		return nil
+	}
+	return &managedskills.Ownership{UID: sandboxRuntime.UID, GID: sandboxRuntime.GID}
+}
+
+func prepareSandboxDirectory(root string, path string, sandboxRuntime SandboxRuntime) error {
+	if !isPathInside(root, path) {
+		return errors.New("sandbox account directory is outside its managed root")
+	}
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("managed account directory is not a directory")
+	}
+	if err := applyOwnership(path, sandboxRuntime); err != nil {
+		return err
+	}
+	if sandboxRuntime.SetfaclPath == "" || sandboxRuntime.UID <= 0 {
+		return nil
+	}
+	uid := strconv.Itoa(sandboxRuntime.UID)
+	for _, parent := range managedParentDirectories(root, path) {
+		if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-m", "u:"+uid+":--x", parent).CombinedOutput(); err != nil {
+			return fmt.Errorf("grant sandbox account parent access: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+	}
+	if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-R", "-m", "u:"+uid+":rwX", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("grant sandbox account access: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if output, err := exec.Command(sandboxRuntime.SetfaclPath, "-m", "d:u:"+uid+":rwX", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("grant sandbox account default access: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func managedParentDirectories(root string, path string) []string {
+	root = filepath.Clean(root)
+	current := filepath.Dir(filepath.Clean(path))
+	var reverse []string
+	for current != root && isPathInside(root, current) {
+		reverse = append(reverse, current)
+		current = filepath.Dir(current)
+	}
+	if current == root {
+		reverse = append(reverse, root)
+	}
+	parents := make([]string, len(reverse))
+	for index := range reverse {
+		parents[len(reverse)-1-index] = reverse[index]
+	}
+	return parents
+}
+
+func writeOwnedFile(path string, content []byte, mode os.FileMode, sandboxRuntime SandboxRuntime) error {
+	info, err := os.Lstat(path)
+	if err == nil && (!info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0) {
+		return errors.New("managed account file is not a regular file")
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.WriteFile(path, content, mode); err != nil {
+		return err
+	}
+	if err := os.Chmod(path, mode); err != nil {
+		return err
+	}
+	return applyOwnership(path, sandboxRuntime)
+}
+
+func applyOwnership(path string, sandboxRuntime SandboxRuntime) error {
+	if sandboxRuntime.UID <= 0 || sandboxRuntime.GID <= 0 {
+		return nil
+	}
+	return os.Lchown(path, sandboxRuntime.UID, sandboxRuntime.GID)
 }
 
 func resolveImportConfigTarget(accountPath string, importPath string) (string, error) {

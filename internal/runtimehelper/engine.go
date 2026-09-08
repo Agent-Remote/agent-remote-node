@@ -33,40 +33,53 @@ import (
 
 // EngineConfig defines root-owned runtime paths and managed dependencies.
 type EngineConfig struct {
-	StateRoot            string
-	WorkspaceRoot        string
-	AccountRoot          string
-	RuntimeBinaryPath    string
-	ClaudeRuntimePath    string
-	DeviceProxyPath      string
-	TmuxBinaryPath       string
-	BubblewrapPath       string
-	SystemdRunPath       string
-	SystemctlPath        string
-	IPPath               string
-	NFTPath              string
-	SetfaclPath          string
-	MountPath            string
-	UmountPath           string
-	MountpointPath       string
-	DataGroup            string
-	NodeUser             string
-	DNSResolvers         []string
-	DockerBinaryPath     string
-	BrowserRoot          string
-	BrowserImage         string
-	BrowserPublicBaseURL string
-	BrowserDockerNetwork string
-	WireGuardInterface   string
-	WireGuardPrivateKey  string
-	WireGuardListenPort  int
-	WGBinaryPath         string
+	StateRoot                 string
+	NodeConfigPath            string
+	WorkspaceRoot             string
+	AccountRoot               string
+	RuntimeBinaryPath         string
+	ClaudeRuntimePath         string
+	DeviceProxyPath           string
+	TmuxBinaryPath            string
+	BubblewrapPath            string
+	SystemdRunPath            string
+	SystemctlPath             string
+	IPPath                    string
+	NFTPath                   string
+	SetfaclPath               string
+	MountPath                 string
+	UmountPath                string
+	MountpointPath            string
+	DataGroup                 string
+	NodeUser                  string
+	DNSResolvers              []string
+	DockerBinaryPath          string
+	BrowserRoot               string
+	BrowserImage              string
+	BrowserPublicBaseURL      string
+	BrowserDockerNetwork      string
+	EgoBrowserEnabled         bool
+	EgoBrowserWrapperPath     string
+	EgoBrowserBrokerSocket    string
+	EgoBrowserBrokerRoot      string
+	EgoBrowserProtocolVersion string
+	EgoBrowserWrapperVersion  string
+	EgoBrowserSkillPath       string
+	EgoBrowserSkillVersion    string
+	EgoBrowserSkillTreeSHA256 string
+	WireGuardInterface        string
+	WireGuardPrivateKey       string
+	WireGuardListenPort       int
+	WGBinaryPath              string
 }
 
 // WithDefaults returns a complete helper configuration.
 func (c EngineConfig) WithDefaults() EngineConfig {
 	if c.StateRoot == "" {
 		c.StateRoot = "/var/lib/agent-remote-runtime"
+	}
+	if c.NodeConfigPath == "" {
+		c.NodeConfigPath = "/etc/agent-remote-node/config.json"
 	}
 	if c.WorkspaceRoot == "" {
 		c.WorkspaceRoot = "/var/lib/agent-remote/users"
@@ -131,6 +144,30 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 	if c.BrowserImage == "" {
 		c.BrowserImage = "kasmweb/chrome:1.18.0"
 	}
+	if c.EgoBrowserWrapperPath == "" {
+		c.EgoBrowserWrapperPath = "/opt/agent-remote/ego-browser/current/bin/ego-browser"
+	}
+	if c.EgoBrowserBrokerSocket == "" {
+		c.EgoBrowserBrokerSocket = "/run/agent-remote-node/ego-browser-broker.sock"
+	}
+	if c.EgoBrowserBrokerRoot == "" {
+		c.EgoBrowserBrokerRoot = "/var/lib/agent-remote-node/ego-browser"
+	}
+	if c.EgoBrowserProtocolVersion == "" {
+		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
+	}
+	if c.EgoBrowserWrapperVersion == "" {
+		c.EgoBrowserWrapperVersion = "0.1.0"
+	}
+	if c.EgoBrowserSkillPath == "" {
+		c.EgoBrowserSkillPath = "/opt/agent-remote/ego-browser/current/skill/ego-browser"
+	}
+	if c.EgoBrowserSkillVersion == "" {
+		c.EgoBrowserSkillVersion = "1.2.3"
+	}
+	if c.EgoBrowserSkillTreeSHA256 == "" {
+		c.EgoBrowserSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
+	}
 	if c.WireGuardInterface == "" {
 		c.WireGuardInterface = "agent-remote"
 	}
@@ -156,8 +193,8 @@ func NewEngine(config EngineConfig) Engine {
 	return Engine{config: config.WithDefaults()}
 }
 
-// DialSessionLoopback connects to one fixed loopback port inside a managed session namespace.
-func (e Engine) DialSessionLoopback(ctx context.Context, request Request) (*net.TCPConn, error) {
+// DialSessionLoopback connects to one fixed loopback port inside a managed session runtime.
+func (e Engine) DialSessionLoopback(ctx context.Context, request Request) (net.Conn, error) {
 	if request.Version != ProtocolVersion {
 		return nil, fmt.Errorf("unsupported protocol version %d", request.Version)
 	}
@@ -174,20 +211,28 @@ func (e Engine) DialSessionLoopback(ctx context.Context, request Request) (*net.
 	if err := decoder.Decode(&payload); err != nil {
 		return nil, errors.New("dial session loopback payload is invalid")
 	}
-	if payload.RuntimeBackend != "native" {
-		return nil, errors.New("session port forwarding backend is unsupported")
-	}
 	if err := validateID(payload.SessionID, "session_id"); err != nil {
 		return nil, err
 	}
 	if payload.Port < 1 || payload.Port > 65535 {
 		return nil, errors.New("session loopback port is invalid")
 	}
-	spec, err := readTrustedSpec(e.config, e.specPath(payload.SessionID))
-	if err != nil {
-		return nil, fmt.Errorf("managed session is unavailable: %w", err)
+	switch payload.RuntimeBackend {
+	case "native":
+		spec, err := readTrustedSpec(e.config, e.specPath(payload.SessionID))
+		if err != nil {
+			return nil, fmt.Errorf("managed session is unavailable: %w", err)
+		}
+		return dialNetworkNamespaceLoopback(ctx, spec.NetworkNamespace, payload.Port)
+	case "docker_sandbox":
+		spec, err := e.loadDockerSessionSpec(payload.SessionID)
+		if err != nil {
+			return nil, fmt.Errorf("managed session is unavailable: %w", err)
+		}
+		return e.dialDockerSessionLoopback(ctx, spec, payload.Port)
+	default:
+		return nil, errors.New("session port forwarding backend is unsupported")
 	}
-	return dialNetworkNamespaceLoopback(ctx, spec.NetworkNamespace, payload.Port)
 }
 
 // Execute performs one idempotent declarative operation.
@@ -281,13 +326,56 @@ type managedDeviceContext struct {
 	LeaseUntil                  string   `json:"lease_until"`
 }
 
+type managedSessionContextSpec struct {
+	SessionID                    string
+	UserID                       string
+	DeviceControlProtocolVersion int
+	DeviceControlDirectory       string
+	RuntimeUID                   int
+	RuntimeGID                   int
+}
+
+func nativeManagedSessionContextSpec(spec SessionSpec) managedSessionContextSpec {
+	return managedSessionContextSpec{
+		SessionID:                    spec.SessionID,
+		UserID:                       spec.UserID,
+		DeviceControlProtocolVersion: spec.DeviceControlProtocolVersion,
+		DeviceControlDirectory:       spec.DeviceControlDirectory,
+		RuntimeUID:                   spec.RuntimeUID,
+		RuntimeGID:                   spec.RuntimeGID,
+	}
+}
+
+func (e Engine) loadManagedSessionContextSpec(sessionID string) (managedSessionContextSpec, error) {
+	native, err := readTrustedSpec(e.config, e.specPath(sessionID))
+	if err == nil {
+		return nativeManagedSessionContextSpec(native), nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return managedSessionContextSpec{}, err
+	}
+	docker, err := e.loadDockerSessionSpec(sessionID)
+	if err != nil {
+		return managedSessionContextSpec{}, err
+	}
+	if dockerSessionKind(docker) != dockerSessionKindTool {
+		return managedSessionContextSpec{}, errors.New("managed Docker resource is not a tool session")
+	}
+	return managedSessionContextSpec{
+		SessionID: docker.SessionID, UserID: docker.UserID,
+		DeviceControlProtocolVersion: docker.DeviceControlProtocolVersion,
+		DeviceControlDirectory:       docker.DeviceControlDirectory,
+		RuntimeUID:                   docker.RuntimeUID, RuntimeGID: docker.RuntimeGID,
+	}, nil
+}
+
 func (e Engine) updateDeviceControlContext(payload map[string]any) (map[string]any, error) {
 	now := time.Now().UTC()
 	decoded, err := devicecontrol.DecodeContextPayload(payload, "", now)
 	if err != nil {
 		return nil, err
 	}
-	spec, err := readTrustedSpec(e.config, e.specPath(decoded.ToolSessionID))
+	spec, err := e.loadManagedSessionContextSpec(decoded.ToolSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("load managed device-control session: %w", err)
 	}
@@ -352,7 +440,7 @@ func (e Engine) clearDeviceControlContext(payload map[string]any) (map[string]an
 	}); err != nil {
 		return nil, err
 	}
-	spec, err := readTrustedSpec(e.config, e.specPath(decoded.ToolSessionID))
+	spec, err := e.loadManagedSessionContextSpec(decoded.ToolSessionID)
 	if errors.Is(err, os.ErrNotExist) {
 		return map[string]any{"status": "cleared", "removed": false}, nil
 	}
@@ -392,9 +480,9 @@ func (e Engine) clearDeviceControlContext(payload map[string]any) (map[string]an
 	}, nil
 }
 
-func validateDeviceControlContextPath(spec SessionSpec) (string, error) {
-	expectedDirectory := filepath.Join(spec.SessionRoot, "device-control")
-	if spec.DeviceControlDirectory != expectedDirectory {
+func validateDeviceControlContextPath(spec managedSessionContextSpec) (string, error) {
+	expectedDirectory := spec.DeviceControlDirectory
+	if expectedDirectory == "" || filepath.Base(expectedDirectory) != "device-control" {
 		return "", errors.New("device-control directory is outside managed session state")
 	}
 	info, err := os.Lstat(expectedDirectory)
@@ -413,7 +501,7 @@ func validateDeviceControlContextPath(spec SessionSpec) (string, error) {
 	return filepath.Join(expectedDirectory, "context.json"), nil
 }
 
-func loadManagedDeviceContext(path string, spec SessionSpec) (managedDeviceContext, error) {
+func loadManagedDeviceContext(path string, spec managedSessionContextSpec) (managedDeviceContext, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		return managedDeviceContext{}, err
@@ -453,7 +541,7 @@ func loadManagedDeviceContext(path string, spec SessionSpec) (managedDeviceConte
 	return context, nil
 }
 
-func writeManagedDeviceContext(path string, context managedDeviceContext, spec SessionSpec) error {
+func writeManagedDeviceContext(path string, context managedDeviceContext, spec managedSessionContextSpec) error {
 	data, err := json.MarshalIndent(context, "", "  ")
 	if err != nil {
 		return err
@@ -583,12 +671,42 @@ func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error)
 }
 
 func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, error) {
+	egoContext, err := parseEgoBrowserRuntimeContext(payload, e.config.WithDefaults())
+	if err != nil {
+		return nil, err
+	}
+	if egoContext.Enabled {
+		return nil, errors.New("ego-browser is available only in a tool session")
+	}
 	decoded, err := toolaccounts.DecodeCreateBindingPayload(payload)
 	if err != nil {
 		return nil, err
 	}
-	result, err := toolaccounts.PrepareBinding(e.config.AccountRoot, e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
+	identity, runtimeConfig, err := e.prepareDockerBindingRuntime()
 	if err != nil {
+		return nil, err
+	}
+	result, err := toolaccounts.PrepareBinding(
+		e.config.AccountRoot,
+		e.config.DockerBinaryPath,
+		e.config.TmuxBinaryPath,
+		decoded,
+		runtimeConfig,
+	)
+	if err != nil {
+		return nil, err
+	}
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindBinding,
+		SessionID: decoded.BindingID, UserID: decoded.UserID,
+		TmuxSessionName: result.TmuxSessionName, SandboxName: result.ContainerName,
+		BootID: currentBootID(), RuntimeUID: identity.UID, RuntimeGID: identity.GID,
+	}
+	if err := e.saveDockerSessionSpec(spec); err != nil {
+		_, _ = toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, toolsessions.StopPayload{
+			SessionID: decoded.BindingID, TmuxSessionName: result.TmuxSessionName,
+			SandboxName: result.ContainerName, RuntimeBackend: "docker_sandbox",
+		})
 		return nil, err
 	}
 	return map[string]any{
@@ -602,17 +720,29 @@ func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, er
 }
 
 func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, error) {
+	egoContext, err := parseEgoBrowserRuntimeContext(payload, e.config.WithDefaults())
+	if err != nil {
+		return nil, err
+	}
 	decoded, err := toolsessions.DecodeCreatePayload(payload)
 	if err != nil {
 		return nil, err
 	}
-	result, err := toolsessions.Prepare(e.config.WorkspaceRoot, e.config.AccountRoot, e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
+	spec, runtimeConfig, err := e.prepareDockerSessionRuntime(payload, decoded, egoContext)
 	if err != nil {
 		return nil, err
 	}
-	spec := DockerSessionSpec{
-		SessionID: decoded.SessionID, TmuxSessionName: result.TmuxSessionName,
-		SandboxName: result.SandboxName, BootID: currentBootID(),
+	result, err := toolsessions.Prepare(
+		e.config.WorkspaceRoot,
+		e.config.AccountRoot,
+		e.config.DockerBinaryPath,
+		e.config.TmuxBinaryPath,
+		decoded,
+		runtimeConfig,
+	)
+	if err != nil {
+		_ = e.removeDockerSessionSpec(decoded.SessionID)
+		return nil, err
 	}
 	if err := e.saveDockerSessionSpec(spec); err != nil {
 		_, _ = toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, toolsessions.StopPayload{
@@ -621,20 +751,41 @@ func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, erro
 		})
 		return nil, err
 	}
-	return map[string]any{
+	response := map[string]any{
 		"status": result.Status, "session_id": result.SessionID, "tool_account_id": result.ToolAccountID,
 		"tool_type": result.ToolType, "workspace_remote_path": result.WorkspaceRemotePath,
 		"account_remote_path": result.AccountRemotePath, "tmux_session_name": result.TmuxSessionName,
 		"sandbox_name": result.SandboxName, "container_id": result.SandboxName,
 		"marker_path": result.MarkerPath, "tmux_started": result.TmuxStarted,
 		"runtime_backend": "docker_sandbox", "runtime_resource_id": result.SandboxName,
-	}, nil
+	}
+	if egoContext.Enabled {
+		response["runtime_uid"] = spec.RuntimeUID
+	}
+	return response, nil
 }
 
 func (e Engine) dockerStopSession(payload map[string]any) (map[string]any, error) {
 	decoded, err := toolsessions.DecodeStopPayload(payload)
 	if err != nil {
 		return nil, err
+	}
+	spec, loadErr := e.loadDockerSessionSpec(decoded.SessionID)
+	if loadErr == nil {
+		if dockerSessionKind(spec) != dockerSessionKindTool {
+			return nil, errors.New("managed Docker resource is not a tool session")
+		}
+		decoded.TmuxSessionName = spec.TmuxSessionName
+		decoded.SandboxName = spec.SandboxName
+	} else if errors.Is(loadErr, os.ErrNotExist) {
+		return map[string]any{
+			"status": "stopped", "session_id": decoded.SessionID,
+			"tmux_session_name": "", "sandbox_name": "", "container_id": "",
+			"tmux_stopped": false, "sandbox_removed": false,
+			"runtime_backend": "docker_sandbox", "runtime_resource_id": "",
+		}, nil
+	} else {
+		return nil, loadErr
 	}
 	result, err := toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
 	if err != nil {
@@ -779,10 +930,10 @@ func (e Engine) applyAccountBackendOwnership(userID string, accountPath string, 
 	}); err != nil {
 		return err
 	}
-	if backend == "native" {
-		return e.applyDataACL(accountPath, identity.Username)
+	if err := e.applyDataACL(accountPath, identity.Username); err != nil {
+		return err
 	}
-	return nil
+	return e.grantManagedTraverse(accountPath, identity.Username)
 }
 
 func (e Engine) listSessions() (map[string]any, error) {
@@ -816,15 +967,29 @@ func (e Engine) listSessions() (map[string]any, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
+	seenDockerSessions := map[string]struct{}{}
 	for _, entry := range dockerEntries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		sessionID := entry.Name()
+		if !entry.IsDir() {
+			if filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+			sessionID = strings.TrimSuffix(entry.Name(), ".json")
+		}
+		if validateID(sessionID, "session_id") != nil {
 			continue
 		}
-		sessionID := strings.TrimSuffix(entry.Name(), ".json")
+		if _, exists := seenDockerSessions[sessionID]; exists {
+			continue
+		}
 		spec, loadErr := e.loadDockerSessionSpec(sessionID)
 		if loadErr != nil {
 			continue
 		}
+		if dockerSessionKind(spec) != dockerSessionKindTool {
+			continue
+		}
+		seenDockerSessions[sessionID] = struct{}{}
 		active := exec.Command(e.config.TmuxBinaryPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil
 		summary := map[string]any{
 			"session_id": spec.SessionID, "runtime_backend": "docker_sandbox",
@@ -858,79 +1023,13 @@ func sessionProcessExited(spec SessionSpec, active bool, bootID string) bool {
 	return err == nil && strings.TrimSpace(string(data)) == bootID
 }
 
-// DockerSessionSpec records enough local state to reconcile a tmux-held Docker session.
-type DockerSessionSpec struct {
-	SessionID       string `json:"session_id"`
-	TmuxSessionName string `json:"tmux_session_name"`
-	SandboxName     string `json:"sandbox_name"`
-	BootID          string `json:"boot_id,omitempty"`
-}
-
-func (e Engine) dockerSessionSpecPath(sessionID string) string {
-	return filepath.Join(e.config.StateRoot, "docker-sessions", sessionID+".json")
-}
-
-func (e Engine) saveDockerSessionSpec(spec DockerSessionSpec) error {
-	if validateID(spec.SessionID, "session_id") != nil ||
-		validateName(spec.TmuxSessionName, "tmux_session_name") != nil ||
-		validateName(spec.SandboxName, "sandbox_name") != nil {
-		return errors.New("Docker session spec identity is invalid")
-	}
-	root := filepath.Join(e.config.StateRoot, "docker-sessions")
-	if err := ensureRootDirectory(root, 0o700); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(spec, "", "  ")
-	if err != nil {
-		return err
-	}
-	path := e.dockerSessionSpecPath(spec.SessionID)
-	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0o600)
-}
-
-func (e Engine) loadDockerSessionSpec(sessionID string) (DockerSessionSpec, error) {
-	if err := validateID(sessionID, "session_id"); err != nil {
-		return DockerSessionSpec{}, err
-	}
-	data, err := os.ReadFile(e.dockerSessionSpecPath(sessionID))
-	if err != nil {
-		return DockerSessionSpec{}, err
-	}
-	var spec DockerSessionSpec
-	if err := json.Unmarshal(data, &spec); err != nil {
-		return DockerSessionSpec{}, err
-	}
-	if spec.SessionID != sessionID || validateName(spec.TmuxSessionName, "tmux_session_name") != nil || validateName(spec.SandboxName, "sandbox_name") != nil {
-		return DockerSessionSpec{}, errors.New("Docker session spec identity is invalid")
-	}
-	return spec, nil
-}
-
-func (e Engine) removeDockerSessionSpec(sessionID string) error {
-	if err := validateID(sessionID, "session_id"); err != nil {
-		return err
-	}
-	err := os.Remove(e.dockerSessionSpecPath(sessionID))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	return err
-}
-
-func dockerSessionProcessExited(spec DockerSessionSpec, active bool, bootID string) bool {
-	return !active && bootID != "" && spec.BootID == bootID
-}
-
 func (e Engine) cleanupResources(ctx context.Context, payload map[string]any) (map[string]any, error) {
 	backend, err := requiredText(payload, "runtime_backend")
 	if err != nil {
 		return nil, err
 	}
-	if backend != "native" {
-		return nil, fmt.Errorf("cleanup_resources only supports native resources, got %q", backend)
+	if backend != "native" && backend != "docker_sandbox" {
+		return nil, fmt.Errorf("cleanup_resources backend is unsupported: %q", backend)
 	}
 	rawIDs, ok := payload["session_ids"].([]any)
 	if !ok || len(rawIDs) == 0 {
@@ -945,18 +1044,27 @@ func (e Engine) cleanupResources(ctx context.Context, payload map[string]any) (m
 		if !ok || validateID(sessionID, "session_id") != nil {
 			return nil, errors.New("session_ids contains an invalid session ID")
 		}
-		if _, err := e.stopSession(ctx, map[string]any{"session_id": sessionID}); err != nil {
-			return nil, fmt.Errorf("clean session %s: %w", sessionID, err)
+		var cleanupErr error
+		if backend == "native" {
+			_, cleanupErr = e.stopSession(ctx, map[string]any{"session_id": sessionID})
+		} else {
+			_, cleanupErr = e.dockerStopSession(map[string]any{
+				"session_id": sessionID, "runtime_backend": backend,
+			})
+		}
+		if cleanupErr != nil {
+			return nil, fmt.Errorf("clean session %s: %w", sessionID, cleanupErr)
 		}
 		cleaned = append(cleaned, sessionID)
 	}
 	return map[string]any{
-		"status": "cleaned", "runtime_backend": "native",
+		"status": "cleaned", "runtime_backend": backend,
 		"session_ids": cleaned, "cleaned_count": len(cleaned),
 	}, nil
 }
 
 func (e Engine) probe() (map[string]any, error) {
+	_, dockerIdentityError := e.dockerRuntimeIdentity()
 	nativeChecks := map[string]bool{
 		"linux":           runtime.GOOS == "linux",
 		"kernel_5_15":     kernelAtLeast(5, 15),
@@ -988,10 +1096,15 @@ func (e Engine) probe() (map[string]any, error) {
 		nativeOK = nativeOK && available
 	}
 	dockerChecks := map[string]bool{
-		"docker":         commandAvailable(e.config.DockerBinaryPath),
-		"daemon":         commandSucceeds(e.config.DockerBinaryPath, "info"),
-		"docker_sandbox": commandSucceeds(e.config.DockerBinaryPath, "sandbox", "--help"),
-		"tmux":           commandAvailable(e.config.TmuxBinaryPath),
+		"linux":            runtime.GOOS == "linux",
+		"root":             os.Geteuid() == 0,
+		"docker":           commandAvailable(e.config.DockerBinaryPath),
+		"daemon":           commandSucceeds(e.config.DockerBinaryPath, "info"),
+		"docker_sandbox":   commandSucceeds(e.config.DockerBinaryPath, "sandbox", "--help"),
+		"tmux":             commandAvailable(e.config.TmuxBinaryPath),
+		"git":              commandAvailable("git"),
+		"setfacl":          commandAvailable(e.config.SetfaclPath),
+		"runtime_identity": dockerIdentityError == nil,
 	}
 	dockerOK := true
 	for _, available := range dockerChecks {
@@ -1166,6 +1279,7 @@ func (e Engine) startSession(ctx context.Context, payload map[string]any) (map[s
 		"tmux_started":          true,
 		"runtime_backend":       "native",
 		"runtime_resource_id":   spec.UnitName,
+		"runtime_uid":           spec.RuntimeUID,
 	}, nil
 }
 
@@ -1208,45 +1322,79 @@ func (e Engine) inspectSession(payload map[string]any) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	spec, err := e.loadSpec(sessionID)
-	if err != nil {
-		return nil, err
+	backend := optionalText(payload, "runtime_backend", "native")
+	switch backend {
+	case "native":
+		spec, err := e.loadSpec(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		active := exec.Command(e.config.SystemctlPath, "is-active", "--quiet", spec.UnitName).Run() == nil
+		return map[string]any{
+			"session_id": sessionID, "active": active, "runtime_backend": backend,
+			"runtime_resource_id": spec.UnitName,
+		}, nil
+	case "docker_sandbox":
+		spec, err := e.loadDockerSessionSpec(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if dockerSessionKind(spec) != dockerSessionKindTool {
+			return nil, errors.New("managed Docker resource is not a tool session")
+		}
+		active := exec.Command(e.config.TmuxBinaryPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil
+		return map[string]any{
+			"session_id": sessionID, "active": active, "runtime_backend": backend,
+			"runtime_resource_id": spec.SandboxName,
+		}, nil
+	default:
+		return nil, errors.New("inspect_session backend is unsupported")
 	}
-	active := exec.Command("systemctl", "is-active", "--quiet", spec.UnitName).Run() == nil
-	return map[string]any{"session_id": sessionID, "active": active, "runtime_resource_id": spec.UnitName}, nil
 }
 
 // SessionSpec is the root-validated execution manifest consumed by unprivileged subcommands.
 type SessionSpec struct {
-	Version                        int           `json:"version"`
-	Kind                           string        `json:"kind"`
-	SessionID                      string        `json:"session_id"`
-	UserID                         string        `json:"user_id"`
-	Username                       string        `json:"username"`
-	WorkspacePath                  string        `json:"workspace_path"`
-	AccountPath                    string        `json:"account_path"`
-	DeveloperCredentialProfilePath string        `json:"developer_credential_profile_path,omitempty"`
-	GitHubCLIMode                  string        `json:"github_cli_mode,omitempty"`
-	SSHMode                        string        `json:"ssh_mode,omitempty"`
-	SSHAgentDirectory              string        `json:"ssh_agent_directory,omitempty"`
-	SessionRoot                    string        `json:"session_root"`
-	RuntimeRoot                    string        `json:"runtime_root"`
-	RuntimeCommand                 string        `json:"runtime_command"`
-	Argv                           []string      `json:"argv"`
-	DeviceControlProtocolVersion   int           `json:"device_control_protocol_version,omitempty"`
-	DeviceControlDirectory         string        `json:"device_control_directory,omitempty"`
-	DeviceProxyPath                string        `json:"device_proxy_path,omitempty"`
-	Timezone                       string        `json:"timezone"`
-	Locale                         string        `json:"locale"`
-	TmuxSessionName                string        `json:"tmux_session_name"`
-	TmuxSocketPath                 string        `json:"tmux_socket_path"`
-	UnitName                       string        `json:"unit_name"`
-	NetworkNamespace               string        `json:"network_namespace"`
-	CreatedAt                      string        `json:"created_at"`
-	BootID                         string        `json:"boot_id,omitempty"`
-	RuntimeUID                     int           `json:"runtime_uid"`
-	RuntimeGID                     int           `json:"runtime_gid"`
-	Policy                         RuntimePolicy `json:"policy"`
+	Version                        int      `json:"version"`
+	Kind                           string   `json:"kind"`
+	SessionID                      string   `json:"session_id"`
+	UserID                         string   `json:"user_id"`
+	Username                       string   `json:"username"`
+	WorkspacePath                  string   `json:"workspace_path"`
+	AccountPath                    string   `json:"account_path"`
+	DeveloperCredentialProfilePath string   `json:"developer_credential_profile_path,omitempty"`
+	GitHubCLIMode                  string   `json:"github_cli_mode,omitempty"`
+	SSHMode                        string   `json:"ssh_mode,omitempty"`
+	SSHAgentDirectory              string   `json:"ssh_agent_directory,omitempty"`
+	SessionRoot                    string   `json:"session_root"`
+	RuntimeRoot                    string   `json:"runtime_root"`
+	RuntimeCommand                 string   `json:"runtime_command"`
+	Argv                           []string `json:"argv"`
+	DeviceControlProtocolVersion   int      `json:"device_control_protocol_version,omitempty"`
+	DeviceControlDirectory         string   `json:"device_control_directory,omitempty"`
+	DeviceProxyPath                string   `json:"device_proxy_path,omitempty"`
+	Timezone                       string   `json:"timezone"`
+	Locale                         string   `json:"locale"`
+	TmuxSessionName                string   `json:"tmux_session_name"`
+	TmuxSocketPath                 string   `json:"tmux_socket_path"`
+	UnitName                       string   `json:"unit_name"`
+	NetworkNamespace               string   `json:"network_namespace"`
+	CreatedAt                      string   `json:"created_at"`
+	BootID                         string   `json:"boot_id,omitempty"`
+	RuntimeUID                     int      `json:"runtime_uid"`
+	RuntimeGID                     int      `json:"runtime_gid"`
+	// Ego-browser values are root-validated session identity/configuration.
+	// The broker nonce is deliberately process-only and must never be persisted.
+	EgoBrowserEnabled         bool          `json:"ego_browser_enabled,omitempty"`
+	EgoBrowserWrapperPath     string        `json:"ego_browser_wrapper_path,omitempty"`
+	EgoBrowserBrokerSocket    string        `json:"ego_browser_broker_socket,omitempty"`
+	EgoBrowserBrokerNonce     string        `json:"-"`
+	EgoBrowserProtocolVersion string        `json:"ego_browser_protocol_version,omitempty"`
+	EgoBrowserWrapperVersion  string        `json:"ego_browser_wrapper_version,omitempty"`
+	EgoBrowserSkillPath       string        `json:"ego_browser_skill_path,omitempty"`
+	EgoBrowserSkillVersion    string        `json:"ego_browser_skill_version,omitempty"`
+	EgoBrowserSkillTreeSHA256 string        `json:"ego_browser_skill_tree_sha256,omitempty"`
+	EgoBrowserTaskSpace       string        `json:"ego_browser_task_space,omitempty"`
+	Policy                    RuntimePolicy `json:"policy"`
 }
 
 // RuntimePolicy contains root-validated per-session resource and network limits.
@@ -1266,6 +1414,22 @@ var defaultRuntimePolicy = RuntimePolicy{
 }
 
 func (e Engine) buildSpec(payload map[string]any, sessionID string, userID string, accountID string, workspacePath string, accountPath string, argv []string, kind string) (SessionSpec, error) {
+	e.config = e.config.WithDefaults()
+	egoContext, err := parseEgoBrowserRuntimeContext(payload, e.config)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	if egoContext.Enabled {
+		if err := validateEgoBrowserArtifacts(
+			egoContext.WrapperPath,
+			egoContext.WrapperVersion,
+			egoContext.SkillPath,
+			egoContext.SkillVersion,
+			egoContext.SkillTreeSHA256,
+		); err != nil {
+			return SessionSpec{}, err
+		}
+	}
 	identity, err := e.ensureIdentity(userID)
 	if err != nil {
 		return SessionSpec{}, err
@@ -1367,6 +1531,16 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		BootID:                         currentBootID(),
 		RuntimeUID:                     identity.UID,
 		RuntimeGID:                     identity.GID,
+		EgoBrowserEnabled:              egoContext.Enabled,
+		EgoBrowserWrapperPath:          egoContext.WrapperPath,
+		EgoBrowserBrokerSocket:         egoContext.BrokerSocket,
+		EgoBrowserBrokerNonce:          egoContext.BrokerNonce,
+		EgoBrowserProtocolVersion:      egoContext.Protocol,
+		EgoBrowserWrapperVersion:       egoContext.WrapperVersion,
+		EgoBrowserSkillPath:            egoContext.SkillPath,
+		EgoBrowserSkillVersion:         egoContext.SkillVersion,
+		EgoBrowserSkillTreeSHA256:      egoContext.SkillTreeSHA256,
+		EgoBrowserTaskSpace:            egoContext.TaskSpace,
 		Policy:                         policy,
 	}
 	if err := e.saveSpec(spec); err != nil {
@@ -1513,7 +1687,12 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 	}
 	args := []string{"--unit", spec.UnitName, "--collect", "--quiet", "--service-type=exec", "--uid", spec.Username}
 	args = append(args, properties...)
-	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--spec", e.specPath(spec.SessionID))
+	if spec.EgoBrowserEnabled {
+		for _, entry := range egoBrowserEnvironment(spec, false) {
+			args = append(args, "--setenv="+entry)
+		}
+	}
+	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--spec", e.specPath(spec.SessionID), "--node-config", e.config.NodeConfigPath)
 	if output, err := exec.CommandContext(ctx, e.config.SystemdRunPath, args...).CombinedOutput(); err != nil {
 		_ = runCommand(ctx, e.config.IPPath, "netns", "delete", spec.NetworkNamespace)
 		_ = e.cleanupTemp(ctx, spec)
@@ -1875,6 +2054,9 @@ func (e Engine) prepareSyncedWorkspace(userID string, path string) error {
 	}); err != nil {
 		return err
 	}
+	if err := e.applyDataACL(path, identity.Username); err != nil {
+		return err
+	}
 	return e.grantManagedTraverse(path, identity.Username)
 }
 
@@ -1940,7 +2122,7 @@ func (e Engine) grantManagedTraverse(path string, runtimeUser string) error {
 			targets = append(targets, parent)
 		}
 	}
-	access := "u:" + runtimeUser + ":--x,u:" + e.config.NodeUser + ":--x"
+	access := namedUserACL(runtimeUser, e.config.NodeUser, "--x")
 	args := append([]string{"-m", access}, targets...)
 	if output, err := exec.Command(e.config.SetfaclPath, args...).CombinedOutput(); err != nil {
 		return fmt.Errorf("grant managed path traverse access: %w: %s", err, strings.TrimSpace(string(output)))
@@ -1949,15 +2131,31 @@ func (e Engine) grantManagedTraverse(path string, runtimeUser string) error {
 }
 
 func (e Engine) applyDataACL(path string, runtimeUser string) error {
-	access := "u:" + runtimeUser + ":rwX,u:" + e.config.NodeUser + ":rwX"
+	access := namedUserACL(runtimeUser, e.config.NodeUser, "rwX")
 	if output, err := exec.Command(e.config.SetfaclPath, "-R", "-m", access, path).CombinedOutput(); err != nil {
 		return fmt.Errorf("setfacl access failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	defaultACL := "d:u:" + runtimeUser + ":rwX,d:u:" + e.config.NodeUser + ":rwX"
+	defaultACL := namedDefaultUserACL(runtimeUser, e.config.NodeUser, "rwX")
 	if output, err := exec.Command(e.config.SetfaclPath, "-m", defaultACL, path).CombinedOutput(); err != nil {
 		return fmt.Errorf("setfacl default failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func namedUserACL(runtimeUser string, nodeUser string, permissions string) string {
+	entries := []string{"u:" + runtimeUser + ":" + permissions}
+	if nodeUser != runtimeUser {
+		entries = append(entries, "u:"+nodeUser+":"+permissions)
+	}
+	return strings.Join(entries, ",")
+}
+
+func namedDefaultUserACL(runtimeUser string, nodeUser string, permissions string) string {
+	entries := []string{"d:u:" + runtimeUser + ":" + permissions}
+	if nodeUser != runtimeUser {
+		entries = append(entries, "d:u:"+nodeUser+":"+permissions)
+	}
+	return strings.Join(entries, ",")
 }
 
 func (e Engine) applyDeviceControlACL(path string, runtimeUser string) error {
@@ -1965,6 +2163,9 @@ func (e Engine) applyDeviceControlACL(path string, runtimeUser string) error {
 		return err
 	}
 	access := "u:" + runtimeUser + ":r-x,u:" + e.config.NodeUser + ":rwx"
+	if runtimeUser == e.config.NodeUser {
+		access = "u:" + runtimeUser + ":rwx"
+	}
 	if output, err := exec.Command(e.config.SetfaclPath, "-m", access, path).CombinedOutput(); err != nil {
 		return fmt.Errorf("set device-control ACL failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2049,6 +2250,9 @@ func (e Engine) loadSpec(sessionID string) (SessionSpec, error) {
 	}
 	if spec.SessionID != sessionID || spec.Version != ProtocolVersion {
 		return SessionSpec{}, errors.New("runtime spec identity is invalid")
+	}
+	if err := validateSpecEgoBrowserContext(e.config, &spec, false); err != nil {
+		return SessionSpec{}, err
 	}
 	return spec, nil
 }
@@ -2156,6 +2360,15 @@ func parseDeviceControlProtocol(value any, kind string) (int, error) {
 }
 
 func managedDeviceControlArgv(_ string, argv []string) ([]string, error) {
+	return managedDeviceControlArgvForPaths(
+		argv,
+		"/opt/agent-remote/device/bin/agent-remote-device-proxy",
+		"/run/agent-remote/device/context.json",
+		"/run/agent-remote/device/bridge.sock",
+	)
+}
+
+func managedDeviceControlArgvForPaths(argv []string, proxyCommand string, contextPath string, bridgeSocketPath string) ([]string, error) {
 	for _, argument := range argv {
 		if argument == "--mcp-config" || strings.HasPrefix(argument, "--mcp-config=") ||
 			argument == "--strict-mcp-config" || strings.HasPrefix(argument, "--strict-mcp-config=") ||
@@ -2167,15 +2380,14 @@ func managedDeviceControlArgv(_ string, argv []string) ([]string, error) {
 		}
 	}
 	lifecycleSocket := "/tmp/lifecycle.sock"
-	proxyCommand := "/opt/agent-remote/device/bin/agent-remote-device-proxy"
 	configuration := map[string]any{
 		"mcpServers": map[string]any{
 			"agent-remote-device": map[string]any{
 				"type":    "stdio",
 				"command": proxyCommand,
 				"args": []string{
-					"--managed-context", "/run/agent-remote/device/context.json",
-					"--bridge-socket", "/run/agent-remote/device/bridge.sock",
+					"--managed-context", contextPath,
+					"--bridge-socket", bridgeSocketPath,
 					"--lifecycle-socket", lifecycleSocket,
 					"--compact-tools",
 					"--optimization-metrics", "/tmp/agent-remote-device-optimization.jsonl",
@@ -2497,12 +2709,15 @@ func ExecSpec(config EngineConfig, specPath string) error {
 	if err != nil {
 		return err
 	}
+	if err := validateSpecEgoBrowserContext(config, &spec, true); err != nil {
+		return err
+	}
 	args := bubblewrapArgs(config, spec)
 	binary, err := exec.LookPath(config.BubblewrapPath)
 	if err != nil {
 		return err
 	}
-	return syscall.Exec(binary, append([]string{binary}, args...), os.Environ())
+	return syscall.Exec(binary, append([]string{binary}, args...), clearEgoBrowserEnvironment(os.Environ()))
 }
 
 // SuperviseSpec starts tmux and keeps the systemd unit alive while the session exists.
@@ -2512,10 +2727,14 @@ func SuperviseSpec(config EngineConfig, specPath string) error {
 	if err != nil {
 		return err
 	}
-	command := strings.Join([]string{shellQuote(config.RuntimeBinaryPath), "exec", "--spec", shellQuote(specPath)}, " ")
+	if err := validateSpecEgoBrowserContext(config, &spec, true); err != nil {
+		return err
+	}
+	commandParts := []string{shellQuote(config.RuntimeBinaryPath), "exec", "--spec", shellQuote(specPath), "--node-config", shellQuote(config.NodeConfigPath)}
+	command := strings.Join(commandParts, " ")
 	cmd := exec.Command(config.TmuxBinaryPath, tmuxsession.NewSessionArgs(config.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
 	cmd.Dir = spec.WorkspacePath
-	cmd.Env = replaceEnvironment(os.Environ(), "SHELL", "/bin/sh")
+	cmd.Env = withEgoBrowserEnvironment(replaceEnvironment(os.Environ(), "SHELL", "/bin/sh"), spec, false)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux start failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -2546,60 +2765,89 @@ func replaceEnvironment(environ []string, key string, value string) []string {
 	return append(result, prefix+value)
 }
 
-// AttachSession drops privileges to the runtime user and attaches its tmux socket.
-func AttachSession(config EngineConfig, sessionID string, sshAgentSocket string) error {
+// AttachSession validates managed session state and attaches its tmux socket.
+func AttachSession(config EngineConfig, sessionID string, runtimeBackend string, sshAgentSocket string) error {
 	config = config.WithDefaults()
 	if os.Geteuid() != 0 {
-		return errors.New("native attach requires root")
+		return errors.New("managed session attach requires root")
 	}
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return err
 	}
-	spec, err := readTrustedSpec(config, filepath.Join(config.StateRoot, "sessions", sessionID, "spec.json"))
-	if err != nil {
-		return err
-	}
-	found, err := user.Lookup(spec.Username)
-	if err != nil {
-		return err
-	}
-	uid, err := strconv.Atoi(found.Uid)
-	if err != nil {
-		return err
-	}
-	gid, err := strconv.Atoi(found.Gid)
-	if err != nil {
-		return err
+	tmuxSocketPath := ""
+	tmuxSessionName := ""
+	sshMode := ""
+	sshAgentDirectory := ""
+	uid, gid := 0, 0
+	dropPrivileges := false
+	switch runtimeBackend {
+	case "native":
+		spec, err := readTrustedSpec(config, filepath.Join(config.StateRoot, "sessions", sessionID, "spec.json"))
+		if err != nil {
+			return err
+		}
+		found, err := user.Lookup(spec.Username)
+		if err != nil {
+			return err
+		}
+		uid, err = strconv.Atoi(found.Uid)
+		if err != nil {
+			return err
+		}
+		gid, err = strconv.Atoi(found.Gid)
+		if err != nil {
+			return err
+		}
+		tmuxSocketPath = spec.TmuxSocketPath
+		tmuxSessionName = spec.TmuxSessionName
+		sshMode = spec.SSHMode
+		sshAgentDirectory = spec.SSHAgentDirectory
+		dropPrivileges = true
+	case "docker_sandbox":
+		engine := NewEngine(config)
+		spec, err := engine.loadDockerSessionSpec(sessionID)
+		if err != nil {
+			return err
+		}
+		uid, gid = spec.RuntimeUID, spec.RuntimeGID
+		tmuxSessionName = spec.TmuxSessionName
+		sshMode = spec.SSHMode
+		sshAgentDirectory = spec.SSHAgentDirectory
+	default:
+		return errors.New("managed session attach backend is unsupported")
 	}
 	var proxy *sshAgentProxy
 	if sshAgentSocket != "" {
-		if spec.SSHMode != "agent_forwarding" || spec.SSHAgentDirectory == "" {
+		if sshMode != "agent_forwarding" || sshAgentDirectory == "" {
 			return errors.New("SSH agent forwarding is not enabled for this session")
 		}
 		if err := validateForwardedSSHAgentSocket(sshAgentSocket); err != nil {
 			return err
 		}
-		proxy, err = startSSHAgentProxy(spec.SSHAgentDirectory, sshAgentSocket, uid, gid)
+		startedProxy, err := startSSHAgentProxy(sshAgentDirectory, sshAgentSocket, uid, gid)
 		if err != nil {
 			return err
 		}
+		proxy = startedProxy
 		defer proxy.Close()
 	}
 	binary, err := exec.LookPath(config.TmuxBinaryPath)
 	if err != nil {
 		return err
 	}
-	if err := tmuxsession.Configure(binary, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
+	if err := tmuxsession.Configure(binary, tmuxSocketPath, tmuxSessionName); err != nil {
 		return err
 	}
-	cmd := exec.Command(binary, tmuxsession.AttachArgs(spec.TmuxSocketPath, spec.TmuxSessionName)...)
+	cmd := exec.Command(binary, tmuxsession.AttachArgs(tmuxSocketPath, tmuxSessionName)...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
-		Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{uint32(gid)},
-	}}
+	if dropPrivileges {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{
+			Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{uint32(gid)},
+		}}
+	}
 	return cmd.Run()
 }
 
@@ -2846,6 +3094,20 @@ func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) 
 	} else if spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "" {
 		return SessionSpec{}, errors.New("spec contains unconfigured device control paths")
 	}
+	if err := validateSpecEgoBrowserContext(config, &spec, false); err != nil {
+		return SessionSpec{}, err
+	}
+	if spec.EgoBrowserEnabled {
+		if err := validateEgoBrowserArtifacts(
+			spec.EgoBrowserWrapperPath,
+			spec.EgoBrowserWrapperVersion,
+			spec.EgoBrowserSkillPath,
+			spec.EgoBrowserSkillVersion,
+			spec.EgoBrowserSkillTreeSHA256,
+		); err != nil {
+			return SessionSpec{}, err
+		}
+	}
 	return spec, nil
 }
 
@@ -2878,12 +3140,31 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		"--setenv", "TMPDIR", "/tmp",
 		"--setenv", "XDG_CACHE_HOME", "/tmp/xdg-cache",
 		"--setenv", "CLAUDE_CONFIG_DIR", "/home/runtime/.claude",
-		"--setenv", "PATH", "/opt/agent-remote/runtime/bin:/usr/local/bin:/usr/bin:/bin",
+		"--setenv", "PATH", "/opt/agent-remote/runtime/bin:/opt/agent-remote/ego-browser/bin:/usr/local/bin:/usr/bin:/bin",
 		"--setenv", "TZ", spec.Timezone,
 		"--setenv", "LANG", spec.Locale,
 		"--setenv", "LC_ALL", spec.Locale,
 		"--setenv", "LANGUAGE", spec.Locale,
 	)
+	if spec.EgoBrowserEnabled {
+		// Keep the wrapper and broker endpoint at stable in-sandbox paths. The
+		// host-side nonce remains supplied only through the supervisor environment
+		// and is copied into the sandbox environment below.
+		args = append(args,
+			"--dir", "/opt", "--dir", "/opt/agent-remote", "--dir", "/opt/agent-remote/ego-browser",
+			"--dir", "/opt/agent-remote/ego-browser/bin",
+			"--ro-bind", spec.EgoBrowserWrapperPath, egoBrowserSandboxWrapperPath,
+			"--ro-bind", spec.EgoBrowserSkillPath, egoBrowserSandboxSkillPath,
+			"--dir", egoBrowserSandboxSocketRoot,
+			"--bind", filepath.Dir(spec.EgoBrowserBrokerSocket), egoBrowserSandboxSocketRoot,
+		)
+		for _, entry := range egoBrowserEnvironment(spec, true) {
+			key, value, ok := strings.Cut(entry, "=")
+			if ok {
+				args = append(args, "--setenv", key, value)
+			}
+		}
+	}
 	if spec.DeveloperCredentialProfilePath != "" {
 		args = append(args,
 			"--dir", "/developer-profile", "--dir", "/home/runtime/.ssh",

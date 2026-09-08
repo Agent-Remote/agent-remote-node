@@ -24,7 +24,7 @@ func TestEnsureGitReadyInitializesIndexFromHead(t *testing.T) {
 	if err := os.WriteFile(maintenanceLock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureGitReady(workspacePath); err != nil {
+	if err := ensureGitReady(workspacePath, SandboxRuntime{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(indexPath); err != nil {
@@ -42,7 +42,7 @@ func TestEnsureGitReadyRejectsIndexLock(t *testing.T) {
 	if err := os.WriteFile(indexLock, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := ensureGitReady(workspacePath); err == nil || !strings.Contains(err.Error(), indexLock) {
+	if err := ensureGitReady(workspacePath, SandboxRuntime{}); err == nil || !strings.Contains(err.Error(), indexLock) {
 		t.Fatalf("expected active index lock error, got %v", err)
 	}
 }

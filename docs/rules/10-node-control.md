@@ -18,5 +18,17 @@
   `per_application_approval` contexts accept only v1, the exact three-name v2 observation base, or
   that base plus `clipboard_payload_v2`; they reject full-trust launch, clipboard, and authorization
   capabilities before writing managed state.
+- Ego-browser binding snapshots require `remote_platform=linux`, `local_platform=macos`, the
+  independent browser relay kind and channel, a compatible wrapper protocol, positive generation,
+  active healthy lease, and a capability set whose allowlist and Site Learning names exactly match
+  their verified digests. The wrapper cannot widen this snapshot.
+- Ego-browser context is injected into eligible `native` and `docker_sandbox` Claude tool sessions.
+  The runtime helper must return the selected non-root runtime UID; the worker strips that internal value, grants the numeric UID a
+  narrow POSIX ACL on the broker directory/socket, and the broker matches it with Linux
+  `SO_PEERCRED`. UID 0 is ineligible. Docker uses a root-owned trusted spec, executes as the fixed
+  UID/GID, mounts the verified wrapper/Skill/broker paths, and never persists or places the nonce in argv.
+- The broker enforces the lower of Node and binding parallelism limits, strict wire-order sequence
+  submission, one-time permit consumption, admission-time lease renewal, and immediate conflict
+  errors. Disconnect or unknown results are never retried automatically.
 
 Privileged helper requests use a versioned local protocol, peer credential authorization, strict operation allowlists, managed-root path checks, and serialized mutation. SSH attach and sync forced commands re-authorize each connection with the server and continue to deny arbitrary commands and forwarding not explicitly approved.

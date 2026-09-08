@@ -17,6 +17,7 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowser"
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	"github.com/Agent-Remote/agent-remote-node/internal/runtimehelper"
 )
@@ -187,6 +188,33 @@ func TestRunOperationLoopRetriesAfterFailure(t *testing.T) {
 	}
 }
 
+func TestEgoBrowserBrokerLogCodeOmitsWrappedErrorContent(t *testing.T) {
+	secret := "browser-content-secret"
+	tests := []struct {
+		err  error
+		want string
+	}{
+		{err: fmt.Errorf("socket failure: %s", secret), want: "broker_error"},
+		{err: fmt.Errorf("%w: %s", egobrowser.ErrProtocol, secret), want: "protocol_error"},
+	}
+	for _, test := range tests {
+		got := egoBrowserBrokerLogCode(test.err)
+		if got != test.want {
+			t.Fatalf("broker error code = %q, want %q", got, test.want)
+		}
+		if strings.Contains(got, secret) {
+			t.Fatalf("broker error code contains wrapped error content: %q", got)
+		}
+	}
+	message := egoBrowserBrokerError("initialize ego-browser broker", fmt.Errorf("socket failure: %s", secret)).Error()
+	if message != "initialize ego-browser broker: broker_error" {
+		t.Fatalf("unexpected bounded broker error %q", message)
+	}
+	if strings.Contains(message, secret) {
+		t.Fatalf("bounded broker error contains wrapped error content: %q", message)
+	}
+}
+
 func TestRetryDelayIsExponentialAndBounded(t *testing.T) {
 	for _, test := range []struct {
 		failures int
@@ -256,7 +284,9 @@ func TestWorkerCleanupResourcesUsesRuntimeHelper(t *testing.T) {
 	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
 		"status": "cleaned", "cleaned_count": float64(1),
 	})
-	w := Worker{cfg: config.Config{RuntimeSocketPath: runtimeSocket}.WithDefaults()}
+	w := Worker{cfg: config.Config{
+		RuntimeSocketPath: runtimeSocket, AllowedRuntimeBackends: []string{"native", "docker_sandbox"},
+	}.WithDefaults()}
 	result, err := w.executeKnownTask(context.Background(), api.TaskEnvelope{
 		TaskID: "task_cleanup", TaskType: "cleanup_resources",
 		Payload: map[string]any{"runtime_backend": "native", "session_ids": []any{"session_1"}},
@@ -284,28 +314,30 @@ func startRuntimeHelperStub(t *testing.T, result map[string]any) (string, <-chan
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations := make(chan string, 1)
+	operations := make(chan string, 16)
 	t.Cleanup(func() { _ = listener.Close() })
 	go func() {
-		connection, acceptErr := listener.Accept()
-		if acceptErr != nil {
-			return
+		for {
+			connection, acceptErr := listener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			var request runtimehelper.Request
+			if json.NewDecoder(connection).Decode(&request) == nil {
+				operations <- request.Operation
+				_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
+					Version: runtimehelper.ProtocolVersion, OK: true, Result: result,
+				})
+			}
+			_ = connection.Close()
 		}
-		defer connection.Close()
-		var request runtimehelper.Request
-		if json.NewDecoder(connection).Decode(&request) != nil {
-			return
-		}
-		operations <- request.Operation
-		_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
-			Version: runtimehelper.ProtocolVersion, OK: true, Result: result,
-		})
 	}()
 	return path, operations
 }
 
 func TestWorkerPollOnceCompletesTask(t *testing.T) {
 	var completed bool
+	runtimeSocket, _ := startRuntimeHelperStub(t, map[string]any{"sessions": []any{}})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/node-api/tasks/poll":
@@ -339,13 +371,72 @@ func TestWorkerPollOnceCompletesTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg := config.Config{NodeID: "node_1", ServerURL: server.URL, NodeToken: "node_token"}.WithDefaults()
+	cfg := config.Config{
+		NodeID: "node_1", ServerURL: server.URL, NodeToken: "node_token",
+		RuntimeSocketPath: runtimeSocket,
+	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 	if err := w.PollOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !completed {
 		t.Fatal("expected task completion")
+	}
+}
+
+func TestWorkerHandlesEgoBrowserRequestCancellationTask(t *testing.T) {
+	stateRoot := t.TempDir()
+	if err := os.Chmod(stateRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	broker, err := egobrowser.New(egobrowser.Config{
+		Enabled: true, NodeID: "node_1", StateRoot: stateRoot,
+		SocketPath: t.TempDir() + "/broker.sock",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer broker.Close()
+	w := Worker{browserBroker: broker}
+	result, err := w.executeKnownTask(context.Background(), api.TaskEnvelope{
+		TaskType: "cancel_ego_browser_request",
+		Payload: map[string]any{
+			"binding_id": "binding-1", "generation": 2,
+			"request_id": "request-1", "sequence": 3,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "cancellation_completed" || result["request_active"] != false ||
+		result["server_terminal_observed"] != false {
+		t.Fatalf("unexpected cancellation task result: %#v", result)
+	}
+
+	_, err = w.executeKnownTask(context.Background(), api.TaskEnvelope{
+		TaskType: "cancel_ego_browser_request",
+		Payload: map[string]any{
+			"binding_id": "binding-1", "generation": 2,
+			"request_id": "request-1", "sequence": 3, "script": "forbidden",
+		},
+	})
+	if err == nil {
+		t.Fatal("accepted cancellation task content")
+	}
+
+	failure := contentSafeTaskError(
+		api.TaskEnvelope{TaskType: "cancel_ego_browser_request"},
+		errors.New("sensitive-browser-content"),
+	)
+	encoded, err := json.Marshal(failure)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encoded) != `{"code":"EGO_BROWSER_CANCELLATION_FAILED","message":"Cancellation could not be confirmed."}` {
+		t.Fatalf("unexpected cancellation failure: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "sensitive-browser-content") {
+		t.Fatal("cancellation failure leaked browser content")
 	}
 }
 
@@ -410,6 +501,7 @@ func TestWorkerPollOnceReplaysFailedTask(t *testing.T) {
 
 func TestWorkerPollOnceContinuesAfterTaskError(t *testing.T) {
 	var secondTaskCompleted atomic.Bool
+	runtimeSocket, _ := startRuntimeHelperStub(t, map[string]any{"sessions": []any{}})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/v1/node-api/tasks/poll":
@@ -449,7 +541,7 @@ func TestWorkerPollOnceContinuesAfterTaskError(t *testing.T) {
 		NodeID:            "node_1",
 		ServerURL:         server.URL,
 		NodeToken:         "node_token",
-		RuntimeSocketPath: t.TempDir() + "/missing.sock",
+		RuntimeSocketPath: runtimeSocket,
 	}.WithDefaults()
 	w := New(cfg, api.NewClient(server.URL, "node_token"), taskLedger)
 
@@ -770,5 +862,195 @@ func TestWorkerCreateToolSessionCompletesTask(t *testing.T) {
 	}
 	if operation := <-operations; operation != "docker_start_session" {
 		t.Fatalf("unexpected helper operation %q", operation)
+	}
+}
+
+func TestNativeEgoBrowserSessionCapabilityIsRuntimeScopedAndRemovedOnStop(t *testing.T) {
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "stopped", "session_id": "session_1", "runtime_backend": "native",
+	})
+	brokerRoot := t.TempDir()
+	if err := os.Chmod(brokerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID: "node_1", RuntimeSocketPath: runtimeSocket,
+		EgoBrowserEnabled: true, EgoBrowserBrokerRoot: brokerRoot,
+		EgoBrowserBrokerSocket: t.TempDir() + "/broker.sock",
+		AllowedRuntimeBackends: []string{"native"},
+	}.WithDefaults()
+	w := New(cfg, api.Client{}, nil)
+	if w.browserBroker == nil || w.brokerErr != nil {
+		t.Fatalf("browser broker initialization failed: %v", w.brokerErr)
+	}
+	defer w.browserBroker.Close()
+	payload := map[string]any{
+		"session_id": "session_1", "tool_type": "claude",
+		"ego_browser_binding_id":   "task-controlled-binding",
+		"ego_browser_broker_nonce": "task-controlled-nonce",
+	}
+	registration, err := w.applyEgoBrowserRuntimeContext(payload, "start_session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registration == nil || !registration.created || registration.nonce == "" {
+		t.Fatalf("missing session registration: %#v", registration)
+	}
+	if _, exists := payload["ego_browser_binding_id"]; exists {
+		t.Fatal("task-controlled binding identity survived runtime context mapping")
+	}
+	if payload["ego_browser_broker_nonce"] != registration.nonce || registration.nonce == "task-controlled-nonce" {
+		t.Fatal("runtime did not receive the broker-minted session capability")
+	}
+	if payload["ego_browser_task_space"] != "agent-remote:session_1" {
+		t.Fatalf("unexpected task space: %v", payload["ego_browser_task_space"])
+	}
+
+	_, err = w.executeKnownTask(context.Background(), api.TaskEnvelope{
+		TaskID: "stop_session_1", TaskType: "stop_tool_session",
+		Payload: map[string]any{"session_id": "session_1", "runtime_backend": "native"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation := <-operations; operation != "stop_session" {
+		t.Fatalf("unexpected helper operation %q", operation)
+	}
+	rotated, created, err := w.browserBroker.RegisterToolSession("session_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || rotated == registration.nonce {
+		t.Fatal("session stop did not invalidate its broker capability")
+	}
+}
+
+func TestDockerSessionReceivesRuntimeScopedEgoBrowserCapability(t *testing.T) {
+	brokerRoot := t.TempDir()
+	if err := os.Chmod(brokerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := New(config.Config{
+		NodeID: "node_1", EgoBrowserEnabled: true, EgoBrowserBrokerRoot: brokerRoot,
+		EgoBrowserBrokerSocket: t.TempDir() + "/broker.sock",
+	}.WithDefaults(), api.Client{}, nil)
+	if w.browserBroker == nil || w.brokerErr != nil {
+		t.Fatalf("browser broker initialization failed: %v", w.brokerErr)
+	}
+	defer w.browserBroker.Close()
+	payload := map[string]any{
+		"session_id": "session_1", "tool_type": "claude",
+		"ego_browser_binding_id":   "task-controlled-binding",
+		"ego_browser_broker_nonce": "task-controlled-nonce",
+	}
+	registration, err := w.applyEgoBrowserRuntimeContext(payload, "docker_start_session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registration == nil || !registration.created || payload["ego_browser_enabled"] != true {
+		t.Fatalf("Docker session did not receive ego-browser context: registration=%#v payload=%#v", registration, payload)
+	}
+	if _, exists := payload["ego_browser_binding_id"]; exists {
+		t.Fatal("task-controlled binding identity survived Docker context mapping")
+	}
+	if payload["ego_browser_broker_nonce"] != registration.nonce || registration.nonce == "task-controlled-nonce" {
+		t.Fatal("Docker runtime did not receive the broker-minted session capability")
+	}
+	if payload["ego_browser_task_space"] != "agent-remote:session_1" {
+		t.Fatalf("unexpected Docker task space: %v", payload["ego_browser_task_space"])
+	}
+	if nonce, created, err := w.browserBroker.RegisterToolSession("session_1"); err != nil || created || nonce != registration.nonce {
+		t.Fatalf("Docker capability was not registered exactly once: nonce=%q created=%v err=%v", nonce, created, err)
+	}
+}
+
+func TestTrustedRuntimeUIDAuthorizesEgoBrowserSessionPeer(t *testing.T) {
+	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
+		"status": "running", "session_id": "session_1", "runtime_backend": "native",
+		"runtime_uid": os.Getuid(),
+	})
+	brokerRoot := t.TempDir()
+	if err := os.Chmod(brokerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	socketRoot, err := os.MkdirTemp("/tmp", "ar-ego-worker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
+	w := New(config.Config{
+		NodeID: "node_1", RuntimeSocketPath: runtimeSocket,
+		EgoBrowserEnabled: true, EgoBrowserBrokerRoot: brokerRoot,
+		EgoBrowserBrokerSocket: socketRoot + "/broker.sock",
+	}.WithDefaults(), api.Client{}, nil)
+	if w.browserBroker == nil || w.brokerErr != nil {
+		t.Fatalf("browser broker initialization failed: %v", w.brokerErr)
+	}
+	defer w.browserBroker.Close()
+
+	result, err := w.callRuntimeHelper(
+		context.Background(),
+		api.TaskEnvelope{TaskID: "start_session_1"},
+		"start_session",
+		map[string]any{"session_id": "session_1", "tool_type": "claude"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exposed := result["runtime_uid"]; exposed {
+		t.Fatal("trusted runtime UID escaped into the task result")
+	}
+	if operation := <-operations; operation != "start_session" {
+		t.Fatalf("unexpected helper operation %q", operation)
+	}
+	nonce, created, err := w.browserBroker.RegisterToolSession("session_1")
+	if err != nil || created {
+		t.Fatalf("authorized capability was not retained: created=%v err=%v", created, err)
+	}
+	if err := w.browserBroker.AuthorizeToolSessionPeer("session_1", nonce, uint32(os.Getuid())); err != nil {
+		t.Fatalf("trusted runtime UID was not retained: %v", err)
+	}
+	if err := w.browserBroker.AuthorizeToolSessionPeer("session_1", nonce, uint32(os.Getuid()+1)); !errors.Is(err, egobrowser.ErrProtocol) {
+		t.Fatalf("different runtime UID replaced the trusted UID: %v", err)
+	}
+}
+
+func TestFailedSessionStartRollsBackNewEgoBrowserCapability(t *testing.T) {
+	brokerRoot := t.TempDir()
+	if err := os.Chmod(brokerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{
+		NodeID: "node_1", RuntimeSocketPath: t.TempDir() + "/missing.sock",
+		EgoBrowserEnabled: true, EgoBrowserBrokerRoot: brokerRoot,
+		EgoBrowserBrokerSocket: t.TempDir() + "/broker.sock",
+	}.WithDefaults()
+	w := New(cfg, api.Client{}, nil)
+	if w.browserBroker == nil || w.brokerErr != nil {
+		t.Fatalf("browser broker initialization failed: %v", w.brokerErr)
+	}
+	defer w.browserBroker.Close()
+	_, err := w.callRuntimeHelper(context.Background(), api.TaskEnvelope{TaskID: "start_session_1"}, "start_session", map[string]any{
+		"session_id": "session_1", "tool_type": "claude",
+	})
+	if err == nil {
+		t.Fatal("missing runtime helper unexpectedly accepted session start")
+	}
+	_, created, err := w.browserBroker.RegisterToolSession("session_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("failed session start retained its newly minted capability")
+	}
+}
+
+func TestTakeRuntimeUIDRejectsRoot(t *testing.T) {
+	result := map[string]any{"runtime_uid": 0}
+	if _, err := takeRuntimeUID(result); err == nil || !strings.Contains(err.Error(), "root") {
+		t.Fatalf("root runtime UID was accepted: %v", err)
+	}
+	if _, exposed := result["runtime_uid"]; exposed {
+		t.Fatal("rejected trusted runtime UID escaped into the task result")
 	}
 }

@@ -14,11 +14,13 @@ RestartSec=5
 User=agent-remote
 Group=agent-remote
 WorkingDirectory=/var/lib/agent-remote-node
+RuntimeDirectory=agent-remote-node
+RuntimeDirectoryMode=0700
 NoNewPrivileges=true
 LimitCORE=0
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/agent-remote-node /var/lib/agent-remote /var/lib/agent-remote-runtime/sessions /run/agent-remote
+ReadWritePaths=/var/lib/agent-remote-node /var/lib/agent-remote /var/lib/agent-remote-runtime/sessions /run/agent-remote /run/agent-remote-node
 ProtectHome=true
 
 [Install]
