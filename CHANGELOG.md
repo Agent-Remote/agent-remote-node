@@ -4,7 +4,7 @@ All notable changes to this repository are recorded here.
 
 ## v0.2.15 - 2026-09-08
 
-- Release metadata update.
+- feat: add ego-browser runtime broker (68a285a)
 
 ## v0.2.14 - 2026-09-05
 
