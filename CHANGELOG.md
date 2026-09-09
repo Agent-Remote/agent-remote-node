@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.16 - 2026-09-09
+
+- chore(release): pin current runtime dependencies (a91f51e)
+- fix(release): repair changelog history (e68ef9f)
+
 ## v0.2.15 - 2026-09-09
 
 - feat: add ego-browser runtime broker (68a285a)
