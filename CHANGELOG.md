@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.18 - 2026-09-09
+
+- chore(release): pin ego-browser wrapper v0.1.11 (e820663)
+
 ## v0.2.17 - 2026-09-09
 
 - fix(release): sync managed runtime pins (c418676)

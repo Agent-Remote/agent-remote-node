@@ -14,7 +14,7 @@ import (
 )
 
 // DefaultVersion is overridden by release builds through Go ldflags.
-var DefaultVersion = "0.2.17"
+var DefaultVersion = "0.2.18"
 
 // Config contains local node runtime settings.
 type Config struct {
