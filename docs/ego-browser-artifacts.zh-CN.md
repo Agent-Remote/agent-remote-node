@@ -2,7 +2,7 @@
 
 Node release 为远端浏览器工作携带两个独立固定的输入：
 
-- 来自 `Agent-Remote/agent-remote-ego-browser` release `0.1.0` 的 Linux
+- 来自 `Agent-Remote/agent-remote-ego-browser` release `0.1.11` 的 Linux
   `ego-browser` wrapper；
 - 来自 `citrolabs/ego-lite` commit
   `36053d07001a910cb806a15d42d00fdea1cdea3d` 的官方 `ego-browser` Skill
@@ -110,9 +110,9 @@ UID 建连、验证第二个 UID 被文件系统拒绝，并在测试临时授�
 新组合完成 canary 前保留旧不可变目录。回滚时把 `current` 指向之前验证的目录并重启 Node
 service；必须丢弃 broker memory、旧 ticket、permit 和 generation。结果未知的脚本不重放。
 
-wrapper 安装完成不代表端到端 capability 已生产就绪。本地 Bridge release 当前声明
-`production_ready=false`，因为不存在留存的 Site Learning 签名 private key。只有 root
-evidence 记录已验证的非 null learning bundle digest 且所有其他门禁通过后，Server 才能
-在生产环境开启该 capability。
+wrapper 安装完成本身不代表端到端 capability 可以开启。本地 Bridge `0.1.11` release
+已声明 `production_ready=true` 并带有留存的 Site Learning evidence，但只有 root evidence
+记录准确的 Node/Bridge 组合且所有 artifact-bound canary 通过后，Server 才能在生产环境开启
+该 capability。
 
 指标、告警、containment 与恢复步骤见 `docs/ego-browser-operations.md`。

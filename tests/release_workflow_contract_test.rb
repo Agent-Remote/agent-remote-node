@@ -141,11 +141,11 @@ ego_docs = {
 ego_docs.each do |name, localized_contracts|
   content = File.read(File.join(repository_root, name))
   [
-    "0.1.0",
+    "0.1.11",
     "1.2.3",
     "36053d07001a910cb806a15d42d00fdea1cdea3d",
     "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c",
-    "production_ready=false",
+    "production_ready=true",
     *localized_contracts
   ].each do |contract|
     raise "ego-browser artifact documentation is missing #{contract}" unless content.downcase.include?(contract.downcase)

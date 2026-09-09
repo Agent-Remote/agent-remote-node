@@ -3,7 +3,7 @@
 The Node release carries two separate, pinned inputs for remote browser work:
 
 - the Linux `ego-browser` wrapper from `Agent-Remote/agent-remote-ego-browser`
-  release `0.1.0`;
+  release `0.1.11`;
 - the official `ego-browser` Skill `1.2.3` from `citrolabs/ego-lite` commit
   `36053d07001a910cb806a15d42d00fdea1cdea3d`.
 
@@ -124,11 +124,11 @@ previously verified directory and restarts the Node services; broker memory,
 old tickets, permits, and generations must be discarded. Scripts with unknown
 results are never replayed.
 
-Wrapper installation does not make the end-to-end capability production-ready.
-The local Bridge release currently declares `production_ready=false` because no
-retained Site Learning signing private key exists. The Server capability must
-remain disabled in production until the root evidence records a verified,
-non-null learning bundle digest and all other gates pass.
+Wrapper installation does not by itself authorize the end-to-end capability.
+The local Bridge `0.1.11` release declares `production_ready=true` with its
+retained Site Learning evidence, but the Server capability must remain disabled
+until the root evidence records the exact Node/Bridge composition and all
+artifact-bound canaries pass.
 
 Operational metrics, alert conditions, containment, and recovery are defined
 in `docs/ego-browser-operations.md`.
