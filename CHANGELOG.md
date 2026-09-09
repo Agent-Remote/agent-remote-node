@@ -2,9 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
-## v0.2.15 - 2026-09-08
+## v0.2.15 - 2026-09-09
 
 - feat: add ego-browser runtime broker (68a285a)
+- chore: pin ego-browser wrapper v0.1.5 (5b199a2)
 
 ## v0.2.14 - 2026-09-05
 
@@ -49,7 +50,7 @@ All notable changes to this repository are recorded here.
 
 ## v0.2.6 - 2026-08-10
 
-- Release metadata update.
+- chore: release v0.2.6 (ef62a13)
 
 ## v0.2.5 - 2026-08-09
 
@@ -73,7 +74,7 @@ All notable changes to this repository are recorded here.
 
 ## v0.2.0 - 2026-08-04
 
-- Release metadata update.
+- chore: release v0.2.0 (6be24f4)
 
 ## v0.1.9 - 2026-08-04
 
@@ -89,7 +90,7 @@ All notable changes to this repository are recorded here.
 
 ## v0.1.7 - 2026-08-01
 
-- Release metadata update.
+- chore: release v0.1.7 (4b29ec4)
 
 ## v0.1.6 - 2026-08-01
 
@@ -101,14 +102,11 @@ All notable changes to this repository are recorded here.
 
 ## v0.1.4 - 2026-07-31
 
-- Release metadata update.
+- chore: release v0.1.4 (1ee63e9)
 
 ## v0.1.3 - 2026-07-31
 
-- test: include device proxy in installer fixture (5d3a0d1)
-- test: run root-owned context coverage with privileges (c29393f)
-- feat: add managed device control bridge (e28d439)
-- test: cover namespace firewall execution (c4d82b8)
+- chore: release v0.1.3 (c0d9b23)
 
 ## v0.1.0 - 2026-07-31
 
@@ -125,7 +123,7 @@ All notable changes to this repository are recorded here.
 - test: cover invalid forwarding lease expiry (8d578b9)
 - test: cover port forwarding failure contracts (693666e)
 
-## v0.0.6 - 2026-07-29
+## v0.0.6 - 2026-07-30
 
 - fix: prioritize cancelled tunnel contexts (a819b1b)
 - chore: release v0.0.6 (1a7e25e)
@@ -275,6 +273,16 @@ All notable changes to this repository are recorded here.
 
 ## v0.0.2 - 2026-07-07
 
-- ci: allow manual release dispatch (abefa2c)
 - chore: release v0.0.2 (601c6d5)
 - build: inject node release version (4ef1c6a)
+
+## v0.0.1 - 2026-07-07
+
+- feat: initialize the outbound node runtime (031a05b)
+- feat: add SSH attach-key management (81e95da)
+- feat: prepare managed workspace directories (74ba1d6)
+- feat: add Claude sandbox binding tasks (256424c)
+- feat: add tool-session tasks (eaa53c1)
+- feat: add the remote browser runtime (eaff71c)
+- feat: import account configuration on the node (e8d0f55)
+- ci: add node release packaging (6be6b33)
