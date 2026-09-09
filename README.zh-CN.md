@@ -89,7 +89,7 @@ owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔�
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.2.16",
+  "version": "0.2.17",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -191,7 +191,7 @@ $DEVICE_PROXY_DIR/<target>/VERSION
 `current`。同一版本出现不同内容时会拒绝覆盖；proxy 缺失或不可执行时 capability 保持关闭。
 
 ```sh
-VERSION=0.2.16 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+VERSION=0.2.17 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。
