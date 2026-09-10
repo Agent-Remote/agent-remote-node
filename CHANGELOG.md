@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.19 - 2026-09-10
+
+- fix(runtime): persist native session configuration snapshot (e7668f0)
+
 ## Unreleased
 
 - fix(runtime): keep native session children independent of protected node config
