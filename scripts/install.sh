@@ -45,7 +45,17 @@ PACKAGED_ROOT=""
 WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
 WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
 WIREGUARD_ENDPOINT="${AGENT_REMOTE_WIREGUARD_ENDPOINT:-}"
-WIREGUARD_LISTEN_PORT="${AGENT_REMOTE_WIREGUARD_LISTEN_PORT:-51820}"
+WIREGUARD_LISTEN_PORT_OPTION="${AGENT_REMOTE_WIREGUARD_LISTEN_PORT:-auto}"
+WIREGUARD_LISTEN_PORT=51820
+WIREGUARD_LISTEN_PORT_AUTO=1
+WIREGUARD_ROTATE_LISTEN_PORT="${AGENT_REMOTE_ROTATE_WIREGUARD_LISTEN_PORT:-0}"
+case "$WIREGUARD_LISTEN_PORT_OPTION" in
+  ''|auto) ;;
+  *)
+    WIREGUARD_LISTEN_PORT="$WIREGUARD_LISTEN_PORT_OPTION"
+    WIREGUARD_LISTEN_PORT_AUTO=0
+    ;;
+esac
 TEMP_PATHS=()
 
 track_temp() {
@@ -104,7 +114,8 @@ Options:
   --wireguard-interface NAME  WireGuard interface. Default: agent-remote.
   --wireguard-address CIDR    Node tunnel address. Default: 10.77.0.1/24.
   --wireguard-endpoint HOST:PORT  Public UDP endpoint; inferred from server URL by default.
-  --wireguard-listen-port PORT    UDP listen port. Default: 51820.
+  --wireguard-listen-port PORT|auto  UDP listen port. Default: auto.
+  --rotate-wireguard-listen-port  Select a new random high UDP port during this run.
   --claude-channel VALUE  Official Claude channel. Default: latest.
   --claude-version VALUE  Pin an official Claude version, or use with --claude-source.
   --claude-source PATH    Pinned Claude executable path or URL.
@@ -145,6 +156,7 @@ Environment:
   AGENT_REMOTE_WIREGUARD_ADDRESS   Same as --wireguard-address.
   AGENT_REMOTE_WIREGUARD_ENDPOINT  Same as --wireguard-endpoint.
   AGENT_REMOTE_WIREGUARD_LISTEN_PORT Same as --wireguard-listen-port.
+  AGENT_REMOTE_ROTATE_WIREGUARD_LISTEN_PORT=1 Same as --rotate-wireguard-listen-port.
   CLAUDE_CHANNEL             Same as --claude-channel.
   CLAUDE_VERSION             Same as --claude-version.
   CLAUDE_SOURCE              Same as --claude-source.
@@ -247,8 +259,22 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --wireguard-listen-port)
-      WIREGUARD_LISTEN_PORT="${2:?--wireguard-listen-port requires a value}"
+      WIREGUARD_LISTEN_PORT_OPTION="${2:?--wireguard-listen-port requires a value}"
+      case "$WIREGUARD_LISTEN_PORT_OPTION" in
+        auto)
+          WIREGUARD_LISTEN_PORT=51820
+          WIREGUARD_LISTEN_PORT_AUTO=1
+          ;;
+        *)
+          WIREGUARD_LISTEN_PORT="$WIREGUARD_LISTEN_PORT_OPTION"
+          WIREGUARD_LISTEN_PORT_AUTO=0
+          ;;
+      esac
       shift 2
+      ;;
+    --rotate-wireguard-listen-port)
+      WIREGUARD_ROTATE_LISTEN_PORT=1
+      shift
       ;;
     --claude-channel)
       CLAUDE_CHANNEL="${2:?--claude-channel requires a value}"
@@ -385,6 +411,14 @@ validate_options() {
     echo "invalid WireGuard listen port" >&2
     exit 2
   fi
+  case "$WIREGUARD_ROTATE_LISTEN_PORT" in
+    0|1) ;;
+    *) echo "AGENT_REMOTE_ROTATE_WIREGUARD_LISTEN_PORT must be 0 or 1" >&2; exit 2 ;;
+  esac
+  if [ "$WIREGUARD_ROTATE_LISTEN_PORT" = "1" ] && [ "$WIREGUARD_LISTEN_PORT_AUTO" != "1" ]; then
+    echo "--rotate-wireguard-listen-port requires --wireguard-listen-port auto" >&2
+    exit 2
+  fi
 }
 
 backend_enabled() {
@@ -425,6 +459,101 @@ run_as_service_user() {
     runuser -u "$USER_NAME" -- sh -c 'cd "$1" && shift && exec "$@"' sh "$STATE_DIR" "$@"
   else
     sudo -u "$USER_NAME" sh -c 'cd "$1" && shift && exec "$@"' sh "$STATE_DIR" "$@"
+  fi
+}
+
+read_existing_wireguard_listen_port() {
+  run_as_root python3 - "$CONFIG_DIR/config.json" "/etc/wireguard/$WIREGUARD_INTERFACE.conf" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+config_path = Path(sys.argv[1])
+wireguard_path = Path(sys.argv[2])
+
+if config_path.is_file():
+    try:
+        value = json.loads(config_path.read_text(encoding="utf-8")).get("wireguard_listen_port")
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        value = None
+    if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535:
+        print(value)
+        raise SystemExit(0)
+
+if wireguard_path.is_file():
+    try:
+        contents = wireguard_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        contents = ""
+    match = re.search(r"(?m)^\s*ListenPort\s*=\s*([0-9]+)\s*$", contents)
+    if match and 1 <= int(match.group(1)) <= 65535:
+        print(match.group(1))
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+}
+
+select_available_wireguard_listen_port() {
+  run_as_root python3 - <<'PY'
+import errno
+import secrets
+import socket
+
+minimum = 49152
+maximum = 65535
+candidates = list(range(minimum, maximum + 1))
+secrets.SystemRandom().shuffle(candidates)
+
+for port in candidates[:256]:
+    sockets = []
+    try:
+        ipv4 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ipv4.bind(("0.0.0.0", port))
+        sockets.append(ipv4)
+
+        try:
+            ipv6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+            ipv6.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            ipv6.bind(("::", port))
+            sockets.append(ipv6)
+        except OSError as error:
+            if error.errno not in (errno.EAFNOSUPPORT, errno.EADDRNOTAVAIL):
+                raise
+
+        print(port)
+        raise SystemExit(0)
+    except OSError:
+        pass
+    finally:
+        for candidate_socket in sockets:
+            candidate_socket.close()
+
+raise SystemExit("unable to find an available UDP port in 49152-65535")
+PY
+}
+
+resolve_wireguard_listen_port() {
+  if [ "$INSTALL_SYSTEMD" != "1" ] || [ "$(uname -s)" != "Linux" ] || [ "$WIREGUARD_LISTEN_PORT_AUTO" != "1" ]; then
+    return
+  fi
+
+  local existing_port=""
+  if [ "$WIREGUARD_ROTATE_LISTEN_PORT" != "1" ]; then
+    existing_port="$(read_existing_wireguard_listen_port || true)"
+  fi
+  if [ -n "$existing_port" ] && [ "$existing_port" != "51820" ]; then
+    WIREGUARD_LISTEN_PORT="$existing_port"
+    echo "Reusing WireGuard UDP port $WIREGUARD_LISTEN_PORT"
+    return
+  fi
+
+  WIREGUARD_LISTEN_PORT="$(select_available_wireguard_listen_port)"
+  if [ -n "$existing_port" ]; then
+    echo "Migrating WireGuard from legacy UDP port $existing_port to available port $WIREGUARD_LISTEN_PORT"
+  else
+    echo "Selected available WireGuard UDP port $WIREGUARD_LISTEN_PORT"
   fi
 }
 
@@ -629,7 +758,7 @@ escape_sed_replacement() {
 }
 
 render_system_file() {
-  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root device_runtime_root wireguard_interface
+  local source="$1" destination="$2" prefix config_dir state_dir data_dir user_name claude_runtime_root device_runtime_root wireguard_interface wireguard_listen_port
   prefix="$(escape_sed_replacement "$PREFIX")"
   config_dir="$(escape_sed_replacement "$CONFIG_DIR")"
   state_dir="$(escape_sed_replacement "$STATE_DIR")"
@@ -638,6 +767,7 @@ render_system_file() {
   claude_runtime_root="$(escape_sed_replacement "$CLAUDE_RUNTIME_ROOT")"
   device_runtime_root="$(escape_sed_replacement "$DEVICE_RUNTIME_ROOT")"
   wireguard_interface="$(escape_sed_replacement "$WIREGUARD_INTERFACE")"
+  wireguard_listen_port="$(escape_sed_replacement "$WIREGUARD_LISTEN_PORT")"
   sed \
     -e "s|/var/lib/agent-remote-runtime|@AGENT_REMOTE_RUNTIME_STATE@|g" \
     -e "s|/var/lib/agent-remote-node|@AGENT_REMOTE_NODE_STATE@|g" \
@@ -653,7 +783,7 @@ render_system_file() {
     -e "s|--user agent-remote|--user $user_name|g" \
     -e "s|--wireguard-interface agent-remote|--wireguard-interface $wireguard_interface|g" \
     -e "s|wg-quick@agent-remote|wg-quick@$wireguard_interface|g" \
-    -e "s|--wireguard-listen-port 51820|--wireguard-listen-port $WIREGUARD_LISTEN_PORT|g" \
+    -e "s|@AGENT_REMOTE_WIREGUARD_LISTEN_PORT@|$wireguard_listen_port|g" \
     -e "s|^agent-remote ALL=|$user_name ALL=|" \
     -e "s|@AGENT_REMOTE_NODE_STATE@|$state_dir|g" \
     -e "s|@AGENT_REMOTE_USERS@|$data_dir/users|g" \
@@ -1151,6 +1281,7 @@ fi
 
 install_system_dependencies
 configure_native_host
+resolve_wireguard_listen_port
 if [ -n "$SCRIPT_DIR" ] && [ -x "$SCRIPT_DIR/agent-remote-node" ] && [ -x "$SCRIPT_DIR/agent-remote-attach" ]; then
   install_packaged "$SCRIPT_DIR"
 elif [ -n "$SCRIPT_DIR" ] && [ -x "$SCRIPT_DIR/../agent-remote-node" ] && [ -x "$SCRIPT_DIR/../agent-remote-attach" ]; then

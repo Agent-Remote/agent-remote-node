@@ -176,6 +176,8 @@ The default native dependency set also provides a consistent AI development base
 
 The command is idempotent. Re-running it upgrades the node binaries, Claude, and the selected Node.js release line, refreshes the system layout, and reuses the existing node token. Add `--force-register` only when intentionally replacing the node registration.
 
+On a fresh installation the installer chooses an unused UDP port from the dynamic range `49152-65535` instead of using the well-known WireGuard port `51820`. The selected port is written consistently to the WireGuard interface, Runtime Helper unit, node configuration, and advertised public endpoint. Later upgrades preserve that port. An existing legacy `51820` installation is migrated automatically; pass `--wireguard-listen-port 51820` only when retaining it is intentional. To select a new random port after a route-level block, rerun the installer with `--rotate-wireguard-listen-port`, allow the printed UDP port in any host or cloud firewall, then refresh each client with `agent-remote wireguard config` before restarting its tunnel. Local availability does not prove an upstream network path, so verify a real handshake from the affected client after rotation.
+
 Install a specific node release or pin the official Claude version:
 
 ```sh

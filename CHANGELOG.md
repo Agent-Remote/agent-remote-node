@@ -8,6 +8,7 @@ All notable changes to this repository are recorded here.
 
 ## Unreleased
 
+- fix(installer): select and persist a randomized available WireGuard UDP port instead of the blocked legacy default
 - fix(runtime): keep native session children independent of protected node config
 - fix(ego-browser): synchronize installed wrapper pins without implicit enablement
 

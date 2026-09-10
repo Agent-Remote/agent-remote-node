@@ -165,6 +165,8 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
 
 命令可安全重复执行。再次执行会升级节点二进制、Claude 和所选 Node.js 发布线、刷新系统路径并复用已有 node token；只有明确需要替换注册信息时才添加 `--force-register`。
 
+全新安装时，安装器不再使用知名 WireGuard 端口 `51820`，而是从动态端口段 `49152-65535` 随机选择一个本机未占用的 UDP 端口。选中的端口会一致写入 WireGuard interface、Runtime Helper unit、Node 配置和对外上报 endpoint，后续升级继续复用。已有的旧版 `51820` 安装会自动迁移；只有确实需要保留它时才显式传入 `--wireguard-listen-port 51820`。如果以后某条公网路径封锁了当前端口，可用 `--rotate-wireguard-listen-port` 重新运行安装器，在宿主机或云防火墙中放行输出的 UDP 端口，然后在每台客户端执行 `agent-remote wireguard config` 并重启隧道。本机端口未占用不等于上游链路一定可达，因此轮换后仍需从受影响客户端验证真实握手。
+
 安装指定 node 版本或固定官方 Claude 版本：
 
 ```sh

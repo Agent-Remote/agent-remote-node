@@ -48,6 +48,8 @@ bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" \
 "$ROOT/scripts/install.sh" --help | grep -q -- '--nodejs-version' || fail "Node.js install help is incomplete"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--enable-ego-browser' || fail "ego-browser enable option is missing"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--disable-ego-browser' || fail "ego-browser disable option is missing"
+"$ROOT/scripts/install.sh" --help | grep -q -- '--rotate-wireguard-listen-port' || \
+  fail "WireGuard port rotation option is missing"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
 grep -q 'AllowAgentForwarding yes' "$ROOT/scripts/install.sh" || fail "SSH agent forwarding is not enabled for the forced-command gateway"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
@@ -96,6 +98,36 @@ if AGENT_REMOTE_INSTALL_LIB_ONLY=1 bash -c \
 fi
 [ ! -e "$cleanup_probe" ] || fail "installer failure left temporary files behind"
 
+port_config_dir="$WORK/wireguard-port-config"
+mkdir -p "$port_config_dir"
+printf '{"wireguard_listen_port":54321}\n' > "$port_config_dir/config.json"
+reused_port="$(AGENT_REMOTE_INSTALL_LIB_ONLY=1 USE_SUDO=0 INSTALL_SYSTEMD=1 CONFIG_DIR="$port_config_dir" \
+  bash -c 'script=$1; set --; source "$script"; uname() { printf "Linux\n"; }; resolve_wireguard_listen_port >/dev/null; printf "%s" "$WIREGUARD_LISTEN_PORT"' \
+  sh "$ROOT/scripts/install.sh")"
+[ "$reused_port" = "54321" ] || fail "automatic WireGuard selection did not preserve the configured port"
+
+printf '{"wireguard_listen_port":51820}\n' > "$port_config_dir/config.json"
+migrated_port="$(AGENT_REMOTE_INSTALL_LIB_ONLY=1 USE_SUDO=0 INSTALL_SYSTEMD=1 CONFIG_DIR="$port_config_dir" \
+  bash -c 'script=$1; set --; source "$script"; uname() { printf "Linux\n"; }; resolve_wireguard_listen_port >/dev/null; printf "%s" "$WIREGUARD_LISTEN_PORT"' \
+  sh "$ROOT/scripts/install.sh")"
+case "$migrated_port" in
+  ''|*[!0-9]*) fail "automatic WireGuard selection did not return a numeric port" ;;
+esac
+if [ "$migrated_port" -lt 49152 ] || [ "$migrated_port" -gt 65535 ] || [ "$migrated_port" = "51820" ]; then
+  fail "legacy WireGuard port was not migrated into the dynamic port range"
+fi
+
+rotated_port="$(AGENT_REMOTE_INSTALL_LIB_ONLY=1 USE_SUDO=0 INSTALL_SYSTEMD=1 CONFIG_DIR="$port_config_dir" \
+  AGENT_REMOTE_ROTATE_WIREGUARD_LISTEN_PORT=1 \
+  bash -c 'script=$1; set --; source "$script"; uname() { printf "Linux\n"; }; resolve_wireguard_listen_port >/dev/null; printf "%s" "$WIREGUARD_LISTEN_PORT"' \
+  sh "$ROOT/scripts/install.sh")"
+case "$rotated_port" in
+  ''|*[!0-9]*) fail "explicit WireGuard rotation did not return a numeric port" ;;
+esac
+if [ "$rotated_port" -lt 49152 ] || [ "$rotated_port" -gt 65535 ]; then
+  fail "explicit WireGuard rotation selected a port outside the dynamic range"
+fi
+
 rendered_unit="$WORK/agent-remote-runtime.service"
 AGENT_REMOTE_INSTALL_LIB_ONLY=1 \
 PREFIX=/opt/agent-remote-installer-e2e/prefix \
@@ -116,6 +148,11 @@ grep -q -- '--group agent-remote-e2e --user agent-remote-e2e' "$rendered_unit" |
   fail "custom runtime user and group were rendered incorrectly"
 grep -q -- '--wireguard-interface agent-remote' "$rendered_unit" || \
   fail "WireGuard runtime configuration is missing"
+grep -q -- '--wireguard-listen-port 51820' "$rendered_unit" || \
+  fail "WireGuard runtime listen port was not rendered"
+if grep -q '@AGENT_REMOTE_WIREGUARD_LISTEN_PORT@' "$rendered_unit"; then
+  fail "WireGuard runtime listen port placeholder was not replaced"
+fi
 if grep -q 'installer-e2e-data-installer-e2e-data' "$rendered_unit"; then
   fail "custom data path was substituted twice"
 fi
