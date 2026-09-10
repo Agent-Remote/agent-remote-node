@@ -124,6 +124,34 @@ the wrapper directory to `PATH`, and passes the nonce only through the process e
 
 The config file contains node credentials and must be stored with deployment-level file permissions.
 
+On Linux, the installer automatically runs `configure-ego-browser` after installing the managed
+runtime. It updates the wrapper and Skill paths, versions, and digest from the immutable `current`
+release while preserving the existing `ego_browser_enabled` value. Installing or upgrading the
+artifact does not implicitly enable the bridge. To synchronize an independently installed runtime,
+run:
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser
+```
+
+Only enable the bridge after the Server evidence and artifact-bound canary have passed:
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser \
+  --enable
+sudo systemctl restart agent-remote-runtime.service agent-remote-node.service
+```
+
+Native session specifications now carry a root-generated, non-sensitive runtime configuration
+snapshot. The supervisor and Claude child therefore do not need to read the protected node config,
+so dynamic session users can start normally even when `/etc/agent-remote-node/config.json` is
+owner-only. Upgrade the Runtime Helper and Node binaries together; existing root-owned session
+specifications remain usable across later node configuration changes.
+
 No public listener, Docker port publish, NAT rule, or dynamic WireGuard ACL is created for session forwards. The existing restricted SSH port is the only data-plane entry. Runtime Helper and node services must be upgraded before enabling the control-plane policy.
 
 `browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/net/websocket"
 )
@@ -148,7 +149,7 @@ func (c Config) withDefaults() Config {
 		c.MaxExecuteTimeoutMS = defaultMaxExecuteTimeoutMS
 	}
 	if c.WrapperVersion == "" {
-		c.WrapperVersion = "0.1.0"
+		c.WrapperVersion = egobrowserartifact.PinnedWrapperVersion
 	}
 	if c.GrantPeerAccess == nil {
 		c.GrantPeerAccess = grantPeerSocketAccess

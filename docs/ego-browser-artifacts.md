@@ -66,6 +66,20 @@ ego_browser_wrapper_path=/opt/agent-remote/ego-browser/current/bin/ego-browser
 ego_browser_skill_path=/opt/agent-remote/ego-browser/current/skill/ego-browser
 ```
 
+The Linux Node installer runs `agent-remote-node configure-ego-browser` after switching the
+runtime. The command reads the release metadata, updates the configured wrapper/Skill pins, and
+preserves the current enablement state. It never enables the bridge implicitly. A manual sync is:
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser
+```
+
+Use `--enable` only after the Server evidence and the artifact-bound canary have passed; the command
+verifies the complete immutable release before writing an enabled configuration. Use `--disable` to
+turn the bridge off while retaining the installed release.
+
 ## Runtime boundary
 
 The unprivileged Node daemon owns the per-tool-session broker and its owner-only
@@ -129,6 +143,11 @@ The local Bridge `0.1.11` release declares `production_ready=true` with its
 retained Site Learning evidence, but the Server capability must remain disabled
 until the root evidence records the exact Node/Bridge composition and all
 artifact-bound canaries pass.
+
+Native session specs include a root-generated snapshot of the non-sensitive paths and artifact pins
+needed by the supervisor. The dynamic session user no longer opens the owner-only Node config while
+starting Claude. Root-side session management consumes that persisted snapshot, so a later Node
+configuration change does not invalidate an already-created session spec.
 
 Operational metrics, alert conditions, containment, and recovery are defined
 in `docs/ego-browser-operations.md`.

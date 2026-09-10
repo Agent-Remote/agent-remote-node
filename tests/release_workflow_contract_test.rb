@@ -73,6 +73,19 @@ ego_wrapper = dependencies["ego_browser_wrapper"]
 raise "ego-browser wrapper repository is invalid" unless ego_wrapper&.fetch("repository", nil) == "Agent-Remote/agent-remote-ego-browser"
 raise "ego-browser wrapper version is invalid" unless ego_wrapper&.fetch("version", nil)&.match?(/\A\d+\.\d+\.\d+/)
 
+artifact_source = File.read(
+  File.join(repository_root, "internal/egobrowserartifact/artifact.go")
+)
+artifact_version = artifact_source[/PinnedWrapperVersion\s*=\s*"([^"]+)"/, 1]
+raise "Go ego-browser wrapper pin does not match release-dependencies.json" unless artifact_version == ego_wrapper["version"]
+
+example_config = JSON.parse(
+  File.read(File.join(repository_root, "config.example.json"))
+)
+unless example_config["ego_browser_wrapper_version"] == ego_wrapper["version"]
+  raise "config.example.json ego-browser wrapper pin does not match release-dependencies.json"
+end
+
 ci_commands = ci_steps.map { |step| step["run"] }.compact.join("\n")
 managed_skill_source = JSON.parse(
   File.read(File.join(repository_root, "managed-skill-source.json"))
@@ -113,6 +126,8 @@ quality_script = File.read(File.join(repository_root, "scripts/run-quality-check
 raise "quality checks cannot publish a requested coverage profile" unless quality_script.include?('COVERAGE_PROFILE:-')
 
 prepare_commands = prepare_steps.map { |step| step["run"] }.compact.join("\n")
+raise "prepare-release must stage all tracked release changes" unless prepare_commands.include?("git add -u .")
+raise "prepare-release must stage the runtime session snapshot" unless prepare_commands.include?("git add internal/runtimehelper/session_spec.go")
 prepare_device_checkout = prepare_steps.any? do |step|
   step["uses"]&.start_with?("actions/checkout@") &&
     step.dig("with", "repository") == "Agent-Remote/agent-remote-device" &&
@@ -141,7 +156,7 @@ ego_docs = {
 ego_docs.each do |name, localized_contracts|
   content = File.read(File.join(repository_root, name))
   [
-    "0.1.11",
+    ego_wrapper["version"],
     "1.2.3",
     "36053d07001a910cb806a15d42d00fdea1cdea3d",
     "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c",

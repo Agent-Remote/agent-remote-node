@@ -26,7 +26,7 @@
   "device_control_root": "/var/lib/agent-remote/device-sessions",
   "ego_browser_enabled": false,
   "ego_browser_wrapper_path": "/opt/agent-remote/ego-browser/current/bin/ego-browser",
-  "ego_browser_wrapper_version": "0.1.0",
+  "ego_browser_wrapper_version": "0.1.11",
   "ego_browser_skill_path": "/opt/agent-remote/ego-browser/current/skill/ego-browser",
   "ego_browser_skill_version": "1.2.3",
   "ego_browser_skill_tree_sha256": "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c",

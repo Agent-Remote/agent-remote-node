@@ -97,7 +97,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if ! git diff --quiet; then
-            git add README.md README.zh-CN.md config.example.json internal/config/config.go scripts/build-release.sh CHANGELOG.md
+            # Stage every tracked release-source change, including runtime and
+            # installer fixes added after this workflow's original file list.
+            # The external source checkouts are untracked and remain excluded.
+            git add -u .
+            # git add -u does not include a newly introduced source file.
+            git add internal/runtimehelper/session_spec.go
             git commit -m "chore: release v${version}"
           fi
           git tag "v${version}"

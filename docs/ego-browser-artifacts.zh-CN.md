@@ -63,6 +63,19 @@ ego_browser_wrapper_path=/opt/agent-remote/ego-browser/current/bin/ego-browser
 ego_browser_skill_path=/opt/agent-remote/ego-browser/current/skill/ego-browser
 ```
 
+Linux Node 安装器在切换 runtime 后会运行 `agent-remote-node configure-ego-browser`。该命令读取
+release metadata，同步配置中的 wrapper/Skill pin，并保留当前启用状态；它不会隐式开启 bridge。
+手动同步命令：
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser
+```
+
+只有在 Server evidence 与 artifact-bound canary 通过后才使用 `--enable`；命令会在写入启用配置前
+完整校验不可变 release。需要关闭时使用 `--disable`，已安装的 release 会保留。
+
 ## Runtime 边界
 
 非特权 Node daemon 管理每个 tool session 的 broker 与 owner-only Unix socket。它选择已
@@ -114,5 +127,9 @@ wrapper 安装完成本身不代表端到端 capability 可以开启。本地 Br
 已声明 `production_ready=true` 并带有留存的 Site Learning evidence，但只有 root evidence
 记录准确的 Node/Bridge 组合且所有 artifact-bound canary 通过后，Server 才能在生产环境开启
 该 capability。
+
+Native session spec 现在包含由 root 生成的不含敏感信息的路径和 artifact pin 快照。动态 session
+用户启动 Claude 时不再打开 owner-only 的 Node 配置；节点配置后续变化也不会使已创建的 session
+spec 失效，root 侧仍使用 spec 中保存的配置管理该 session。
 
 指标、告警、containment 与恢复步骤见 `docs/ego-browser-operations.md`。

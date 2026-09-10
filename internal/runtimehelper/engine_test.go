@@ -199,6 +199,122 @@ func TestDockerLoopbackProxyCommandUsesTrustedRuntimeIdentity(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeConfigSnapshotCarriesNonSensitivePaths(t *testing.T) {
+	config := EngineConfig{
+		StateRoot:                 "/srv/agent-remote/runtime",
+		WorkspaceRoot:             "/srv/agent-remote/data/users",
+		AccountRoot:               "/srv/agent-remote/data/users",
+		RuntimeBinaryPath:         "/srv/agent-remote/runtime/bin/agent-remote-runtime",
+		ClaudeRuntimePath:         "/srv/agent-remote/claude/current/bin/claude",
+		DeviceProxyPath:           "/srv/agent-remote/device/current/bin/proxy",
+		TmuxBinaryPath:            "/srv/agent-remote/bin/tmux",
+		BubblewrapPath:            "bwrap-custom",
+		EgoBrowserEnabled:         true,
+		EgoBrowserWrapperPath:     "/srv/agent-remote/ego/current/bin/ego-browser",
+		EgoBrowserSkillPath:       "/srv/agent-remote/ego/current/skill/ego-browser",
+		EgoBrowserBrokerSocket:    "/run/agent-remote/ego-browser.sock",
+		EgoBrowserBrokerRoot:      "/srv/agent-remote/ego-state",
+		EgoBrowserWrapperVersion:  "0.1.11",
+		EgoBrowserSkillVersion:    "1.2.3",
+		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
+	}.WithDefaults()
+	snapshot := sessionRuntimeConfigFromEngine(config)
+	if err := snapshot.validate(); err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.matches(config) {
+		t.Fatal("snapshot does not match its source configuration")
+	}
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "token") || strings.Contains(string(data), "secret") {
+		t.Fatalf("runtime snapshot contains sensitive material: %s", data)
+	}
+	derived, err := runtimeConfigForSpec(EngineConfig{StateRoot: config.StateRoot}, SessionSpec{RuntimeConfig: snapshot})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if derived.WorkspaceRoot != config.WorkspaceRoot || derived.AccountRoot != config.AccountRoot ||
+		derived.RuntimeBinaryPath != config.RuntimeBinaryPath || derived.ClaudeRuntimePath != config.ClaudeRuntimePath ||
+		derived.TmuxBinaryPath != config.TmuxBinaryPath || derived.BubblewrapPath != config.BubblewrapPath ||
+		derived.EgoBrowserWrapperVersion != config.EgoBrowserWrapperVersion {
+		t.Fatalf("snapshot paths were not restored: %#v", derived)
+	}
+	legacy := *snapshot
+	legacy.RuntimeBinaryPath = ""
+	legacy.TmuxBinaryPath = ""
+	legacy.BubblewrapPath = ""
+	fallback, err := runtimeConfigForSpec(EngineConfig{
+		StateRoot: config.StateRoot, RuntimeBinaryPath: "/fallback/runtime",
+		TmuxBinaryPath: "/fallback/tmux", BubblewrapPath: "/fallback/bwrap",
+	}, SessionSpec{RuntimeConfig: &legacy})
+	if err != nil {
+		t.Fatalf("legacy snapshot fallback failed: %v", err)
+	}
+	if fallback.RuntimeBinaryPath != "/fallback/runtime" || fallback.TmuxBinaryPath != "/fallback/tmux" || fallback.BubblewrapPath != "/fallback/bwrap" {
+		t.Fatalf("legacy command defaults were not restored: %#v", fallback)
+	}
+	snapshot.EgoBrowserSkillTreeSHA256 = strings.Repeat("g", 64)
+	if err := snapshot.validate(); err == nil {
+		t.Fatal("non-hex ego-browser digest was accepted")
+	}
+}
+
+func TestTrustedSessionSpecUsesPersistedRuntimeConfigAfterNodeConfigChange(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("trusted native specs require root-owned files on Linux")
+	}
+	stateRoot := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "users")
+	accountRoot := filepath.Join(t.TempDir(), "accounts")
+	claudePath := filepath.Join(t.TempDir(), "claude", "current", "bin", "claude")
+	sessionID := "session_1"
+	userID := "user_1"
+	sessionRoot := filepath.Join(stateRoot, "sessions", sessionID)
+	if err := os.MkdirAll(sessionRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := EngineConfig{
+		StateRoot: stateRoot, WorkspaceRoot: workspaceRoot, AccountRoot: accountRoot,
+		ClaudeRuntimePath: claudePath,
+	}.WithDefaults()
+	workspacePath := filepath.Join(workspaceRoot, userID, "workspaces", "workspace_1", "files")
+	accountPath := filepath.Join(accountRoot, userID, "tool-accounts", "claude", "account_1")
+	spec := SessionSpec{
+		Version: ProtocolVersion, Kind: "session", SessionID: sessionID, UserID: userID,
+		Username: "ar-u-" + shortDigest(userID, 12), WorkspacePath: workspacePath,
+		AccountPath: accountPath, SessionRoot: sessionRoot,
+		RuntimeRoot:    filepath.Clean(filepath.Join(filepath.Dir(claudePath), "..")),
+		RuntimeCommand: "/opt/agent-remote/runtime/bin/claude",
+		Timezone:       "UTC", Locale: "en_US.UTF-8", TmuxSessionName: "ar-session-test",
+		TmuxSocketPath:   filepath.Join(sessionRoot, "tmux", "tmux.sock"),
+		UnitName:         "agent-remote-session-" + shortDigest(sessionID, 12) + ".service",
+		NetworkNamespace: "ar-" + shortDigest(sessionID, 10),
+		RuntimeConfig:    sessionRuntimeConfigFromEngine(original),
+	}
+	specPath := filepath.Join(sessionRoot, "spec.json")
+	data, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(specPath, append(data, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed := original
+	changed.WorkspaceRoot = filepath.Join(t.TempDir(), "changed-users")
+	changed.AccountRoot = filepath.Join(t.TempDir(), "changed-accounts")
+	changed.ClaudeRuntimePath = filepath.Join(t.TempDir(), "changed", "bin", "claude")
+	loaded, err := readTrustedSpec(changed, specPath)
+	if err != nil {
+		t.Fatalf("persisted runtime configuration was not honored: %v", err)
+	}
+	if loaded.SessionID != sessionID || loaded.RuntimeConfig == nil {
+		t.Fatalf("unexpected trusted spec: %#v", loaded)
+	}
+}
+
 func TestStdioProxyReturnsTransferableDuplexConnection(t *testing.T) {
 	cat, err := exec.LookPath("cat")
 	if err != nil {

@@ -19,6 +19,9 @@ import (
 )
 
 const (
+	// PinnedWrapperVersion is the reviewed Linux ego-browser wrapper release
+	// embedded by the current Node release.
+	PinnedWrapperVersion = "0.1.11"
 	// OfficialSkillVersion is the reviewed upstream ego-browser Skill release.
 	OfficialSkillVersion = "1.2.3"
 	// OfficialSkillSourceCommit pins the reviewed upstream ego-lite tree.
@@ -52,6 +55,15 @@ type sourceManifest struct {
 // Verify checks release metadata, provenance, permissions, and current bytes.
 func Verify(config RuntimeConfig) error {
 	return verify(config, runtime.GOOS == "linux")
+}
+
+// VerifyPinned verifies the release currently reviewed by the Node. Verify
+// remains available for tooling that needs to inspect historical releases.
+func VerifyPinned(config RuntimeConfig) error {
+	if config.WrapperVersion != PinnedWrapperVersion {
+		return fmt.Errorf("ego-browser wrapper version %q is not the reviewed Node pin %q", config.WrapperVersion, PinnedWrapperVersion)
+	}
+	return Verify(config)
 }
 
 func verify(config RuntimeConfig, requireRootOwner bool) error {

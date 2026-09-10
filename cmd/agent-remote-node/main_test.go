@@ -7,9 +7,11 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 )
 
 func TestConfigureWireGuardUsesControlPlaneHost(t *testing.T) {
@@ -150,4 +152,94 @@ func TestInstallSSHPreservesExistingAuthorizedKeys(t *testing.T) {
 	if string(got) != string(want) {
 		t.Fatalf("authorized keys changed during install: %q", got)
 	}
+}
+
+func TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling(t *testing.T) {
+	root := prepareEgoBrowserMetadataRuntime(t)
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Config{
+		ServerURL: "https://control.example", NodeID: "node_1",
+		EgoBrowserEnabled: false, EgoBrowserWrapperVersion: "0.1.0",
+	}.WithDefaults()
+	if err := config.Save(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureEgoBrowser([]string{"--config", configPath, "--runtime-root", root}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.EgoBrowserEnabled || updated.EgoBrowserWrapperVersion != egobrowserartifact.PinnedWrapperVersion ||
+		updated.EgoBrowserSkillVersion != "1.2.3" || updated.EgoBrowserSkillTreeSHA256 != strings.Repeat("a", 64) ||
+		updated.EgoBrowserWrapperPath != filepath.Join(root, "current", "bin", "ego-browser") {
+		t.Fatalf("ego-browser config was not synchronized safely: %#v", updated)
+	}
+}
+
+func TestConfigureEgoBrowserEnableRejectsUnverifiedRuntime(t *testing.T) {
+	root := prepareEgoBrowserMetadataRuntime(t)
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	if err := config.Save(configPath, config.Config{ServerURL: "https://control.example", NodeID: "node_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureEgoBrowser([]string{"--config", configPath, "--runtime-root", root, "--enable"}); err == nil {
+		t.Fatal("unverified ego-browser runtime was enabled")
+	}
+}
+
+func TestConfigureEgoBrowserMigratesStaleEnabledConfig(t *testing.T) {
+	root := prepareEgoBrowserMetadataRuntime(t)
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := config.Config{
+		ServerURL: "https://control.example", NodeID: "node_1",
+		EgoBrowserEnabled: true, EgoBrowserWrapperVersion: "0.1.0",
+	}.WithDefaults()
+	if err := config.SaveForUpgrade(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := configureEgoBrowser([]string{
+		"--config", configPath, "--runtime-root", root, "--disable",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := config.Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.EgoBrowserEnabled || updated.EgoBrowserWrapperVersion != egobrowserartifact.PinnedWrapperVersion {
+		t.Fatalf("stale enabled ego-browser config was not migrated: %#v", updated)
+	}
+}
+
+func prepareEgoBrowserMetadataRuntime(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	release := filepath.Join(root, "releases", egobrowserartifact.PinnedWrapperVersion)
+	if err := os.MkdirAll(filepath.Join(release, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "bin", "ego-browser"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(release, "skill", "ego-browser"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(release, "skill", "ego-browser", "SKILL.md"), []byte("# skill\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"VERSION":           egobrowserartifact.PinnedWrapperVersion + "\n",
+		"SKILL_VERSION":     egobrowserartifact.OfficialSkillVersion + "\n",
+		"SKILL_TREE_SHA256": strings.Repeat("a", 64) + "\n",
+	} {
+		if err := os.WriteFile(filepath.Join(release, name), []byte(value), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(release, filepath.Join(root, "current")); err != nil {
+		t.Fatal(err)
+	}
+	return root
 }

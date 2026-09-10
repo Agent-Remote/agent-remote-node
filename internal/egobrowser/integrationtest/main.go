@@ -17,6 +17,7 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowser"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 )
 
 type runtimeContext struct {
@@ -85,7 +86,7 @@ func run(args []string) error {
 		MaxParallelRequests:          4,
 		MaxScriptBytes:               1 << 20,
 		MaxExecuteTimeoutMS:          120_000,
-		WrapperVersion:               "0.1.0",
+		WrapperVersion:               egobrowserartifact.PinnedWrapperVersion,
 	})
 	if err != nil {
 		return err

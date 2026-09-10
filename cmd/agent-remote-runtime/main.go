@@ -192,19 +192,16 @@ func executeSpec(args []string, action func(runtimehelper.EngineConfig, string) 
 	fs := flag.NewFlagSet("spec", flag.ContinueOnError)
 	specPath := fs.String("spec", "", "validated session spec")
 	stateRoot := fs.String("state-root", "/var/lib/agent-remote-runtime", "runtime state root")
-	nodeConfigPath := fs.String("node-config", "/etc/agent-remote-node/config.json", "node configuration path")
+	// Keep accepting the legacy flag so already-created tmux commands fail
+	// closed only on spec validation, without reopening the protected config.
+	_ = fs.String("node-config", "", "deprecated and ignored node configuration path")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *specPath == "" {
 		return errors.New("spec is required")
 	}
-	runtimeConfig := runtimehelper.EngineConfig{
-		StateRoot: *stateRoot, RuntimeBinaryPath: os.Args[0], NodeConfigPath: *nodeConfigPath,
-	}
-	if err := applyBrowserConfig(&runtimeConfig, *nodeConfigPath); err != nil {
-		return err
-	}
+	runtimeConfig := runtimehelper.EngineConfig{StateRoot: *stateRoot, RuntimeBinaryPath: os.Args[0]}
 	return action(runtimeConfig, *specPath)
 }
 

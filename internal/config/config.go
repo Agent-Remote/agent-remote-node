@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
@@ -142,7 +143,7 @@ func (c Config) WithDefaults() Config {
 		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
 	}
 	if c.EgoBrowserWrapperVersion == "" {
-		c.EgoBrowserWrapperVersion = "0.1.0"
+		c.EgoBrowserWrapperVersion = egobrowserartifact.PinnedWrapperVersion
 	}
 	if c.EgoBrowserSkillPath == "" {
 		c.EgoBrowserSkillPath = "/opt/agent-remote/ego-browser/current/skill/ego-browser"
@@ -183,8 +184,18 @@ func (c Config) WithDefaults() Config {
 	return c
 }
 
-// Validate checks required config values.
+// Validate checks required config values and the current managed artifact pins.
 func (c Config) Validate(requireToken bool) error {
+	return c.validate(requireToken, false)
+}
+
+// ValidateForUpgrade validates configuration while allowing the wrapper pin to
+// be replaced by the explicit ego-browser upgrade command.
+func (c Config) ValidateForUpgrade(requireToken bool) error {
+	return c.validate(requireToken, true)
+}
+
+func (c Config) validate(requireToken bool, allowStaleWrapper bool) error {
 	if c.ServerURL == "" {
 		return errors.New("server_url is required")
 	}
@@ -231,6 +242,12 @@ func (c Config) Validate(requireToken bool) error {
 		if c.EgoBrowserProtocolVersion != "ego-browser-bridge-v1" {
 			return errors.New("ego_browser_protocol_version is unsupported")
 		}
+		if !validEgoBrowserVersion(c.EgoBrowserWrapperVersion) {
+			return errors.New("ego-browser wrapper version is invalid")
+		}
+		if !allowStaleWrapper && c.EgoBrowserWrapperVersion != egobrowserartifact.PinnedWrapperVersion {
+			return errors.New("ego-browser wrapper version is unsupported")
+		}
 		if c.EgoBrowserSkillVersion != egobrowserartifact.OfficialSkillVersion ||
 			c.EgoBrowserSkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
 			return errors.New("ego-browser official Skill version or digest is unsupported")
@@ -258,6 +275,20 @@ func (c Config) Validate(requireToken bool) error {
 	return nil
 }
 
+func validEgoBrowserVersion(value string) bool {
+	if value == "" || len(value) > 64 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || (index > 0 && strings.ContainsRune("._+-", character)) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // WireGuardIP returns the host address without the local interface prefix.
 func (c Config) WireGuardIP() string {
 	prefix, err := netip.ParsePrefix(c.WireGuardAddress)
@@ -267,8 +298,18 @@ func (c Config) WireGuardIP() string {
 	return prefix.Addr().String()
 }
 
-// Load reads a JSON config file.
+// Load reads a JSON config file and enforces current artifact pins.
 func Load(path string) (Config, error) {
+	return load(path, false)
+}
+
+// LoadForUpgrade reads a config while permitting a stale wrapper pin during a
+// controlled runtime synchronization.
+func LoadForUpgrade(path string) (Config, error) {
+	return load(path, true)
+}
+
+func load(path string, allowStaleWrapper bool) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -279,21 +320,108 @@ func Load(path string) (Config, error) {
 	}
 	cfg = cfg.WithDefaults()
 	cfg.SourcePath = path
+	if allowStaleWrapper {
+		return cfg, cfg.ValidateForUpgrade(false)
+	}
 	return cfg, cfg.Validate(false)
 }
 
-// Save writes a JSON config file with owner-only permissions.
+// Save atomically writes a JSON config file with owner-only permissions.
 func Save(path string, cfg Config) error {
+	return save(path, cfg, false)
+}
+
+// SaveForUpgrade atomically writes configuration while permitting the wrapper
+// pin to remain stale until the explicit runtime synchronization completes.
+func SaveForUpgrade(path string, cfg Config) error {
+	return save(path, cfg, true)
+}
+
+func save(path string, cfg Config, allowStaleWrapper bool) error {
 	cfg = cfg.WithDefaults()
-	if err := cfg.Validate(false); err != nil {
+	var validationErr error
+	if allowStaleWrapper {
+		validationErr = cfg.ValidateForUpgrade(false)
+	} else {
+		validationErr = cfg.Validate(false)
+	}
+	if validationErr != nil {
+		return validationErr
+	}
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o700); err != nil && directory != "." {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil && filepath.Dir(path) != "." {
+	existing, err := os.Lstat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	if err == nil && (existing.Mode()&os.ModeSymlink != 0 || !existing.Mode().IsRegular()) {
+		return errors.New("config path must be a regular file")
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o600)
+	temporary, err := os.CreateTemp(directory, ".agent-remote-config-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if err := temporary.Chmod(0o600); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if existing != nil {
+		if err := preserveConfigOwnership(temporaryPath, existing); err != nil {
+			_ = temporary.Close()
+			return err
+		}
+	}
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		return err
+	}
+	removeTemporary = false
+	return syncConfigDirectory(directory)
+}
+
+func preserveConfigOwnership(path string, existing os.FileInfo) error {
+	if os.Geteuid() != 0 {
+		return nil
+	}
+	stat, ok := existing.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("config ownership is unavailable")
+	}
+	return os.Chown(path, int(stat.Uid), int(stat.Gid))
+}
+
+func syncConfigDirectory(path string) error {
+	directory, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	syncErr := directory.Sync()
+	closeErr := directory.Close()
+	if syncErr != nil && !errors.Is(syncErr, syscall.EINVAL) && !errors.Is(syncErr, syscall.ENOTSUP) {
+		return syncErr
+	}
+	return closeErr
 }

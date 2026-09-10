@@ -134,7 +134,7 @@ func supportedFeatureBackends(capabilities api.RuntimeCapabilities, requireNativ
 }
 
 func probeEgoBrowser(config EgoBrowserProbeConfig) api.EgoBrowserBridgeCapability {
-	return probeEgoBrowserWithVerifier(config, egobrowserartifact.Verify)
+	return probeEgoBrowserWithVerifier(config, egobrowserartifact.VerifyPinned)
 }
 
 func probeEgoBrowserWithVerifier(config EgoBrowserProbeConfig, verify func(egobrowserartifact.RuntimeConfig) error) api.EgoBrowserBridgeCapability {
@@ -150,7 +150,8 @@ func probeEgoBrowserWithVerifier(config EgoBrowserProbeConfig, verify func(egobr
 	if config.ProtocolVersion != "ego-browser-bridge-v1" {
 		return result
 	}
-	if config.WrapperVersion == "" || config.MaxScriptBytes <= 0 || config.MaxExecuteTimeoutMS <= 0 {
+	if config.WrapperVersion != egobrowserartifact.PinnedWrapperVersion ||
+		config.MaxScriptBytes <= 0 || config.MaxExecuteTimeoutMS <= 0 {
 		return result
 	}
 	if err := verify(egobrowserartifact.RuntimeConfig{

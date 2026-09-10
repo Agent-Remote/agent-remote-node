@@ -8,6 +8,22 @@ DEVICE_PROXY_DIR="${DEVICE_PROXY_DIR:-}"
 EGO_BROWSER_WRAPPER_DIR="${EGO_BROWSER_WRAPPER_DIR:-}"
 EGO_BROWSER_SKILL_ROOT="${EGO_BROWSER_SKILL_ROOT:-internal/managedskills/skills/ego-browser}"
 EGO_BROWSER_SKILL_SOURCE_MANIFEST="${EGO_BROWSER_SKILL_SOURCE_MANIFEST:-ego-browser-skill-source.json}"
+RELEASE_DEPENDENCIES="${RELEASE_DEPENDENCIES:-release-dependencies.json}"
+
+if [ ! -f "$RELEASE_DEPENDENCIES" ]; then
+  echo "missing release dependency manifest: $RELEASE_DEPENDENCIES" >&2
+  exit 1
+fi
+expected_ego_version="$(jq -er '.ego_browser_wrapper.version' "$RELEASE_DEPENDENCIES")"
+if ! [[ "$expected_ego_version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+  echo "invalid ego-browser wrapper version in release dependencies" >&2
+  exit 1
+fi
+source_ego_version="$(sed -n 's/^[[:space:]]*PinnedWrapperVersion[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' internal/egobrowserartifact/artifact.go)"
+if [ "$source_ego_version" != "$expected_ego_version" ]; then
+  echo "ego-browser wrapper pin does not match release-dependencies.json" >&2
+  exit 1
+fi
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -118,6 +134,10 @@ EOF
     ego_version="$(tr -d '[:space:]' < "$ego_root/VERSION")"
     if ! [[ "$ego_version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
       echo "invalid ego-browser wrapper version for $target" >&2
+      exit 1
+    fi
+    if [ "$ego_version" != "$expected_ego_version" ]; then
+      echo "ego-browser wrapper version for $target does not match release-dependencies.json" >&2
       exit 1
     fi
     mkdir -p "$work/ego-browser/skill"

@@ -46,6 +46,8 @@ bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" \
   "$ROOT/scripts/build-release.sh"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--registration-token' || fail "one-command help is incomplete"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--nodejs-version' || fail "Node.js install help is incomplete"
+"$ROOT/scripts/install.sh" --help | grep -q -- '--enable-ego-browser' || fail "ego-browser enable option is missing"
+"$ROOT/scripts/install.sh" --help | grep -q -- '--disable-ego-browser' || fail "ego-browser disable option is missing"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
 grep -q 'AllowAgentForwarding yes' "$ROOT/scripts/install.sh" || fail "SSH agent forwarding is not enabled for the forced-command gateway"
 grep -q 'apt-get install -y --no-upgrade' "$ROOT/scripts/install.sh" || \
@@ -385,6 +387,13 @@ grep -q -- '--runtime-backends native' "$FAKE_NODE_LOG" || fail "native backend 
 grep -q -- '--system-install' "$FAKE_NODE_LOG" || fail "system install layout was not registered"
 grep -q -- "--claude-runtime-path $managed_claude/current/bin/claude" "$FAKE_NODE_LOG" || \
   fail "managed Claude path was not registered"
+# The managed ego-browser runtime is Linux-only. The end-to-end installer
+# flow above still exercises the common registration path on macOS, while the
+# synchronization invocation is asserted where the installer actually runs it.
+if [ "$(uname -s)" = "Linux" ]; then
+  grep -q -- "configure-ego-browser" "$FAKE_NODE_LOG" || \
+    fail "ego-browser configuration was not synchronized"
+fi
 
 release_dir="$WORK/release"
 proxy_dir="$WORK/device-proxies/linux-amd64-glibc"
@@ -395,7 +404,7 @@ chmod 0755 "$proxy_dir/agent-remote-device-proxy"
 printf '1.2.3\n' > "$proxy_dir/VERSION"
 cp "$fake_ego_wrapper" "$ego_wrapper_dir/ego-browser"
 chmod 0755 "$ego_wrapper_dir/ego-browser"
-printf '0.1.0\n' > "$ego_wrapper_dir/VERSION"
+printf '0.1.11\n' > "$ego_wrapper_dir/VERSION"
 GOCACHE="$WORK/go-cache" VERSION=9.9.9 OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
   DEVICE_PROXY_DIR="$WORK/device-proxies" \
   EGO_BROWSER_WRAPPER_DIR="$WORK/ego-wrappers" \

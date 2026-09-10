@@ -115,6 +115,32 @@ owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔�
 
 配置文件包含节点凭据，必须使用部署级文件权限保存。
 
+在 Linux 上，安装器安装或升级受管 runtime 后会自动运行 `configure-ego-browser`。它从不可变
+的 `current` release 同步 wrapper/Skill 的路径、版本和摘要，同时保留现有的
+`ego_browser_enabled` 值；安装或升级 artifact 不会隐式开启 bridge。若 runtime 是单独安装的，
+可手动同步：
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser
+```
+
+只有在 Server evidence 和 artifact-bound canary 通过后才启用 bridge：
+
+```sh
+sudo agent-remote-node configure-ego-browser \
+  --config /etc/agent-remote-node/config.json \
+  --runtime-root /opt/agent-remote/ego-browser \
+  --enable
+sudo systemctl restart agent-remote-runtime.service agent-remote-node.service
+```
+
+Native session spec 现在包含由 root 生成且不含敏感信息的 runtime 配置快照。supervisor 和 Claude
+子进程不再需要读取受保护的节点配置，因此即使 `/etc/agent-remote-node/config.json` 只有 owner
+权限，动态 session 用户也能正常启动。请同时升级 Runtime Helper 和 Node 二进制；已有的
+root-owned session spec 可在后续节点配置变化后继续使用。
+
 Session 转发不会创建公网 listener、Docker 端口发布、NAT 规则或动态 WireGuard ACL，现有受限 SSH 端口是唯一数据入口。启用控制面策略前必须先升级 Runtime Helper 和 Node 服务。
 
 `browser_public_base_url` 是可选项。为空时，节点会报告 KasmVNC 的本地 Docker 端口映射。在部署环境中，应将其设置为能访问浏览器容器 stream endpoint 的节点侧 HTTPS 反向代理 URL。

@@ -23,6 +23,7 @@ import (
 
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
 	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
@@ -157,7 +158,7 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
 	}
 	if c.EgoBrowserWrapperVersion == "" {
-		c.EgoBrowserWrapperVersion = "0.1.0"
+		c.EgoBrowserWrapperVersion = egobrowserartifact.PinnedWrapperVersion
 	}
 	if c.EgoBrowserSkillPath == "" {
 		c.EgoBrowserSkillPath = "/opt/agent-remote/ego-browser/current/skill/ego-browser"
@@ -1384,17 +1385,20 @@ type SessionSpec struct {
 	RuntimeGID                     int      `json:"runtime_gid"`
 	// Ego-browser values are root-validated session identity/configuration.
 	// The broker nonce is deliberately process-only and must never be persisted.
-	EgoBrowserEnabled         bool          `json:"ego_browser_enabled,omitempty"`
-	EgoBrowserWrapperPath     string        `json:"ego_browser_wrapper_path,omitempty"`
-	EgoBrowserBrokerSocket    string        `json:"ego_browser_broker_socket,omitempty"`
-	EgoBrowserBrokerNonce     string        `json:"-"`
-	EgoBrowserProtocolVersion string        `json:"ego_browser_protocol_version,omitempty"`
-	EgoBrowserWrapperVersion  string        `json:"ego_browser_wrapper_version,omitempty"`
-	EgoBrowserSkillPath       string        `json:"ego_browser_skill_path,omitempty"`
-	EgoBrowserSkillVersion    string        `json:"ego_browser_skill_version,omitempty"`
-	EgoBrowserSkillTreeSHA256 string        `json:"ego_browser_skill_tree_sha256,omitempty"`
-	EgoBrowserTaskSpace       string        `json:"ego_browser_task_space,omitempty"`
-	Policy                    RuntimePolicy `json:"policy"`
+	EgoBrowserEnabled         bool   `json:"ego_browser_enabled,omitempty"`
+	EgoBrowserWrapperPath     string `json:"ego_browser_wrapper_path,omitempty"`
+	EgoBrowserBrokerSocket    string `json:"ego_browser_broker_socket,omitempty"`
+	EgoBrowserBrokerNonce     string `json:"-"`
+	EgoBrowserProtocolVersion string `json:"ego_browser_protocol_version,omitempty"`
+	EgoBrowserWrapperVersion  string `json:"ego_browser_wrapper_version,omitempty"`
+	EgoBrowserSkillPath       string `json:"ego_browser_skill_path,omitempty"`
+	EgoBrowserSkillVersion    string `json:"ego_browser_skill_version,omitempty"`
+	EgoBrowserSkillTreeSHA256 string `json:"ego_browser_skill_tree_sha256,omitempty"`
+	EgoBrowserTaskSpace       string `json:"ego_browser_task_space,omitempty"`
+	// RuntimeConfig is a non-sensitive snapshot used by the unprivileged
+	// supervisor and exec child; it never contains node credentials.
+	RuntimeConfig *SessionRuntimeConfig `json:"runtime_config,omitempty"`
+	Policy        RuntimePolicy         `json:"policy"`
 }
 
 // RuntimePolicy contains root-validated per-session resource and network limits.
@@ -1541,6 +1545,7 @@ func (e Engine) buildSpec(payload map[string]any, sessionID string, userID strin
 		EgoBrowserSkillVersion:         egoContext.SkillVersion,
 		EgoBrowserSkillTreeSHA256:      egoContext.SkillTreeSHA256,
 		EgoBrowserTaskSpace:            egoContext.TaskSpace,
+		RuntimeConfig:                  sessionRuntimeConfigFromEngine(e.config),
 		Policy:                         policy,
 	}
 	if err := e.saveSpec(spec); err != nil {
@@ -1692,7 +1697,7 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 			args = append(args, "--setenv="+entry)
 		}
 	}
-	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--spec", e.specPath(spec.SessionID), "--node-config", e.config.NodeConfigPath)
+	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--state-root", e.config.StateRoot, "--spec", e.specPath(spec.SessionID))
 	if output, err := exec.CommandContext(ctx, e.config.SystemdRunPath, args...).CombinedOutput(); err != nil {
 		_ = runCommand(ctx, e.config.IPPath, "netns", "delete", spec.NetworkNamespace)
 		_ = e.cleanupTemp(ctx, spec)
@@ -2207,6 +2212,9 @@ func (e Engine) specPath(sessionID string) string {
 }
 
 func (e Engine) saveSpec(spec SessionSpec) error {
+	if spec.RuntimeConfig == nil {
+		spec.RuntimeConfig = sessionRuntimeConfigFromEngine(e.config)
+	}
 	resolvers := make([]string, 0, len(e.config.DNSResolvers))
 	for _, resolver := range e.config.DNSResolvers {
 		resolvers = append(resolvers, "nameserver "+resolver)
@@ -2240,18 +2248,8 @@ func (e Engine) loadSpec(sessionID string) (SessionSpec, error) {
 	if err := validateID(sessionID, "session_id"); err != nil {
 		return SessionSpec{}, err
 	}
-	data, err := os.ReadFile(e.specPath(sessionID))
+	spec, err := readTrustedSpec(e.config, e.specPath(sessionID))
 	if err != nil {
-		return SessionSpec{}, err
-	}
-	var spec SessionSpec
-	if err := json.Unmarshal(data, &spec); err != nil {
-		return SessionSpec{}, err
-	}
-	if spec.SessionID != sessionID || spec.Version != ProtocolVersion {
-		return SessionSpec{}, errors.New("runtime spec identity is invalid")
-	}
-	if err := validateSpecEgoBrowserContext(e.config, &spec, false); err != nil {
 		return SessionSpec{}, err
 	}
 	return spec, nil
@@ -2705,15 +2703,15 @@ func runCommand(ctx context.Context, name string, args ...string) error {
 // ExecSpec replaces the current process with the validated Bubblewrap command.
 func ExecSpec(config EngineConfig, specPath string) error {
 	config = config.WithDefaults()
-	spec, err := readTrustedSpec(config, specPath)
+	spec, runtimeConfig, err := readRuntimeSpec(config, specPath)
 	if err != nil {
 		return err
 	}
-	if err := validateSpecEgoBrowserContext(config, &spec, true); err != nil {
+	if err := validateSpecEgoBrowserContext(runtimeConfig, &spec, true); err != nil {
 		return err
 	}
-	args := bubblewrapArgs(config, spec)
-	binary, err := exec.LookPath(config.BubblewrapPath)
+	args := bubblewrapArgs(runtimeConfig, spec)
+	binary, err := exec.LookPath(runtimeConfig.BubblewrapPath)
 	if err != nil {
 		return err
 	}
@@ -2723,26 +2721,26 @@ func ExecSpec(config EngineConfig, specPath string) error {
 // SuperviseSpec starts tmux and keeps the systemd unit alive while the session exists.
 func SuperviseSpec(config EngineConfig, specPath string) error {
 	config = config.WithDefaults()
-	spec, err := readTrustedSpec(config, specPath)
+	spec, runtimeConfig, err := readRuntimeSpec(config, specPath)
 	if err != nil {
 		return err
 	}
-	if err := validateSpecEgoBrowserContext(config, &spec, true); err != nil {
+	if err := validateSpecEgoBrowserContext(runtimeConfig, &spec, true); err != nil {
 		return err
 	}
-	commandParts := []string{shellQuote(config.RuntimeBinaryPath), "exec", "--spec", shellQuote(specPath), "--node-config", shellQuote(config.NodeConfigPath)}
+	commandParts := []string{shellQuote(runtimeConfig.RuntimeBinaryPath), "exec", "--state-root", shellQuote(runtimeConfig.StateRoot), "--spec", shellQuote(specPath)}
 	command := strings.Join(commandParts, " ")
-	cmd := exec.Command(config.TmuxBinaryPath, tmuxsession.NewSessionArgs(config.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
+	cmd := exec.Command(runtimeConfig.TmuxBinaryPath, tmuxsession.NewSessionArgs(runtimeConfig.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName, command)...)
 	cmd.Dir = spec.WorkspacePath
 	cmd.Env = withEgoBrowserEnvironment(replaceEnvironment(os.Environ(), "SHELL", "/bin/sh"), spec, false)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux start failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
-	if err := tmuxsession.Configure(config.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
+	if err := tmuxsession.Configure(runtimeConfig.TmuxBinaryPath, spec.TmuxSocketPath, spec.TmuxSessionName); err != nil {
 		return err
 	}
 	for {
-		if exec.Command(config.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName).Run() != nil {
+		if exec.Command(runtimeConfig.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName).Run() != nil {
 			if spec.BootID != "" {
 				if err := os.WriteFile(processExitMarkerPath(spec), []byte(spec.BootID+"\n"), 0o600); err != nil {
 					return fmt.Errorf("record runtime process exit: %w", err)
@@ -3034,79 +3032,9 @@ func parentDirectories(path string) []string {
 }
 
 func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) {
-	config = config.WithDefaults()
-	if !pathInside(filepath.Join(config.StateRoot, "sessions"), specPath) {
-		return SessionSpec{}, errors.New("spec path is outside runtime state")
-	}
-	data, err := os.ReadFile(specPath)
+	spec, _, err := readRuntimeSpec(config, specPath)
 	if err != nil {
 		return SessionSpec{}, err
-	}
-	var spec SessionSpec
-	if err := json.Unmarshal(data, &spec); err != nil {
-		return SessionSpec{}, err
-	}
-	expectedRoot := filepath.Dir(specPath)
-	expectedRuntimeRoot := filepath.Clean(filepath.Join(filepath.Dir(config.ClaudeRuntimePath), ".."))
-	expectedDigest := shortDigest(spec.SessionID, 12)
-	info, statErr := os.Lstat(specPath)
-	if statErr != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
-		return SessionSpec{}, errors.New("spec permissions are invalid")
-	}
-	if runtime.GOOS == "linux" {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Uid != 0 {
-			return SessionSpec{}, errors.New("spec is not root-owned")
-		}
-	}
-	if spec.Version != ProtocolVersion ||
-		!pathInside(config.WorkspaceRoot, spec.WorkspacePath) ||
-		!pathInside(config.AccountRoot, spec.AccountPath) ||
-		spec.SessionRoot != expectedRoot ||
-		spec.TmuxSocketPath != filepath.Join(expectedRoot, "tmux", "tmux.sock") ||
-		spec.RuntimeRoot != expectedRuntimeRoot ||
-		spec.RuntimeCommand != "/opt/agent-remote/runtime/bin/claude" ||
-		validateID(spec.SessionID, "session_id") != nil ||
-		validateID(spec.UserID, "user_id") != nil ||
-		validateName(spec.TmuxSessionName, "tmux_session_name") != nil ||
-		spec.UnitName != "agent-remote-session-"+expectedDigest+".service" ||
-		spec.NetworkNamespace != "ar-"+shortDigest(spec.SessionID, 10) ||
-		spec.Username != "ar-u-"+shortDigest(spec.UserID, 12) {
-		return SessionSpec{}, errors.New("spec contains unmanaged paths")
-	}
-	if spec.DeveloperCredentialProfilePath != "" {
-		profileRoot := filepath.Join(config.AccountRoot, spec.UserID, "developer-credential-profiles")
-		if !pathInside(profileRoot, spec.DeveloperCredentialProfilePath) {
-			return SessionSpec{}, errors.New("developer credential profile path is outside managed root")
-		}
-	}
-	if spec.SSHAgentDirectory != "" && spec.SSHAgentDirectory != filepath.Join(spec.SessionRoot, "ssh-agent") {
-		return SessionSpec{}, errors.New("SSH agent directory is outside session state")
-	}
-	if spec.DeviceControlProtocolVersion != 0 {
-		expectedArgs, err := managedDeviceControlArgv(spec.SessionID, nil)
-		if err != nil || spec.DeviceControlProtocolVersion != 1 ||
-			spec.DeviceControlDirectory != filepath.Join(spec.SessionRoot, "device-control") ||
-			filepath.Clean(spec.DeviceProxyPath) != filepath.Clean(config.DeviceProxyPath) ||
-			!argumentPrefix(spec.Argv, expectedArgs) {
-			return SessionSpec{}, errors.New("spec contains invalid managed device control")
-		}
-	} else if spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "" {
-		return SessionSpec{}, errors.New("spec contains unconfigured device control paths")
-	}
-	if err := validateSpecEgoBrowserContext(config, &spec, false); err != nil {
-		return SessionSpec{}, err
-	}
-	if spec.EgoBrowserEnabled {
-		if err := validateEgoBrowserArtifacts(
-			spec.EgoBrowserWrapperPath,
-			spec.EgoBrowserWrapperVersion,
-			spec.EgoBrowserSkillPath,
-			spec.EgoBrowserSkillVersion,
-			spec.EgoBrowserSkillTreeSHA256,
-		); err != nil {
-			return SessionSpec{}, err
-		}
 	}
 	return spec, nil
 }

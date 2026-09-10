@@ -39,6 +39,8 @@ NODEJS_SOURCE="${NODEJS_SOURCE:-}"
 NODEJS_SHA256="${NODEJS_SHA256:-}"
 DEVICE_RUNTIME_ROOT="${DEVICE_RUNTIME_ROOT:-/opt/agent-remote/device}"
 EGO_BROWSER_RUNTIME_ROOT="${EGO_BROWSER_RUNTIME_ROOT:-/opt/agent-remote/ego-browser}"
+EGO_BROWSER_ENABLE="${AGENT_REMOTE_ENABLE_EGO_BROWSER:-0}"
+EGO_BROWSER_DISABLE="${AGENT_REMOTE_DISABLE_EGO_BROWSER:-0}"
 PACKAGED_ROOT=""
 WIREGUARD_INTERFACE="${AGENT_REMOTE_WIREGUARD_INTERFACE:-agent-remote}"
 WIREGUARD_ADDRESS="${AGENT_REMOTE_WIREGUARD_ADDRESS:-10.77.0.1/24}"
@@ -111,6 +113,8 @@ Options:
   --nodejs-version VALUE  Pin an official Node.js version, or use with --nodejs-source.
   --nodejs-source PATH    Pinned Node.js .tar.gz archive path or URL.
   --nodejs-sha256 HASH    Required checksum for --nodejs-source.
+  --enable-ego-browser    Explicitly enable the verified ego-browser bridge.
+  --disable-ego-browser   Explicitly disable the ego-browser bridge.
   --no-dependencies       Do not install OS packages for selected runtimes.
   --no-claude             Do not install the managed Claude runtime.
   --no-nodejs             Do not install the managed Node.js runtime.
@@ -151,6 +155,8 @@ Environment:
   NODEJS_SHA256            Same as --nodejs-sha256.
   DEVICE_RUNTIME_ROOT      Managed device proxy runtime root.
   EGO_BROWSER_RUNTIME_ROOT Managed ego-browser wrapper and Skill runtime root.
+  AGENT_REMOTE_ENABLE_EGO_BROWSER  Same as --enable-ego-browser.
+  AGENT_REMOTE_DISABLE_EGO_BROWSER Same as --disable-ego-browser.
   INSTALL_DEPENDENCIES=0     Same as --no-dependencies.
   INSTALL_CLAUDE=0           Same as --no-claude.
   INSTALL_NODEJS=0           Same as --no-nodejs.
@@ -276,6 +282,14 @@ while [ "$#" -gt 0 ]; do
       NODEJS_SHA256="${2:?--nodejs-sha256 requires a value}"
       shift 2
       ;;
+    --enable-ego-browser)
+      EGO_BROWSER_ENABLE=1
+      shift
+      ;;
+    --disable-ego-browser)
+      EGO_BROWSER_DISABLE=1
+      shift
+      ;;
     --no-dependencies)
       INSTALL_DEPENDENCIES=0
       shift
@@ -322,6 +336,10 @@ done
 
 validate_options() {
   local registration_values=0 backend
+  if [ "$EGO_BROWSER_ENABLE" = "1" ] && [ "$EGO_BROWSER_DISABLE" = "1" ]; then
+    echo "--enable-ego-browser and --disable-ego-browser are mutually exclusive" >&2
+    exit 2
+  fi
   [ -n "$SERVER_URL" ] && registration_values=$((registration_values + 1))
   [ -n "$NODE_ID" ] && registration_values=$((registration_values + 1))
   [ -n "$REGISTRATION_TOKEN" ] && registration_values=$((registration_values + 1))
@@ -1027,6 +1045,28 @@ register_node() {
   run_as_root chmod 0600 "$CONFIG_DIR/config.json"
 }
 
+sync_ego_browser_config() {
+  if [ "$(uname -s)" != "Linux" ] || [ ! -f "$CONFIG_DIR/config.json" ]; then
+    return
+  fi
+  local args
+  args=(
+    configure-ego-browser
+    --config "$CONFIG_DIR/config.json"
+    --runtime-root "$EGO_BROWSER_RUNTIME_ROOT"
+  )
+  if [ "$EGO_BROWSER_ENABLE" = "1" ]; then
+    args+=(--enable)
+  elif [ "$EGO_BROWSER_DISABLE" = "1" ]; then
+    args+=(--disable)
+  fi
+  run_as_root "$PREFIX/bin/agent-remote-node" "${args[@]}"
+  if [ "$CREATE_USER" = "1" ] && id "$USER_NAME" >/dev/null 2>&1; then
+    run_as_root chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR/config.json"
+  fi
+  run_as_root chmod 0600 "$CONFIG_DIR/config.json"
+}
+
 configure_wireguard() {
   if [ "$INSTALL_SYSTEMD" != "1" ] || [ "$(uname -s)" != "Linux" ]; then
     return
@@ -1121,6 +1161,7 @@ fi
 install_managed_claude
 install_managed_nodejs
 register_node
+sync_ego_browser_config
 configure_wireguard
 start_and_verify
 

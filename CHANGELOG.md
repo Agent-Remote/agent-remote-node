@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## Unreleased
+
+- fix(runtime): keep native session children independent of protected node config
+- fix(ego-browser): synchronize installed wrapper pins without implicit enablement
+
 ## v0.2.18 - 2026-09-09
 
 - chore(release): pin ego-browser wrapper v0.1.11 (e820663)

@@ -17,6 +17,13 @@ func TestVerifyAcceptsPinnedImmutableRuntime(t *testing.T) {
 	}
 }
 
+func TestVerifyPinnedRejectsHistoricalWrapper(t *testing.T) {
+	config, _ := prepareRuntime(t)
+	if err := VerifyPinned(config); err == nil || !strings.Contains(err.Error(), "reviewed Node pin") {
+		t.Fatalf("historical wrapper was not rejected by the Node pin: %v", err)
+	}
+}
+
 func TestVerifyRejectsArtifactDrift(t *testing.T) {
 	tests := []struct {
 		name   string

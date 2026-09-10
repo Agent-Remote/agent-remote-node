@@ -114,7 +114,7 @@ func TestProbeCapabilitiesKeepsDockerFeaturesWithoutNativeNetworkNamespace(t *te
 func TestProbeEgoBrowserRequiresVerifiedWrapperAndSkill(t *testing.T) {
 	config := EgoBrowserProbeConfig{
 		Enabled: true, WrapperPath: "/opt/agent-remote/ego-browser/current/bin/ego-browser",
-		ProtocolVersion: "ego-browser-bridge-v1", WrapperVersion: "0.1.0",
+		ProtocolVersion: "ego-browser-bridge-v1", WrapperVersion: egobrowserartifact.PinnedWrapperVersion,
 		SkillPath:       "/opt/agent-remote/ego-browser/current/skill/ego-browser",
 		SkillVersion:    egobrowserartifact.OfficialSkillVersion,
 		SkillTreeSHA256: egobrowserartifact.OfficialSkillTreeSHA256,

@@ -170,7 +170,7 @@ func safeManagedPath(value string) bool {
 }
 
 func validateEgoBrowserArtifacts(wrapperPath string, wrapperVersion string, skillPath string, skillVersion string, skillTreeSHA256 string) error {
-	return egobrowserartifact.Verify(egobrowserartifact.RuntimeConfig{
+	return egobrowserartifact.VerifyPinned(egobrowserartifact.RuntimeConfig{
 		WrapperPath: wrapperPath, WrapperVersion: wrapperVersion,
 		SkillPath: skillPath, SkillVersion: skillVersion, SkillTreeSHA256: skillTreeSHA256,
 	})
