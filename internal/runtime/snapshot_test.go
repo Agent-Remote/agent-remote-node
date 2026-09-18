@@ -114,7 +114,8 @@ func TestProbeCapabilitiesKeepsDockerFeaturesWithoutNativeNetworkNamespace(t *te
 func TestProbeEgoBrowserRequiresVerifiedWrapperAndSkill(t *testing.T) {
 	config := EgoBrowserProbeConfig{
 		Enabled: true, WrapperPath: "/opt/agent-remote/ego-browser/current/bin/ego-browser",
-		ProtocolVersion: "ego-browser-bridge-v1", WrapperVersion: egobrowserartifact.PinnedWrapperVersion,
+		ServerExecutionAdmission: true,
+		ProtocolVersion:          "ego-browser-bridge-v1", WrapperVersion: egobrowserartifact.PinnedWrapperVersion,
 		SkillPath:       "/opt/agent-remote/ego-browser/current/skill/ego-browser",
 		SkillVersion:    egobrowserartifact.OfficialSkillVersion,
 		SkillTreeSHA256: egobrowserartifact.OfficialSkillTreeSHA256,
@@ -135,6 +136,45 @@ func TestProbeEgoBrowserRequiresVerifiedWrapperAndSkill(t *testing.T) {
 	if !accepted.Supported || accepted.SkillVersion != egobrowserartifact.OfficialSkillVersion ||
 		accepted.SkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
 		t.Fatalf("verified artifact was not advertised: %#v", accepted)
+	}
+}
+
+func TestProbeEgoBrowserExecutionAdmissionIsIndependentFromEnrollment(t *testing.T) {
+	base := EgoBrowserProbeConfig{
+		Enabled:                  true,
+		ServerExecutionAdmission: true,
+		ProtocolVersion:          "ego-browser-bridge-v1",
+		WrapperVersion:           egobrowserartifact.PinnedWrapperVersion,
+		WrapperPath:              "/opt/agent-remote/ego-browser/current/bin/ego-browser",
+		SkillPath:                "/opt/agent-remote/ego-browser/current/skill/ego-browser",
+		SkillVersion:             egobrowserartifact.OfficialSkillVersion,
+		SkillTreeSHA256:          egobrowserartifact.OfficialSkillTreeSHA256,
+		MaxScriptBytes:           1 << 20,
+		MaxExecuteTimeoutMS:      120_000,
+	}
+	verify := func(egobrowserartifact.RuntimeConfig) error { return nil }
+
+	deniedEnrollment := false
+	base.ServerEnrollmentAdmission = &deniedEnrollment
+	capability := probeEgoBrowserWithVerifier(base, verify)
+	if !capability.EffectiveEnabled || !capability.NodeExecutionAllowed || !capability.Supported ||
+		len(capability.ProtocolVersions) == 0 {
+		t.Fatalf("enrollment denial incorrectly closed execution: %#v", capability)
+	}
+
+	allowedEnrollment := true
+	base.ServerEnrollmentAdmission = &allowedEnrollment
+	base.ServerExecutionAdmission = false
+	capability = probeEgoBrowserWithVerifier(base, verify)
+	if capability.EffectiveEnabled != true || capability.NodeExecutionAllowed || capability.Supported ||
+		len(capability.ProtocolVersions) != 0 || len(capability.Backends) != 0 {
+		t.Fatalf("execution denial was not fail-closed: %#v", capability)
+	}
+
+	base.ServerExecutionAdmission = true
+	capability = probeEgoBrowserWithVerifier(base, verify)
+	if !capability.NodeExecutionAllowed {
+		t.Fatalf("execution admission was not reflected in capability: %#v", capability)
 	}
 }
 

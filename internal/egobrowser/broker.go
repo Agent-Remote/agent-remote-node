@@ -37,7 +37,7 @@ import (
 
 const (
 	// ProtocolVersion is the browser bridge protocol accepted by the broker.
-	ProtocolVersion = "ego-browser-bridge-v1"
+	ProtocolVersion = egobrowserartifact.PinnedProtocolVersion
 	// InnerProtocolVersion is the encrypted request protocol advertised to wrappers.
 	InnerProtocolVersion                = "ego-browser-bridge-v1-inner"
 	defaultMaxScriptBytes               = 1 << 20
@@ -426,6 +426,9 @@ func (b *Broker) SetBindings(bindings []api.EgoBrowserBinding) error {
 	}
 	next := make(map[string]*bindingState, len(bindings))
 	for _, metadata := range bindings {
+		if err := metadata.NormalizeBindingGeneration(); err != nil {
+			return fmt.Errorf("%w: %v", ErrProtocol, err)
+		}
 		if err := b.validateBinding(metadata); err != nil {
 			return err
 		}
@@ -444,17 +447,17 @@ func (b *Broker) SetBindings(bindings []api.EgoBrowserBinding) error {
 			continue
 		}
 		// A delayed control-plane response must never move a binding backwards.
-		if fresh.metadata.Generation < old.metadata.Generation {
+		if fresh.metadata.BindingGeneration < old.metadata.BindingGeneration {
 			next[id] = old
 			continue
 		}
 		// Local terminal state is monotonic within a generation.  A stale
 		// snapshot claiming the same generation is not allowed to revive it.
-		if old.terminal && fresh.metadata.Generation <= old.terminalGeneration {
+		if old.terminal && fresh.metadata.BindingGeneration <= old.terminalGeneration {
 			next[id] = old
 			continue
 		}
-		if fresh.metadata.Generation != old.metadata.Generation {
+		if fresh.metadata.BindingGeneration != old.metadata.BindingGeneration {
 			b.clearBindingMaterialsLocked(id)
 			toClose = append(toClose, old)
 			old.terminal = false
@@ -575,7 +578,7 @@ func (b *Broker) IssuePermit(ctx context.Context, request PermitRequest) (Permit
 	if metadata.Status != "active" || metadata.LeaseHealth != "healthy" {
 		return Permit{}, ErrLeaseRenewalRequired
 	}
-	if metadata.Generation == 0 {
+	if metadata.BindingGeneration == 0 {
 		return Permit{}, fmt.Errorf("%w: generation", ErrProtocol)
 	}
 	parallelLimit := minInt(b.cfg.MaxParallelRequests, metadata.MaxParallelRequests)
@@ -618,7 +621,7 @@ func (b *Broker) IssuePermit(ctx context.Context, request PermitRequest) (Permit
 	}
 	permit := Permit{
 		BindingID:            metadata.BindingID,
-		Generation:           metadata.Generation,
+		Generation:           metadata.BindingGeneration,
 		RequestID:            requestID,
 		Sequence:             sequence,
 		ExpiresAt:            expiresAt,
@@ -635,7 +638,7 @@ func (b *Broker) IssuePermit(ctx context.Context, request PermitRequest) (Permit
 	b.permits[sequence] = &permit
 	b.active[sequence] = &activeRequest{
 		bindingID:   metadata.BindingID,
-		generation:  metadata.Generation,
+		generation:  metadata.BindingGeneration,
 		requestID:   requestID,
 		sequence:    sequence,
 		expiresAt:   expiresAt,
@@ -751,13 +754,13 @@ func (b *Broker) RevokeBinding(bindingID string, generation uint64) {
 	var state *bindingState
 	b.mu.Lock()
 	if found := b.bindings[bindingID]; found != nil {
-		if generation == 0 || found.metadata.Generation == generation {
+		if generation == 0 || found.metadata.BindingGeneration == generation {
 			state = found
 			state.metadata.Status = "revoked"
 			state.metadata.LeaseHealth = "expired"
 			state.metadata.LeaseGraceUntil = nil
 			state.terminal = true
-			state.terminalGeneration = state.metadata.Generation
+			state.terminalGeneration = state.metadata.BindingGeneration
 			b.clearBindingMaterialsLocked(bindingID)
 		}
 	}
@@ -1130,12 +1133,14 @@ func (b *Broker) renewBinding(ctx context.Context, state *bindingState) error {
 	}
 	metadata := cloneBinding(current.metadata)
 	b.mu.RUnlock()
-	if metadata.Status != "active" || metadata.Generation == 0 {
+	if metadata.Status != "active" || metadata.BindingGeneration == 0 {
 		return ErrUnavailable
 	}
 	digest := cloneStringPointer(metadata.LearningBundleDigest)
 	response, err := b.cfg.Client.RenewEgoBrowserBinding(ctx, metadata.BindingID, api.EgoBrowserNodeRenewRequest{
-		Generation: metadata.Generation, AllowlistRevision: metadata.AllowlistRevision,
+		BindingGeneration:    metadata.BindingGeneration,
+		Generation:           metadata.BindingGeneration,
+		AllowlistRevision:    metadata.AllowlistRevision,
 		LearningBundleDigest: digest,
 	})
 	if err != nil {
@@ -1146,7 +1151,7 @@ func (b *Broker) renewBinding(ctx context.Context, state *bindingState) error {
 		b.markRenewalFailureFor(state)
 		return fmt.Errorf("%w: renewal binding", ErrProtocol)
 	}
-	if response.Data.Generation != metadata.Generation || response.Data.LeaseHealth != "healthy" ||
+	if response.Data.BindingGeneration != metadata.BindingGeneration || response.Data.LeaseHealth != "healthy" ||
 		response.Data.LeaseUntil == nil || *response.Data.LeaseUntil == "" {
 		b.markRenewalFailureFor(state)
 		return fmt.Errorf("%w: renewal response", ErrProtocol)
@@ -1167,11 +1172,12 @@ func (b *Broker) renewBinding(ctx context.Context, state *bindingState) error {
 	}
 	b.mu.Lock()
 	current = b.bindings[metadata.BindingID]
-	if current == nil || current != state || current.metadata.Generation != metadata.Generation || current.metadata.Status != "active" || current.terminal {
+	if current == nil || current != state || current.metadata.BindingGeneration != metadata.BindingGeneration || current.metadata.Status != "active" || current.terminal {
 		b.mu.Unlock()
 		return ErrRevoked
 	}
-	current.metadata.Generation = response.Data.Generation
+	current.metadata.BindingGeneration = response.Data.BindingGeneration
+	current.metadata.Generation = response.Data.BindingGeneration
 	current.metadata.LeaseUntil = cloneStringPointer(response.Data.LeaseUntil)
 	current.metadata.LeaseHealth = response.Data.LeaseHealth
 	current.metadata.LeaseGraceUntil = cloneStringPointer(response.Data.LeaseGraceUntil)
@@ -1251,7 +1257,7 @@ func (b *Broker) expireBindingLocked(state *bindingState) {
 	state.metadata.LeaseHealth = "expired"
 	state.metadata.LeaseGraceUntil = nil
 	state.terminal = true
-	state.terminalGeneration = state.metadata.Generation
+	state.terminalGeneration = state.metadata.BindingGeneration
 	b.clearBindingMaterialsLocked(state.metadata.BindingID)
 }
 
@@ -1425,7 +1431,7 @@ func (b *Broker) validateForwardBinding(state *bindingState, generation uint64) 
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	current := b.bindings[state.metadata.BindingID]
-	if current == nil || current != state || current.metadata.Generation != generation {
+	if current == nil || current != state || current.metadata.BindingGeneration != generation {
 		return ErrRevoked
 	}
 	if current.metadata.Status != "active" || current.metadata.LeaseHealth != "healthy" {
@@ -1459,7 +1465,7 @@ func (b *Broker) pruneConsumedLocked(now time.Time) {
 
 func (b *Broker) validateBinding(binding api.EgoBrowserBinding) error {
 	if !validOpaqueText(binding.BindingID, 128) || !validOpaqueText(binding.ToolSessionID, 128) ||
-		binding.Generation == 0 || !validOpaqueText(binding.NodeID, 128) {
+		binding.BindingGeneration == 0 || !validOpaqueText(binding.NodeID, 128) {
 		return fmt.Errorf("%w: binding identity", ErrProtocol)
 	}
 	// The Bridge key is the only material that lets the broker wrap a request
@@ -2105,14 +2111,14 @@ func (b *Broker) ensureRelaySession(
 	ticket, err := b.cfg.Client.IssueEgoBrowserRelayTicket(
 		ctx,
 		bindingID,
-		api.EgoBrowserRelayTicketRequest{Generation: generation},
+		api.EgoBrowserRelayTicketRequest{BindingGeneration: generation, Generation: generation},
 	)
 	if err != nil {
 		return nil, err
 	}
 	if ticket.Data.Role != "wrapper" || ticket.Data.RelayBindingKind != "ego_browser" ||
 		ticket.Data.RelayPath == "" || ticket.Data.RelayTicket == "" ||
-		ticket.Data.Generation != generation {
+		ticket.Data.BindingGeneration != generation {
 		return nil, fmt.Errorf("%w: relay ticket", ErrProtocol)
 	}
 	expiresAt, err := time.Parse(time.RFC3339Nano, ticket.Data.ExpiresAt)
@@ -2204,14 +2210,14 @@ func (b *Broker) forward(ctx context.Context, bindingID string, frame []byte, pe
 	if err := b.waitForSendTurn(ctx, bindingID, request.Sequence); err != nil {
 		return nil, err
 	}
-	if err := b.validateForwardBinding(state, metadata.Generation); err != nil {
+	if err := b.validateForwardBinding(state, metadata.BindingGeneration); err != nil {
 		return nil, err
 	}
 	session, err := b.ensureRelaySession(
 		ctx,
 		state,
 		bindingID,
-		metadata.Generation,
+		metadata.BindingGeneration,
 		epoch,
 	)
 	if err != nil {
@@ -2480,10 +2486,11 @@ func controlResponse(b *Broker, messageType, toolSessionID string) controlRespon
 			continue
 		}
 		items = append(items, map[string]any{
-			"binding_id":   state.metadata.BindingID,
-			"generation":   state.metadata.Generation,
-			"status":       state.metadata.Status,
-			"lease_health": state.metadata.LeaseHealth,
+			"binding_id":         state.metadata.BindingID,
+			"generation":         state.metadata.BindingGeneration,
+			"binding_generation": state.metadata.BindingGeneration,
+			"status":             state.metadata.Status,
+			"lease_health":       state.metadata.LeaseHealth,
 		})
 	}
 	b.mu.RUnlock()

@@ -42,14 +42,14 @@ jobs:
             exit 2
           fi
           test "$GITHUB_REF" = "refs/tags/v${version}"
-          source_version=$(sed -n 's/^var DefaultVersion = "\([^"]*\)"/\1/p' internal/config/config.go)
+          source_version=$(tr -d '[:space:]' < VERSION)
           test "$source_version" = "$version"
           echo "value=${version}" >> "$GITHUB_OUTPUT"
       - name: Resolve pinned device proxy dependency
         id: device
         run: |
           set -euo pipefail
-          test "$(jq -er .schema_version release-dependencies.json)" = "3"
+          test "$(jq -er .schema_version release-dependencies.json)" = "4"
           test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
             "Agent-Remote/agent-remote-device"
           version=$(jq -er .device_proxy.version release-dependencies.json)
@@ -181,6 +181,7 @@ jobs:
           echo "EGO_BROWSER_WRAPPER_DIR=$wrapper_root" >> "$GITHUB_ENV"
       - name: Run tests
         run: |
+          python3 scripts/generate-release-policy.py --check
           go test ./...
           sudo env \
             "PATH=$PATH" \

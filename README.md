@@ -26,6 +26,20 @@ go test ./...
 go run ./cmd/agent-remote-node --help
 ```
 
+Run managed enrollment from a logged-in control workstation:
+
+```sh
+agent-remote node install --node <node-id-or-prefix>
+```
+
+The CLI authenticates the pinned Node archive with its checksum and Sigstore bundle, transfers and
+installs it over a dedicated SSH stdin, and only then issues a short-lived join code over a separate
+SSH invocation. New Nodes keep ego-browser disabled unless the administrator explicitly adds
+`--enable-ego-browser`; reinstalling an existing Node preserves its current setting.
+
+Direct `register --registration-token` is an advanced legacy compatibility path, not the normal
+enrollment flow:
+
 ```sh
 go run ./cmd/agent-remote-node register \
   --config ./config.json \
@@ -91,14 +105,14 @@ Native and Docker Sandbox receive a runtime-scoped broker capability. Docker sta
 mounts the release-pinned artifacts, refreshes the exact managed Skill tree in the account, prepends
 the wrapper directory to `PATH`, and passes the nonce only through the process environment.
 
-`register` writes the node token to the configured JSON file:
+The advanced compatibility `register` command writes the node token to the configured JSON file:
 
 ```json
 {
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.2.19",
+  "version": "",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -158,9 +172,25 @@ No public listener, Docker port publish, NAT rule, or dynamic WireGuard ACL is c
 
 For a control plane and node running on the same Docker host, set `browser_docker_network` to the control-plane Compose network (for example `agent-remote_default`). Browser containers then join that private network and the control plane reaches KasmVNC by container DNS without exposing its port on the host.
 
-## One-command Install
+## Install
 
-Create the node in the admin console, then run one command on a clean Debian 12+ or Ubuntu 22.04+ VPS:
+For the managed path, create the Node and its SSH transport in the admin console, then run this from
+the logged-in control workstation:
+
+```sh
+agent-remote node install --node <node-id-or-prefix>
+```
+
+This path authenticates and installs the release before asking the control plane for a one-time join
+code. The release archive and code use separate SSH stdin invocations. A persisted exchange ID lets
+the same command recover an interrupted enrollment without putting the code or resulting Node token
+in argv, environment variables, URLs, logs, or terminal output. The default leaves a new Node's
+ego-browser capability disabled and preserves an existing Node's setting; `--enable-ego-browser` is
+an explicit administrator intent and still requires local release verification.
+
+The direct registration-token installer remains available only for advanced legacy provisioning on
+a clean Debian 12+ or Ubuntu 22.04+ VPS. Install `cosign` first; direct downloads fail closed unless
+the release checksum and Sigstore workflow identity both verify:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
@@ -170,7 +200,7 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-This installs the dependencies required by the selected backends without upgrading packages that are already installed, configures the restricted SSH gateway, installs the managed device proxy, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. With the default `native` backend it also enables IPv4 forwarding and user namespaces, downloads Claude Code `latest` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. The default does not require KVM or Docker. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
+This compatibility path installs the dependencies required by the selected backends without upgrading packages that are already installed, configures the restricted SSH gateway, installs the managed device proxy, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. Its registration token is a short-lived secret carried in argv, so restrict this path to isolated manual maintenance and keep it out of shell history and logs. With the default `native` backend it also enables IPv4 forwarding and user namespaces, downloads Claude Code `latest` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. The default does not require KVM or Docker. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
 
 The default native dependency set also provides a consistent AI development baseline on minimal VPS images: standard shell/text/file utilities, `rg`, `jq`, Git/Git LFS/GitHub CLI, archive tools, `rsync`, Python 3 with pip and venv, SQLite, a C/C++ build toolchain, and common process/network/DNS diagnostics. The installer verifies the commands after package installation and repairs a broken `awk` alternatives link by reinstalling `gawk`. These host tools are exposed read-only inside Native sessions and do not grant additional privileges.
 
@@ -232,7 +262,7 @@ version with different bytes is rejected, and capability remains disabled if the
 or not executable.
 
 ```sh
-VERSION=0.2.19 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.

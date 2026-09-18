@@ -5,6 +5,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
 bash -n scripts/*.sh tests/*.sh
+python3 scripts/generate-release-policy.py --check
 
 unformatted="$(gofmt -l cmd internal)"
 if [[ -n "$unformatted" ]]; then

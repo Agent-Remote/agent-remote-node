@@ -214,7 +214,7 @@ func TestSessionRuntimeConfigSnapshotCarriesNonSensitivePaths(t *testing.T) {
 		EgoBrowserSkillPath:       "/srv/agent-remote/ego/current/skill/ego-browser",
 		EgoBrowserBrokerSocket:    "/run/agent-remote/ego-browser.sock",
 		EgoBrowserBrokerRoot:      "/srv/agent-remote/ego-state",
-		EgoBrowserWrapperVersion:  "0.1.11",
+		EgoBrowserWrapperVersion:  "0.1.12",
 		EgoBrowserSkillVersion:    "1.2.3",
 		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
 	}.WithDefaults()

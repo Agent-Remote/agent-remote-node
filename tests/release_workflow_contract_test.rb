@@ -68,22 +68,47 @@ end
 raise "release workflow does not check out the pinned ego-browser Skill source" unless release_ego_skill_checkout
 
 dependencies = JSON.parse(File.read(File.join(repository_root, "release-dependencies.json")))
-raise "release dependency schema is invalid" unless dependencies["schema_version"] == 3
+raise "release dependency schema is invalid" unless dependencies["schema_version"] == 4
+schema_check = %(test "$(jq -er .schema_version release-dependencies.json)" = "#{dependencies.fetch("schema_version")}")
+raise "prepare-release dependency schema check is stale" unless prepare_steps.any? { |step| step["run"]&.include?(schema_check) }
+raise "release dependency schema check is stale" unless steps.any? { |step| step["run"]&.include?(schema_check) }
 ego_wrapper = dependencies["ego_browser_wrapper"]
 raise "ego-browser wrapper repository is invalid" unless ego_wrapper&.fetch("repository", nil) == "Agent-Remote/agent-remote-ego-browser"
 raise "ego-browser wrapper version is invalid" unless ego_wrapper&.fetch("version", nil)&.match?(/\A\d+\.\d+\.\d+/)
 
-artifact_source = File.read(
-  File.join(repository_root, "internal/egobrowserartifact/artifact.go")
+generated_policy = File.read(
+  File.join(repository_root, "internal/egobrowserartifact/release_policy_generated.go")
 )
-artifact_version = artifact_source[/PinnedWrapperVersion\s*=\s*"([^"]+)"/, 1]
-raise "Go ego-browser wrapper pin does not match release-dependencies.json" unless artifact_version == ego_wrapper["version"]
+artifact_version = generated_policy[/PinnedWrapperVersion\s*=\s*"([^"]+)"/, 1]
+raise "generated Go wrapper pin does not match release-dependencies.json" unless artifact_version == ego_wrapper["version"]
+generator = File.join(repository_root, "scripts/generate-release-policy.py")
+raise "generated release policy is stale" unless system("python3", generator, "--check")
 
 example_config = JSON.parse(
   File.read(File.join(repository_root, "config.example.json"))
 )
-unless example_config["ego_browser_wrapper_version"] == ego_wrapper["version"]
-  raise "config.example.json ego-browser wrapper pin does not match release-dependencies.json"
+%w[
+  ego_browser_wrapper_version
+  ego_browser_protocol_version
+  ego_browser_skill_version
+  ego_browser_skill_tree_sha256
+].each do |field|
+  raise "config.example.json duplicates generated release policy: #{field}" unless example_config[field] == ""
+end
+raise "example config must defer the Node version to the binary" unless example_config["version"] == ""
+source_version = File.read(File.join(repository_root, "VERSION")).strip
+raise "Node VERSION is invalid" unless source_version.match?(/\A\d+\.\d+\.\d+/)
+config_source = File.read(File.join(repository_root, "internal/config/config.go"))
+raise "development Node version must not duplicate VERSION" unless config_source.include?('var DefaultVersion = "0.0.0-dev"')
+build_script = File.read(File.join(repository_root, "scripts/build-release.sh"))
+raise "release build does not read VERSION" unless build_script.include?("< VERSION")
+%w[
+  ego_browser_wrapper_version
+  ego_browser_protocol_version
+  ego_browser_skill_version
+  ego_browser_skill_tree_sha256
+].each do |field|
+  raise "release build does not materialize #{field}" unless build_script.include?(field)
 end
 
 ci_commands = ci_steps.map { |step| step["run"] }.compact.join("\n")
@@ -160,11 +185,13 @@ ego_docs.each do |name, localized_contracts|
     "1.2.3",
     "36053d07001a910cb806a15d42d00fdea1cdea3d",
     "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c",
-    "production_ready=true",
+    "release_published=false",
+    "production_ready=false",
     *localized_contracts
   ].each do |contract|
     raise "ego-browser artifact documentation is missing #{contract}" unless content.downcase.include?(contract.downcase)
   end
+  raise "unpublished ego-browser candidate is documented as production-ready" if content.downcase.include?("production_ready=true")
 end
 
 dockerfile = File.read(File.join(repository_root, "Dockerfile"))

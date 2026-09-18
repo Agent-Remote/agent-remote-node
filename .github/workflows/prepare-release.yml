@@ -46,7 +46,7 @@ jobs:
         id: device
         run: |
           set -euo pipefail
-          test "$(jq -er .schema_version release-dependencies.json)" = "3"
+          test "$(jq -er .schema_version release-dependencies.json)" = "4"
           test "$(jq -er .device_proxy.repository release-dependencies.json)" = \
             "Agent-Remote/agent-remote-device"
           version=$(jq -er .device_proxy.version release-dependencies.json)

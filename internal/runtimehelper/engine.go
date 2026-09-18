@@ -155,7 +155,7 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 		c.EgoBrowserBrokerRoot = "/var/lib/agent-remote-node/ego-browser"
 	}
 	if c.EgoBrowserProtocolVersion == "" {
-		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
+		c.EgoBrowserProtocolVersion = egobrowserartifact.PinnedProtocolVersion
 	}
 	if c.EgoBrowserWrapperVersion == "" {
 		c.EgoBrowserWrapperVersion = egobrowserartifact.PinnedWrapperVersion
@@ -164,10 +164,10 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 		c.EgoBrowserSkillPath = "/opt/agent-remote/ego-browser/current/skill/ego-browser"
 	}
 	if c.EgoBrowserSkillVersion == "" {
-		c.EgoBrowserSkillVersion = "1.2.3"
+		c.EgoBrowserSkillVersion = egobrowserartifact.OfficialSkillVersion
 	}
 	if c.EgoBrowserSkillTreeSHA256 == "" {
-		c.EgoBrowserSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
+		c.EgoBrowserSkillTreeSHA256 = egobrowserartifact.OfficialSkillTreeSHA256
 	}
 	if c.WireGuardInterface == "" {
 		c.WireGuardInterface = "agent-remote"

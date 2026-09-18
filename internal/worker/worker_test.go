@@ -964,6 +964,42 @@ func TestDockerSessionReceivesRuntimeScopedEgoBrowserCapability(t *testing.T) {
 	}
 }
 
+func TestWorkerKeepsEgoBrowserExecutionIndependentFromEnrollment(t *testing.T) {
+	brokerRoot := t.TempDir()
+	if err := os.Chmod(brokerRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	w := New(config.Config{
+		NodeID: "node_1", EgoBrowserEnabled: true, EgoBrowserBrokerRoot: brokerRoot,
+		EgoBrowserBrokerSocket: t.TempDir() + "/broker.sock",
+	}.WithDefaults(), api.Client{}, nil)
+	if w.browserBroker == nil || w.brokerErr != nil {
+		t.Fatalf("browser broker initialization failed: %v", w.brokerErr)
+	}
+	defer w.browserBroker.Close()
+	w.serverExecutionAdmission.Store(true)
+	w.serverEnrollmentAdmission.Store(false)
+	w.serverEnrollmentKnown.Store(true)
+	payload := map[string]any{
+		"session_id": "session_1", "tool_type": "claude",
+		"ego_browser_broker_nonce": "task-controlled-nonce",
+	}
+	registration, err := w.applyEgoBrowserRuntimeContext(payload, "start_session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if registration == nil || !registration.created {
+		t.Fatalf("enrollment denial incorrectly blocked an admitted session: %#v", registration)
+	}
+	if payload["ego_browser_enabled"] != true || payload["ego_browser_broker_nonce"] == "" {
+		t.Fatalf("ego-browser context was not injected under execution admission: %#v", payload)
+	}
+	probe := w.egoBrowserProbeConfig()
+	if probe.ServerEnrollmentAdmission == nil || *probe.ServerEnrollmentAdmission {
+		t.Fatalf("probe did not retain enrollment denial: %#v", probe)
+	}
+}
+
 func TestTrustedRuntimeUIDAuthorizesEgoBrowserSessionPeer(t *testing.T) {
 	runtimeSocket, operations := startRuntimeHelperStub(t, map[string]any{
 		"status": "running", "session_id": "session_1", "runtime_backend": "native",

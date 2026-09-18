@@ -18,20 +18,6 @@ import (
 	"syscall"
 )
 
-const (
-	// PinnedWrapperVersion is the reviewed Linux ego-browser wrapper release
-	// embedded by the current Node release.
-	PinnedWrapperVersion = "0.1.11"
-	// OfficialSkillVersion is the reviewed upstream ego-browser Skill release.
-	OfficialSkillVersion = "1.2.3"
-	// OfficialSkillSourceCommit pins the reviewed upstream ego-lite tree.
-	OfficialSkillSourceCommit = "36053d07001a910cb806a15d42d00fdea1cdea3d"
-	// OfficialSkillDocumentSHA256 pins the reviewed upstream SKILL.md bytes.
-	OfficialSkillDocumentSHA256 = "44c119634df847861486c3b104cda3c2faa9dd4c71dbb3a854429098be962293"
-	// OfficialSkillTreeSHA256 pins every path and byte in the official Skill tree.
-	OfficialSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
-)
-
 // RuntimeConfig identifies one expected immutable ego-browser release.
 type RuntimeConfig struct {
 	WrapperPath     string
@@ -159,9 +145,9 @@ func verifySourceManifest(releaseRoot string, config RuntimeConfig, requireRootO
 	if err := json.Unmarshal(data, &manifest); err != nil {
 		return errors.New("ego-browser Skill source manifest JSON is invalid")
 	}
-	if manifest.SchemaVersion != 1 || manifest.Name != "ego-browser" ||
+	if manifest.SchemaVersion != 1 || manifest.Name != OfficialSkillName ||
 		manifest.Version != config.SkillVersion || manifest.Version != OfficialSkillVersion ||
-		manifest.UpstreamRepository != "https://github.com/citrolabs/ego-lite" ||
+		manifest.UpstreamRepository != OfficialSkillUpstreamRepository ||
 		manifest.UpstreamTag != "v"+OfficialSkillVersion ||
 		manifest.UpstreamCommit != OfficialSkillSourceCommit ||
 		manifest.SkillDocumentSHA256 != OfficialSkillDocumentSHA256 ||

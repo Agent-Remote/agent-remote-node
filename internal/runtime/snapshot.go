@@ -21,15 +21,21 @@ var deviceControlCapabilitiesV2 = devicecontrol.SupportedV2Capabilities()
 
 // EgoBrowserProbeConfig describes the optional remote wrapper installation.
 type EgoBrowserProbeConfig struct {
-	Enabled             bool
-	WrapperPath         string
-	ProtocolVersion     string
-	WrapperVersion      string
-	SkillPath           string
-	SkillVersion        string
-	SkillTreeSHA256     string
-	MaxScriptBytes      int
-	MaxExecuteTimeoutMS int
+	Enabled bool
+	// ServerExecutionAdmission is the latest Server execution decision.
+	ServerExecutionAdmission bool
+	// ServerExecutionAdmissionKnown reports whether the Server sent that decision.
+	ServerExecutionAdmissionKnown bool
+	// ServerEnrollmentAdmission is nil when the Server omits the independent gate.
+	ServerEnrollmentAdmission *bool
+	WrapperPath               string
+	ProtocolVersion           string
+	WrapperVersion            string
+	SkillPath                 string
+	SkillVersion              string
+	SkillTreeSHA256           string
+	MaxScriptBytes            int
+	MaxExecuteTimeoutMS       int
 }
 
 // Snapshot captures node status, including optional ego-browser capability metadata.
@@ -139,15 +145,16 @@ func probeEgoBrowser(config EgoBrowserProbeConfig) api.EgoBrowserBridgeCapabilit
 
 func probeEgoBrowserWithVerifier(config EgoBrowserProbeConfig, verify func(egobrowserartifact.RuntimeConfig) error) api.EgoBrowserBridgeCapability {
 	result := api.EgoBrowserBridgeCapability{
-		ProtocolVersions: []string{},
-		Backends:         []string{},
-		RemotePlatform:   "linux",
-		LocalPlatform:    "macos",
+		ProtocolVersions:  []string{},
+		Backends:          []string{},
+		RemotePlatform:    "linux",
+		LocalPlatform:     "macos",
+		ConfiguredEnabled: config.Enabled,
 	}
 	if !config.Enabled {
 		return result
 	}
-	if config.ProtocolVersion != "ego-browser-bridge-v1" {
+	if config.ProtocolVersion != egobrowserartifact.PinnedProtocolVersion {
 		return result
 	}
 	if config.WrapperVersion != egobrowserartifact.PinnedWrapperVersion ||
@@ -158,6 +165,12 @@ func probeEgoBrowserWithVerifier(config EgoBrowserProbeConfig, verify func(egobr
 		WrapperPath: config.WrapperPath, WrapperVersion: config.WrapperVersion,
 		SkillPath: config.SkillPath, SkillVersion: config.SkillVersion, SkillTreeSHA256: config.SkillTreeSHA256,
 	}); err != nil {
+		return result
+	}
+	result.EffectiveEnabled = true
+	result.NodeExecutionAllowed = config.ServerExecutionAdmission
+	// Never advertise executable capabilities without Server admission.
+	if !result.NodeExecutionAllowed {
 		return result
 	}
 	result.Supported = true

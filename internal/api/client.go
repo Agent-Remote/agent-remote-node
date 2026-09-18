@@ -73,6 +73,40 @@ type RegisterNodeResponse struct {
 	RequestID string `json:"request_id"`
 }
 
+// JoinCodeExchangeRequest exchanges a short-lived code for a node credential.
+type JoinCodeExchangeRequest struct {
+	NodeID            string `json:"node_id,omitempty"`
+	Version           string `json:"version"`
+	JoinCode          string `json:"join_code,omitempty"`
+	ExchangeID        string `json:"exchange_id"`
+	EgoBrowserEnabled *bool  `json:"ego_browser_enabled,omitempty"`
+	ReleaseProfile    string `json:"release_profile,omitempty"`
+	WrapperVersion    string `json:"wrapper_version,omitempty"`
+	SkillVersion      string `json:"skill_version,omitempty"`
+	RuntimeVersion    string `json:"runtime_version,omitempty"`
+	ArtifactDigest    string `json:"artifact_digest,omitempty"`
+	ProfileDigest     string `json:"profile_digest,omitempty"`
+}
+
+// JoinCodeExchangeResponse contains node metadata and a one-time credential.
+type JoinCodeExchangeResponse struct {
+	Data struct {
+		NodeID            string `json:"node_id"`
+		NodeToken         string `json:"node_token"`
+		EgoBrowserEnabled bool   `json:"ego_browser_enabled"`
+		ExchangeID        string `json:"exchange_id"`
+		ServerOrigin      string `json:"server_origin"`
+		ReleaseProfile    string `json:"release_profile"`
+		WrapperVersion    string `json:"wrapper_version"`
+		SkillVersion      string `json:"skill_version"`
+		RuntimeVersion    string `json:"runtime_version"`
+		ArtifactDigest    string `json:"artifact_digest"`
+		ProfileDigest     string `json:"profile_digest"`
+		EgoBrowserIntent  *bool  `json:"ego_browser_enabled_intent,omitempty"`
+	} `json:"data"`
+	RequestID string `json:"request_id"`
+}
+
 // HeartbeatRequest is the node heartbeat payload.
 type HeartbeatRequest struct {
 	NodeID             string         `json:"node_id"`
@@ -83,6 +117,15 @@ type HeartbeatRequest struct {
 	WireGuardEndpoint  string         `json:"wireguard_endpoint,omitempty"`
 	Resources          ResourceStatus `json:"resources"`
 	Runtime            RuntimeStatus  `json:"runtime"`
+}
+
+// HeartbeatResponse carries optional admission data from newer servers.
+type HeartbeatResponse struct {
+	Data struct {
+		EnrollmentEnabled  *bool `json:"enrollment_enabled,omitempty"`
+		ExecutionAdmission *bool `json:"execution_admission,omitempty"`
+	} `json:"data,omitempty"`
+	RequestID string `json:"request_id,omitempty"`
 }
 
 // WireGuardPeer is a device peer applied to the node interface.
@@ -133,16 +176,19 @@ type RuntimeCapabilities struct {
 
 // EgoBrowserBridgeCapability describes the Linux wrapper available to a Node broker.
 type EgoBrowserBridgeCapability struct {
-	Supported           bool     `json:"supported"`
-	ProtocolVersions    []string `json:"protocol_versions"`
-	Backends            []string `json:"backends"`
-	WrapperVersion      string   `json:"wrapper_version,omitempty"`
-	SkillVersion        string   `json:"skill_version,omitempty"`
-	SkillTreeSHA256     string   `json:"skill_tree_sha256,omitempty"`
-	RemotePlatform      string   `json:"remote_platform,omitempty"`
-	LocalPlatform       string   `json:"local_platform,omitempty"`
-	MaxScriptBytes      int      `json:"max_script_bytes,omitempty"`
-	MaxExecuteTimeoutMS int      `json:"max_execute_timeout_ms,omitempty"`
+	Supported            bool     `json:"supported"`
+	ConfiguredEnabled    bool     `json:"configured_enabled"`
+	EffectiveEnabled     bool     `json:"effective_enabled"`
+	NodeExecutionAllowed bool     `json:"node_execution_allowed"`
+	ProtocolVersions     []string `json:"protocol_versions"`
+	Backends             []string `json:"backends"`
+	WrapperVersion       string   `json:"wrapper_version,omitempty"`
+	SkillVersion         string   `json:"skill_version,omitempty"`
+	SkillTreeSHA256      string   `json:"skill_tree_sha256,omitempty"`
+	RemotePlatform       string   `json:"remote_platform,omitempty"`
+	LocalPlatform        string   `json:"local_platform,omitempty"`
+	MaxScriptBytes       int      `json:"max_script_bytes,omitempty"`
+	MaxExecuteTimeoutMS  int      `json:"max_execute_timeout_ms,omitempty"`
 }
 
 // SessionPortForwardingCapability describes the tunnel protocols and runtime backends the node can safely serve.
@@ -188,15 +234,18 @@ type EgoBrowserBinding struct {
 	BindingID          string `json:"binding_id"`
 	EgoBrowserDeviceID string `json:"ego_browser_device_id"`
 	// EncryptionPublicKey is the Bridge's independent X25519 public key.
-	EncryptionPublicKey           string   `json:"encryption_public_key"`
-	ToolSessionID                 string   `json:"tool_session_id"`
-	NodeID                        string   `json:"node_id"`
-	Status                        string   `json:"status"`
-	ControlChannel                string   `json:"control_channel"`
-	RelayBindingKind              string   `json:"relay_binding_kind"`
-	AuthorizationMode             string   `json:"authorization_mode"`
-	AuthorizationPolicyVersion    int      `json:"authorization_policy_version"`
-	Generation                    uint64   `json:"generation"`
+	EncryptionPublicKey        string `json:"encryption_public_key"`
+	ToolSessionID              string `json:"tool_session_id"`
+	NodeID                     string `json:"node_id"`
+	Status                     string `json:"status"`
+	ControlChannel             string `json:"control_channel"`
+	RelayBindingKind           string `json:"relay_binding_kind"`
+	AuthorizationMode          string `json:"authorization_mode"`
+	AuthorizationPolicyVersion int    `json:"authorization_policy_version"`
+	// BindingGeneration is the canonical remote binding generation.
+	BindingGeneration uint64 `json:"binding_generation,omitempty"`
+	// Generation is the legacy wire alias for BindingGeneration.
+	Generation                    uint64   `json:"generation,omitempty"`
 	ReleaseProfile                string   `json:"release_profile"`
 	SignerCertificateSHA256       string   `json:"signer_certificate_sha256"`
 	CredentialProfile             string   `json:"credential_profile"`
@@ -221,6 +270,79 @@ type EgoBrowserBinding struct {
 	AbsoluteTTLUntil              string   `json:"absolute_ttl_until"`
 }
 
+// normalizeBindingGeneration rejects conflicting canonical and legacy values.
+func normalizeBindingGeneration(explicit, legacy uint64) (uint64, error) {
+	if explicit != 0 && legacy != 0 && explicit != legacy {
+		return 0, errors.New("binding_generation and generation disagree")
+	}
+	if explicit != 0 {
+		return explicit, nil
+	}
+	return legacy, nil
+}
+
+func bindingGenerationFromJSON(data []byte) (uint64, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return 0, err
+	}
+	decode := func(name string) (uint64, bool, error) {
+		raw, present := fields[name]
+		if !present {
+			return 0, false, nil
+		}
+		if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return 0, true, fmt.Errorf("%s must be a positive integer", name)
+		}
+		var value uint64
+		if err := json.Unmarshal(raw, &value); err != nil || value == 0 {
+			return 0, true, fmt.Errorf("%s must be a positive integer", name)
+		}
+		return value, true, nil
+	}
+	explicit, _, err := decode("binding_generation")
+	if err != nil {
+		return 0, err
+	}
+	legacy, _, err := decode("generation")
+	if err != nil {
+		return 0, err
+	}
+	return normalizeBindingGeneration(explicit, legacy)
+}
+
+// UnmarshalJSON synchronizes canonical and legacy binding generations.
+func (value *EgoBrowserBinding) UnmarshalJSON(data []byte) error {
+	type plain EgoBrowserBinding
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	generation, err := bindingGenerationFromJSON(data)
+	if err != nil {
+		return err
+	}
+	if generation != 0 {
+		decoded.BindingGeneration = generation
+		decoded.Generation = generation
+	}
+	*value = EgoBrowserBinding(decoded)
+	return nil
+}
+
+// NormalizeBindingGeneration validates canonical and legacy generations.
+func (value *EgoBrowserBinding) NormalizeBindingGeneration() error {
+	generation, err := normalizeBindingGeneration(value.BindingGeneration, value.Generation)
+	if err != nil {
+		return err
+	}
+	if generation != 0 {
+		value.BindingGeneration = generation
+		value.Generation = generation
+	}
+	return nil
+}
+
 // EgoBrowserBindingListResponse is the Node binding metadata response.
 type EgoBrowserBindingListResponse struct {
 	Data struct {
@@ -237,21 +359,55 @@ type EgoBrowserNodeBindingListResponse = EgoBrowserBindingListResponse
 
 // EgoBrowserRelayTicketRequest requests one short-lived wrapper relay ticket.
 type EgoBrowserRelayTicketRequest struct {
-	Generation         uint64  `json:"generation"`
+	BindingGeneration  uint64  `json:"binding_generation,omitempty"`
+	Generation         uint64  `json:"generation,omitempty"`
 	Role               string  `json:"role,omitempty"`
 	EgoBrowserDeviceID *string `json:"ego_browser_device_id,omitempty"`
 	ProofChallenge     *string `json:"proof_challenge,omitempty"`
 	ProofSignature     *string `json:"proof_signature,omitempty"`
 }
 
+func (value EgoBrowserRelayTicketRequest) normalized() (EgoBrowserRelayTicketRequest, error) {
+	generation, err := normalizeBindingGeneration(value.BindingGeneration, value.Generation)
+	if err != nil {
+		return value, err
+	}
+	if generation == 0 {
+		return value, errors.New("binding generation is required")
+	}
+	value.BindingGeneration = generation
+	value.Generation = generation
+	return value, nil
+}
+
 // EgoBrowserRelayTicket contains one-time relay connection material.
 type EgoBrowserRelayTicket struct {
-	Role             string `json:"role"`
-	Generation       uint64 `json:"generation"`
-	RelayBindingKind string `json:"relay_binding_kind"`
-	RelayPath        string `json:"relay_path"`
-	RelayTicket      string `json:"relay_ticket"`
-	ExpiresAt        string `json:"expires_at"`
+	Role              string `json:"role"`
+	BindingGeneration uint64 `json:"binding_generation,omitempty"`
+	Generation        uint64 `json:"generation,omitempty"`
+	RelayBindingKind  string `json:"relay_binding_kind"`
+	RelayPath         string `json:"relay_path"`
+	RelayTicket       string `json:"relay_ticket"`
+	ExpiresAt         string `json:"expires_at"`
+}
+
+// UnmarshalJSON synchronizes canonical and legacy generations.
+func (value *EgoBrowserRelayTicket) UnmarshalJSON(data []byte) error {
+	type plain EgoBrowserRelayTicket
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	generation, err := bindingGenerationFromJSON(data)
+	if err != nil {
+		return err
+	}
+	if generation != 0 {
+		decoded.BindingGeneration = generation
+		decoded.Generation = generation
+	}
+	*value = EgoBrowserRelayTicket(decoded)
+	return nil
 }
 
 // EgoBrowserRelayTicketResponse wraps one-time relay connection material.
@@ -262,9 +418,53 @@ type EgoBrowserRelayTicketResponse struct {
 
 // EgoBrowserNodeRenewRequest reports the broker's current capability revision.
 type EgoBrowserNodeRenewRequest struct {
-	Generation           uint64  `json:"generation"`
+	BindingGeneration    uint64  `json:"binding_generation,omitempty"`
+	Generation           uint64  `json:"generation,omitempty"`
 	AllowlistRevision    uint64  `json:"allowlist_revision"`
 	LearningBundleDigest *string `json:"learning_bundle_digest"`
+}
+
+func (value EgoBrowserNodeRenewRequest) normalized() (EgoBrowserNodeRenewRequest, error) {
+	generation, err := normalizeBindingGeneration(value.BindingGeneration, value.Generation)
+	if err != nil {
+		return value, err
+	}
+	if generation == 0 {
+		return value, errors.New("binding generation is required")
+	}
+	value.BindingGeneration = generation
+	value.Generation = generation
+	return value, nil
+}
+
+// EgoBrowserNodeRenewData contains renewed lease metadata.
+type EgoBrowserNodeRenewData struct {
+	BindingID         string  `json:"binding_id"`
+	BindingGeneration uint64  `json:"binding_generation,omitempty"`
+	Generation        uint64  `json:"generation,omitempty"`
+	LeaseUntil        *string `json:"lease_until"`
+	LeaseHealth       string  `json:"lease_health"`
+	LeaseGraceUntil   *string `json:"lease_grace_until"`
+	AbsoluteTTLUntil  string  `json:"absolute_ttl_until"`
+}
+
+// UnmarshalJSON synchronizes canonical and legacy generations.
+func (value *EgoBrowserNodeRenewData) UnmarshalJSON(data []byte) error {
+	type plain EgoBrowserNodeRenewData
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	generation, err := bindingGenerationFromJSON(data)
+	if err != nil {
+		return err
+	}
+	if generation != 0 {
+		decoded.BindingGeneration = generation
+		decoded.Generation = generation
+	}
+	*value = EgoBrowserNodeRenewData(decoded)
+	return nil
 }
 
 // EgoBrowserRenewRequest is a short alias for the Node renewal payload.
@@ -272,15 +472,8 @@ type EgoBrowserRenewRequest = EgoBrowserNodeRenewRequest
 
 // EgoBrowserNodeRenewResponse contains the renewed lease metadata.
 type EgoBrowserNodeRenewResponse struct {
-	Data struct {
-		BindingID        string  `json:"binding_id"`
-		Generation       uint64  `json:"generation"`
-		LeaseUntil       *string `json:"lease_until"`
-		LeaseHealth      string  `json:"lease_health"`
-		LeaseGraceUntil  *string `json:"lease_grace_until"`
-		AbsoluteTTLUntil string  `json:"absolute_ttl_until"`
-	} `json:"data"`
-	RequestID string `json:"request_id"`
+	Data      EgoBrowserNodeRenewData `json:"data"`
+	RequestID string                  `json:"request_id"`
 }
 
 // EgoBrowserRenewResponse is a short alias for the Node renewal response.
@@ -431,9 +624,30 @@ func (c Client) RegisterNode(ctx context.Context, request RegisterNodeRequest) (
 	return response, err
 }
 
+// ExchangeJoinCode performs a one-time, idempotent node enrollment exchange.
+func (c Client) ExchangeJoinCode(ctx context.Context, request JoinCodeExchangeRequest) (JoinCodeExchangeResponse, error) {
+	var response JoinCodeExchangeResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/join-code/exchange", request, &response, false)
+	return response, err
+}
+
 // SendHeartbeat submits a node heartbeat.
 func (c Client) SendHeartbeat(ctx context.Context, request HeartbeatRequest) error {
-	return c.do(ctx, http.MethodPost, "/api/v1/node-api/heartbeat", request, nil, true)
+	_, err := c.SendHeartbeatResponse(ctx, request)
+	return err
+}
+
+// SendHeartbeatResponse submits a heartbeat and returns optional admission data.
+func (c Client) SendHeartbeatResponse(ctx context.Context, request HeartbeatRequest) (HeartbeatResponse, error) {
+	var response HeartbeatResponse
+	if err := c.do(ctx, http.MethodPost, "/api/v1/node-api/heartbeat", request, &response, true); err != nil {
+		// Legacy servers acknowledge heartbeats with an empty 2xx response.
+		if err.Error() == "EOF" || strings.Contains(err.Error(), "unexpected end of JSON input") {
+			return HeartbeatResponse{}, nil
+		}
+		return HeartbeatResponse{}, err
+	}
+	return response, nil
 }
 
 // ListWireGuardPeers returns active device peers for node synchronization.
@@ -565,13 +779,23 @@ func (c Client) IssueEgoBrowserRelayTicket(ctx context.Context, bindingID string
 	if bindingID == "" {
 		return response, errors.New("ego-browser binding ID is required")
 	}
+	request, err := request.normalized()
+	if err != nil {
+		return response, err
+	}
 	// A Node may only represent the remote wrapper role.  Do not let task data
 	// select the local Bridge role or submit a second device identity.
 	request.Role = "wrapper"
 	request.EgoBrowserDeviceID = nil
 	request.ProofChallenge = nil
 	request.ProofSignature = nil
-	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/ego-browser/bindings/"+url.PathEscape(bindingID)+"/relay-ticket", request, &response, true)
+	path := "/api/v1/node-api/ego-browser/bindings/" + url.PathEscape(bindingID) + "/relay-ticket"
+	err = c.do(ctx, http.MethodPost, path, request, &response, true)
+	if shouldRetryLegacyBindingGeneration(err, request.BindingGeneration) {
+		legacy := request
+		legacy.BindingGeneration = 0
+		err = c.do(ctx, http.MethodPost, path, legacy, &response, true)
+	}
 	return response, err
 }
 
@@ -581,8 +805,30 @@ func (c Client) RenewEgoBrowserBinding(ctx context.Context, bindingID string, re
 	if bindingID == "" {
 		return response, errors.New("ego-browser binding ID is required")
 	}
-	err := c.do(ctx, http.MethodPost, "/api/v1/node-api/ego-browser/bindings/"+url.PathEscape(bindingID)+"/renew", request, &response, true)
+	request, err := request.normalized()
+	if err != nil {
+		return response, err
+	}
+	path := "/api/v1/node-api/ego-browser/bindings/" + url.PathEscape(bindingID) + "/renew"
+	err = c.do(ctx, http.MethodPost, path, request, &response, true)
+	if shouldRetryLegacyBindingGeneration(err, request.BindingGeneration) {
+		legacy := request
+		legacy.BindingGeneration = 0
+		err = c.do(ctx, http.MethodPost, path, legacy, &response, true)
+	}
 	return response, err
+}
+
+func shouldRetryLegacyBindingGeneration(err error, explicitGeneration uint64) bool {
+	if err == nil || explicitGeneration == 0 {
+		return false
+	}
+	var httpError *HTTPError
+	if !errors.As(err, &httpError) {
+		return false
+	}
+	// Retry only validation failures from servers predating the explicit field.
+	return httpError.StatusCode == http.StatusBadRequest || httpError.StatusCode == http.StatusUnprocessableEntity
 }
 
 // OpenEgoBrowserRelay consumes a wrapper ticket and opens the fixed binary relay path.
@@ -674,6 +920,10 @@ func (c Client) do(ctx context.Context, method string, path string, payload any,
 		}
 	}
 	if out == nil {
+		return nil
+	}
+	// Legacy control planes acknowledge heartbeats with an empty 2xx body.
+	if len(bytes.TrimSpace(data)) == 0 {
 		return nil
 	}
 	return decodeResponseJSON(data, out)

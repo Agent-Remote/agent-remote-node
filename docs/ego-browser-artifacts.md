@@ -3,7 +3,7 @@
 The Node release carries two separate, pinned inputs for remote browser work:
 
 - the Linux `ego-browser` wrapper from `Agent-Remote/agent-remote-ego-browser`
-  release `0.1.11`;
+  candidate `0.1.12`;
 - the official `ego-browser` Skill `1.2.3` from `citrolabs/ego-lite` commit
   `36053d07001a910cb806a15d42d00fdea1cdea3d`.
 
@@ -139,10 +139,12 @@ old tickets, permits, and generations must be discarded. Scripts with unknown
 results are never replayed.
 
 Wrapper installation does not by itself authorize the end-to-end capability.
-The local Bridge `0.1.11` release declares `production_ready=true` with its
-retained Site Learning evidence, but the Server capability must remain disabled
-until the root evidence records the exact Node/Bridge composition and all
-artifact-bound canaries pass.
+The prior `0.1.11` release evidence cannot authenticate the `0.1.12` candidate.
+The Server capability must remain disabled until `0.1.12` is published through
+the pinned workflow, the root evidence records the exact Node/Bridge
+composition, and all artifact-bound canaries pass.
+Until those gates pass, the candidate is `release_published=false` and
+`production_ready=false`.
 
 Native session specs include a root-generated snapshot of the non-sensitive paths and artifact pins
 needed by the supervisor. The dynamic session user no longer opens the owner-only Node config while

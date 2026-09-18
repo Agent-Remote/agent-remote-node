@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 )
 
 const (
@@ -24,14 +26,6 @@ const (
 	deviceBrowserReferencePath     = deviceSkillReferencesDirectory + "/browser.md"
 	egoBrowserSkillDirectory       = ".claude/skills/ego-browser"
 	egoBrowserEmbeddedRoot         = "skills/ego-browser"
-	// EgoBrowserSkillVersion is the exact reviewed upstream Skill release.
-	EgoBrowserSkillVersion = "1.2.3"
-	// EgoBrowserSkillSourceCommit pins the upstream tree used by this Node release.
-	EgoBrowserSkillSourceCommit = "36053d07001a910cb806a15d42d00fdea1cdea3d"
-	// EgoBrowserSkillDocumentSHA256 pins the upstream SKILL.md bytes.
-	EgoBrowserSkillDocumentSHA256 = "44c119634df847861486c3b104cda3c2faa9dd4c71dbb3a854429098be962293"
-	// EgoBrowserSkillTreeSHA256 pins every path and byte in the managed Skill tree.
-	EgoBrowserSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
 )
 
 //go:embed skills/agent-remote-device/SKILL.md
@@ -59,7 +53,7 @@ type Ownership struct {
 func InstallClaude(accountPath string, ownership *Ownership) error {
 	egoBrowserFiles, err := verifiedEgoBrowserSkillFiles()
 	if err != nil {
-		return fmt.Errorf("verify official ego-browser Skill %s: %w", EgoBrowserSkillVersion, err)
+		return fmt.Errorf("verify official ego-browser Skill %s: %w", egobrowserartifact.OfficialSkillVersion, err)
 	}
 	root, err := os.OpenRoot(accountPath)
 	if err != nil {
@@ -140,10 +134,10 @@ func verifiedEgoBrowserSkillFiles() ([]managedFile, error) {
 		return nil, errors.New("official Skill document is missing")
 	}
 	documentDigest := sha256.Sum256(document.content)
-	if hex.EncodeToString(documentDigest[:]) != EgoBrowserSkillDocumentSHA256 {
+	if hex.EncodeToString(documentDigest[:]) != egobrowserartifact.OfficialSkillDocumentSHA256 {
 		return nil, errors.New("official Skill document digest mismatch")
 	}
-	if hex.EncodeToString(treeDigest.Sum(nil)) != EgoBrowserSkillTreeSHA256 {
+	if hex.EncodeToString(treeDigest.Sum(nil)) != egobrowserartifact.OfficialSkillTreeSHA256 {
 		return nil, errors.New("official Skill tree digest mismatch")
 	}
 	return files, nil

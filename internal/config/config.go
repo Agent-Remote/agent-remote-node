@@ -15,7 +15,7 @@ import (
 )
 
 // DefaultVersion is overridden by release builds through Go ldflags.
-var DefaultVersion = "0.2.19"
+var DefaultVersion = "0.0.0-dev"
 
 // Config contains local node runtime settings.
 type Config struct {
@@ -60,12 +60,30 @@ type Config struct {
 	EgoBrowserMaxParallelRequests  int      `json:"ego_browser_max_parallel_requests"`
 	EgoBrowserMaxScriptBytes       int      `json:"ego_browser_max_script_bytes"`
 	EgoBrowserMaxExecuteTimeoutMS  int      `json:"ego_browser_max_execute_timeout_ms"`
-	WireGuardInterface             string   `json:"wireguard_interface"`
-	WireGuardPrivateKeyPath        string   `json:"wireguard_private_key_path"`
-	WireGuardAddress               string   `json:"wireguard_address"`
-	WireGuardPublicKey             string   `json:"wireguard_public_key"`
-	WireGuardEndpoint              string   `json:"wireguard_endpoint"`
-	WireGuardListenPort            int      `json:"wireguard_listen_port"`
+	// egoBrowserEnabledSet distinguishes a missing legacy field from false.
+	egoBrowserEnabledSet    bool   `json:"-"`
+	WireGuardInterface      string `json:"wireguard_interface"`
+	WireGuardPrivateKeyPath string `json:"wireguard_private_key_path"`
+	WireGuardAddress        string `json:"wireguard_address"`
+	WireGuardPublicKey      string `json:"wireguard_public_key"`
+	WireGuardEndpoint       string `json:"wireguard_endpoint"`
+	WireGuardListenPort     int    `json:"wireguard_listen_port"`
+}
+
+// UnmarshalJSON migrates a missing ego_browser_enabled value to false.
+func (c *Config) UnmarshalJSON(data []byte) error {
+	type plain Config
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	*c = Config(decoded)
+	_, c.egoBrowserEnabledSet = fields["ego_browser_enabled"]
+	return nil
 }
 
 // WithDefaults fills optional config values.
@@ -140,7 +158,7 @@ func (c Config) WithDefaults() Config {
 		c.EgoBrowserBrokerRoot = "/var/lib/agent-remote-node/ego-browser"
 	}
 	if c.EgoBrowserProtocolVersion == "" {
-		c.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
+		c.EgoBrowserProtocolVersion = egobrowserartifact.PinnedProtocolVersion
 	}
 	if c.EgoBrowserWrapperVersion == "" {
 		c.EgoBrowserWrapperVersion = egobrowserartifact.PinnedWrapperVersion
@@ -183,6 +201,12 @@ func (c Config) WithDefaults() Config {
 	}
 	return c
 }
+
+// EgoBrowserConfiguredEnabled reports the administrator's persisted intent.
+func (c Config) EgoBrowserConfiguredEnabled() bool { return c.EgoBrowserEnabled }
+
+// MarkEgoBrowserEnabledConfigured marks an explicit enable/disable mutation.
+func (c *Config) MarkEgoBrowserEnabledConfigured() { c.egoBrowserEnabledSet = true }
 
 // Validate checks required config values and the current managed artifact pins.
 func (c Config) Validate(requireToken bool) error {
@@ -239,7 +263,7 @@ func (c Config) validate(requireToken bool, allowStaleWrapper bool) error {
 		seenBackends[backend] = true
 	}
 	if c.EgoBrowserEnabled {
-		if c.EgoBrowserProtocolVersion != "ego-browser-bridge-v1" {
+		if c.EgoBrowserProtocolVersion != egobrowserartifact.PinnedProtocolVersion {
 			return errors.New("ego_browser_protocol_version is unsupported")
 		}
 		if !validEgoBrowserVersion(c.EgoBrowserWrapperVersion) {
@@ -319,6 +343,10 @@ func load(path string, allowStaleWrapper bool) (Config, error) {
 		return Config{}, err
 	}
 	cfg = cfg.WithDefaults()
+	if !cfg.egoBrowserEnabledSet {
+		// Only deserialized documents can represent the missing legacy field.
+		cfg.EgoBrowserEnabled = false
+	}
 	cfg.SourcePath = path
 	if allowStaleWrapper {
 		return cfg, cfg.ValidateForUpgrade(false)
@@ -339,6 +367,8 @@ func SaveForUpgrade(path string, cfg Config) error {
 
 func save(path string, cfg Config, allowStaleWrapper bool) error {
 	cfg = cfg.WithDefaults()
+	// Save materializes intent after legacy configs have been normalized.
+	cfg.MarkEgoBrowserEnabledConfigured()
 	var validationErr error
 	if allowStaleWrapper {
 		validationErr = cfg.ValidateForUpgrade(false)

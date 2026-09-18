@@ -96,6 +96,77 @@ func TestClientRejectsDuplicateResponseKeys(t *testing.T) {
 	}
 }
 
+func TestEgoBrowserBindingAcceptsExplicitGenerationAndRejectsConflicts(t *testing.T) {
+	var binding EgoBrowserBinding
+	if err := json.Unmarshal([]byte(`{"binding_id":"binding-1","binding_generation":7}`), &binding); err != nil {
+		t.Fatal(err)
+	}
+	if binding.BindingGeneration != 7 || binding.Generation != 7 {
+		t.Fatalf("explicit generation was not canonicalized: %#v", binding)
+	}
+	if err := json.Unmarshal([]byte(`{"binding_id":"binding-1","generation":8}`), &binding); err != nil {
+		t.Fatal(err)
+	}
+	if binding.BindingGeneration != 8 || binding.Generation != 8 {
+		t.Fatalf("legacy generation was not canonicalized: %#v", binding)
+	}
+	if err := json.Unmarshal([]byte(`{"binding_id":"binding-1","generation":7,"binding_generation":8}`), &binding); err == nil {
+		t.Fatal("expected conflicting generation fields to be rejected")
+	}
+	if err := json.Unmarshal([]byte(`{"binding_id":"binding-1","generation":1,"binding_generation":null}`), &binding); err == nil {
+		t.Fatal("expected null explicit generation to be rejected")
+	}
+}
+
+func TestEgoBrowserRenewFallsBackToLegacyGenerationField(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Fatal(err)
+		}
+		requests = append(requests, payload)
+		if len(requests) == 1 {
+			response.WriteHeader(http.StatusUnprocessableEntity)
+			_, _ = io.WriteString(response, `{"error":{"code":"VALIDATION_ERROR"}}`)
+			return
+		}
+		_, _ = io.WriteString(response, `{"data":{"binding_id":"binding-1","binding_generation":3,"lease_until":"2026-07-31T00:00:00Z","lease_health":"healthy","absolute_ttl_until":"2026-08-01T00:00:00Z"}}`)
+	}))
+	defer server.Close()
+	result, err := NewClient(server.URL, "node-token").RenewEgoBrowserBinding(
+		context.Background(), "binding-1", EgoBrowserNodeRenewRequest{BindingGeneration: 3},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Data.BindingGeneration != 3 || result.Data.Generation != 3 {
+		t.Fatalf("renew response generation was not canonicalized: %#v", result.Data)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("expected one compatibility retry, got %d requests", len(requests))
+	}
+	if requests[0]["binding_generation"] != float64(3) || requests[0]["generation"] != float64(3) {
+		t.Fatalf("explicit request did not carry both compatibility fields: %#v", requests[0])
+	}
+	if _, exists := requests[1]["binding_generation"]; exists {
+		t.Fatalf("legacy retry unexpectedly carried explicit field: %#v", requests[1])
+	}
+	if requests[1]["generation"] != float64(3) {
+		t.Fatalf("legacy retry omitted generation: %#v", requests[1])
+	}
+}
+
+func TestEgoBrowserRelayTicketAcceptsExplicitOnlyGeneration(t *testing.T) {
+	var response EgoBrowserRelayTicketResponse
+	if err := json.Unmarshal([]byte(`{"data":{"role":"wrapper","binding_generation":4,"relay_binding_kind":"ego_browser","relay_path":"/api/v1/ego-browser/bindings/binding-1/relay","relay_ticket":"ticket","expires_at":"2026-07-31T00:00:00Z"}}`), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Data.BindingGeneration != 4 || response.Data.Generation != 4 {
+		t.Fatalf("explicit relay generation was not canonicalized: %#v", response.Data)
+	}
+}
+
 func TestPortForwardRenewReleaseAndUncodedHTTPError(t *testing.T) {
 	var methods []string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

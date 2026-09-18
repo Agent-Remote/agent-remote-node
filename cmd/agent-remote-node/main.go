@@ -2,16 +2,25 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
+	"time"
+	"unicode"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
 	"github.com/Agent-Remote/agent-remote-node/internal/config"
@@ -19,6 +28,8 @@ import (
 	"github.com/Agent-Remote/agent-remote-node/internal/ledger"
 	"github.com/Agent-Remote/agent-remote-node/internal/sshkeys"
 	"github.com/Agent-Remote/agent-remote-node/internal/worker"
+	"golang.org/x/net/idna"
+	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -36,6 +47,8 @@ func run(args []string) error {
 	switch args[0] {
 	case "register":
 		return register(args[1:])
+	case "install":
+		return installNode(args[1:])
 	case "heartbeat":
 		return withWorker(args[1:], func(ctx context.Context, w worker.Worker) error {
 			return w.Heartbeat(ctx)
@@ -61,6 +74,759 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func installNode(args []string) error {
+	fs := flag.NewFlagSet("install", flag.ContinueOnError)
+	configPath := fs.String("config", "config.json", "config path")
+	serverURL := fs.String("server-url", "", "server URL")
+	nodeID := fs.String("node-id", "", "node ID (optional when supplied by the join code)")
+	version := fs.String("version", config.DefaultVersion, "node version")
+	joinCodeStdin := fs.Bool("join-code-stdin", false, "read the one-time join code from stdin")
+	exchangeID := fs.String("exchange-id", "", "resume an interrupted enrollment exchange")
+	enableEgoBrowser := fs.Bool("enable-ego-browser", false, "honor an explicitly authorized ego-browser capability")
+	disableEgoBrowser := fs.Bool("disable-ego-browser", false, "keep the ego-browser capability disabled")
+	egoBrowserRuntimeRoot := fs.String("ego-browser-runtime-root", "/opt/agent-remote/ego-browser", "managed ego-browser runtime root")
+	runtimeBackends := fs.String("runtime-backends", "", "comma-separated runtime backends")
+	systemInstall := fs.Bool("system-install", false, "use system service paths")
+	prefix := fs.String("prefix", "/usr/local", "system installation prefix")
+	stateDir := fs.String("state-dir", "/var/lib/agent-remote-node", "system service state directory")
+	dataDir := fs.String("data-dir", "/var/lib/agent-remote", "managed workspace and account data directory")
+	claudeRuntimePath := fs.String("claude-runtime-path", "/opt/agent-remote/runtimes/claude/current/bin/claude", "managed Claude executable")
+	deviceProxyPath := fs.String("device-proxy-path", "/opt/agent-remote/device/current/bin/agent-remote-device-proxy", "managed device proxy executable")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *enableEgoBrowser && *disableEgoBrowser {
+		return errors.New("--enable-ego-browser and --disable-ego-browser are mutually exclusive")
+	}
+	existing, hasExisting, err := loadInstallConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	resolvedServerURL, err := resolveInstallServerURL(*serverURL, existing, hasExisting)
+	if err != nil {
+		return err
+	}
+	cfg := existing
+	if !hasExisting {
+		cfg = config.Config{SupportedToolTypes: []string{"claude"}}
+	}
+	if *runtimeBackends != "" {
+		cfg.AllowedRuntimeBackends = splitCommaList(*runtimeBackends)
+	}
+	if *systemInstall {
+		applySystemInstallPaths(&cfg, *prefix, *stateDir, *dataDir, *claudeRuntimePath, *deviceProxyPath)
+	}
+	// Verify an enabled release before consuming the one-time code.
+	if (*enableEgoBrowser || (hasExisting && existing.EgoBrowserEnabled)) && !*disableEgoBrowser {
+		if err := verifyInstallEgoBrowser(&cfg, *egoBrowserRuntimeRoot); err != nil {
+			return errors.New("release_verification_failed")
+		}
+	}
+	statePath := joinExchangeStatePath(*configPath)
+	persisted, err := loadJoinExchangeState(statePath)
+	if err != nil {
+		return err
+	}
+	if persisted != nil {
+		if persisted.ServerURL != resolvedServerURL {
+			return errors.New("join exchange state belongs to a different server")
+		}
+		if *exchangeID != "" && *exchangeID != persisted.ExchangeID {
+			return errors.New("exchange-id does not match the pending enrollment")
+		}
+		if persisted.NodeID != "" && *nodeID != "" && *nodeID != persisted.NodeID {
+			return errors.New("node-id does not match the pending enrollment")
+		}
+		*exchangeID = persisted.ExchangeID
+	}
+	// Recovery persists only the exchange ID, never the join code.
+	joinCode := ""
+	if *joinCodeStdin {
+		joinCode, err = readJoinCode()
+		if err != nil {
+			return err
+		}
+	} else if persisted == nil && *exchangeID == "" {
+		return errors.New("--join-code-stdin or --exchange-id is required for enrollment")
+	}
+	if *exchangeID == "" {
+		*exchangeID, err = newExchangeID()
+		if err != nil {
+			return err
+		}
+	}
+	if err := validateExchangeID(*exchangeID); err != nil {
+		return err
+	}
+	requestedNodeID := *nodeID
+	if requestedNodeID == "" && persisted != nil {
+		requestedNodeID = persisted.NodeID
+	}
+	if requestedNodeID == "" && hasExisting {
+		requestedNodeID = existing.NodeID
+	}
+	requestedVersion := *version
+	if hasExisting && !flagWasProvided(args, "--version") && existing.Version != "" {
+		requestedVersion = existing.Version
+	}
+	if persisted == nil {
+		if err := saveJoinExchangeState(statePath, joinExchangeState{
+			Version: 1, ExchangeID: *exchangeID, ServerURL: resolvedServerURL,
+			NodeID: requestedNodeID, CreatedAt: timeNowUnix(),
+		}); err != nil {
+			return err
+		}
+	}
+	// The signed local release supplies hints; the Server validates the profile.
+	var requestedEgoBrowserIntent *bool
+	if *enableEgoBrowser || *disableEgoBrowser {
+		value := *enableEgoBrowser
+		requestedEgoBrowserIntent = &value
+	}
+	response, err := api.NewClient(resolvedServerURL, "").ExchangeJoinCode(context.Background(), api.JoinCodeExchangeRequest{
+		NodeID:            requestedNodeID,
+		Version:           requestedVersion,
+		JoinCode:          joinCode,
+		ExchangeID:        *exchangeID,
+		EgoBrowserEnabled: requestedEgoBrowserIntent,
+		WrapperVersion:    egobrowserartifact.PinnedWrapperVersion,
+		SkillVersion:      egobrowserartifact.OfficialSkillVersion,
+		RuntimeVersion:    requestedVersion,
+		ArtifactDigest:    "sha256:" + egobrowserartifact.OfficialSkillTreeSHA256,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Data.NodeID == "" || response.Data.NodeToken == "" || response.Data.ExchangeID != *exchangeID {
+		return errors.New("join-code exchange returned an incomplete node credential")
+	}
+	if err := validateJoinCodeExchangeProfile(response, resolvedServerURL, requestedVersion, requestedEgoBrowserIntent); err != nil {
+		return err
+	}
+	cfg.ServerURL = resolvedServerURL
+	cfg.NodeID = response.Data.NodeID
+	cfg.NodeToken = response.Data.NodeToken
+	cfg.Version = requestedVersion
+	if len(cfg.SupportedToolTypes) == 0 {
+		cfg.SupportedToolTypes = []string{"claude"}
+	}
+	// Reinstalls preserve intent; new nodes stay disabled without authorization.
+	desiredEnabled := false
+	if hasExisting {
+		desiredEnabled = existing.EgoBrowserEnabled
+	} else if response.Data.EgoBrowserIntent != nil && *response.Data.EgoBrowserIntent {
+		desiredEnabled = true
+	}
+	if *enableEgoBrowser {
+		if !response.Data.EgoBrowserEnabled {
+			return errors.New("ego-browser enable was not authorized by the join code")
+		}
+		desiredEnabled = true
+	}
+	if *disableEgoBrowser {
+		desiredEnabled = false
+	}
+	if desiredEnabled {
+		if err := verifyInstallEgoBrowser(&cfg, *egoBrowserRuntimeRoot); err != nil {
+			return errors.New("release_verification_failed")
+		}
+	}
+	cfg.EgoBrowserEnabled = desiredEnabled
+	if err := config.Save(*configPath, cfg); err != nil {
+		return err
+	}
+	if err := clearJoinExchangeState(statePath); err != nil {
+		return err
+	}
+	// Never print the join code or node token.
+	fmt.Printf("installed node %s\n", response.Data.NodeID)
+	return nil
+}
+
+func validateJoinCodeExchangeProfile(
+	response api.JoinCodeExchangeResponse,
+	serverURL string,
+	requestedVersion string,
+	requestedEgoBrowserIntent *bool,
+) error {
+	data := response.Data
+	if responseServerURL(data.ServerOrigin) != responseServerURL(serverURL) {
+		return errors.New("join-code exchange belongs to a different server")
+	}
+	if data.ReleaseProfile == "" || data.WrapperVersion == "" || data.SkillVersion == "" ||
+		data.ArtifactDigest == "" || data.ProfileDigest == "" {
+		return errors.New("join-code exchange returned incomplete release metadata")
+	}
+	if data.WrapperVersion != egobrowserartifact.PinnedWrapperVersion ||
+		data.SkillVersion != egobrowserartifact.OfficialSkillVersion ||
+		data.ArtifactDigest != "sha256:"+egobrowserartifact.OfficialSkillTreeSHA256 {
+		return errors.New("join-code exchange release profile is not approved")
+	}
+	if data.RuntimeVersion != "" && data.RuntimeVersion != requestedVersion {
+		return errors.New("join-code exchange runtime version does not match the requested version")
+	}
+	intent := "preserve"
+	if data.EgoBrowserIntent != nil {
+		// Applied intent may differ only when reinstalling with preserved state.
+		if requestedEgoBrowserIntent != nil && data.EgoBrowserEnabled != *data.EgoBrowserIntent {
+			return errors.New("join-code exchange ego-browser intent is inconsistent")
+		}
+		if requestedEgoBrowserIntent != nil && *requestedEgoBrowserIntent != *data.EgoBrowserIntent {
+			return errors.New("join-code exchange ego-browser intent was not authorized")
+		}
+		if *data.EgoBrowserIntent {
+			intent = "true"
+		} else {
+			intent = "false"
+		}
+	} else if requestedEgoBrowserIntent != nil {
+		return errors.New("join-code exchange did not return an authorized ego-browser intent")
+	}
+	material := strings.Join([]string{
+		"node-join-profile-v1",
+		responseServerURL(data.ServerOrigin),
+		data.NodeID,
+		data.ReleaseProfile,
+		data.WrapperVersion,
+		data.SkillVersion,
+		data.RuntimeVersion,
+		data.ArtifactDigest,
+		intent,
+	}, "\x00")
+	digest := sha256.Sum256([]byte(material))
+	if hex.EncodeToString(digest[:]) != strings.ToLower(data.ProfileDigest) {
+		return errors.New("join-code exchange profile digest is invalid")
+	}
+	return nil
+}
+
+func readJoinCode() (string, error) {
+	data, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
+	if err != nil {
+		return "", errors.New("failed to read join code from stdin")
+	}
+	if len(data) == 0 || len(data) > 4096 {
+		return "", errors.New("join code is empty or too long")
+	}
+	value := strings.TrimRight(string(data), "\r\n")
+	if value == "" || strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return "", errors.New("join code is invalid")
+	}
+	return value, nil
+}
+
+func newExchangeID() (string, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return "", errors.New("failed to create enrollment exchange ID")
+	}
+	return hex.EncodeToString(bytes[:]), nil
+}
+
+func responseServerURL(value string) string {
+	canonical, err := canonicalizeOrigin(value)
+	if err != nil {
+		return ""
+	}
+	return canonical
+}
+
+func loadInstallConfig(path string) (config.Config, bool, error) {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return config.Config{}, false, nil
+	}
+	if err != nil {
+		return config.Config{}, false, err
+	}
+	var cfg config.Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return config.Config{}, false, errors.New("existing node config is invalid")
+	}
+	cfg = cfg.WithDefaults()
+	cfg.SourcePath = path
+	return cfg, true, nil
+}
+
+func resolveInstallServerURL(requested string, existing config.Config, hasExisting bool) (string, error) {
+	value := strings.TrimSpace(requested)
+	if value == "" && hasExisting {
+		value = existing.ServerURL
+	}
+	if value == "" {
+		return "", errors.New("server_url is required when no existing node config is available")
+	}
+	canonical, err := canonicalizeOrigin(value)
+	if err != nil {
+		return "", errors.New("server_url is invalid")
+	}
+	return canonical, nil
+}
+
+// canonicalizeOrigin returns the unique scheme/host/port credential scope.
+func canonicalizeOrigin(value string) (string, error) {
+	raw := strings.TrimSpace(value)
+	if raw == "" {
+		return "", errors.New("origin is empty")
+	}
+	for _, character := range raw {
+		if character < 0x20 || character == 0x7f || unicode.IsSpace(character) {
+			return "", errors.New("origin contains whitespace or control characters")
+		}
+	}
+	if strings.ContainsAny(raw, "?#\\") {
+		return "", errors.New("origin contains query, fragment, or backslash")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", errors.New("origin authority is invalid")
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if (scheme != "http" && scheme != "https") || parsed.Host == "" || parsed.Opaque != "" ||
+		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.ForceQuery ||
+		(parsed.Path != "" && parsed.Path != "/") {
+		return "", errors.New("origin is not a bare http(s) origin")
+	}
+	authority := parsed.Host
+	if strings.ContainsAny(authority, "@/\\") || strings.ContainsAny(authority, "\x00\t\r\n") {
+		return "", errors.New("origin authority is invalid")
+	}
+
+	var (
+		hostText    string
+		portText    string
+		portPresent bool
+		host        string
+		ipLiteral   bool
+	)
+	if strings.HasPrefix(authority, "[") {
+		closing := strings.IndexByte(authority, ']')
+		if closing <= 1 || strings.Contains(authority[1:closing], "[") ||
+			strings.Contains(authority[closing+1:], "]") {
+			return "", errors.New("origin IPv6 authority is invalid")
+		}
+		hostText = authority[1:closing]
+		suffix := authority[closing+1:]
+		if suffix != "" {
+			if !strings.HasPrefix(suffix, ":") {
+				return "", errors.New("origin IPv6 authority is invalid")
+			}
+			portPresent = true
+			portText = suffix[1:]
+		}
+		if strings.Contains(hostText, "%") {
+			return "", errors.New("origin IPv6 zone is not allowed")
+		}
+		address, parseErr := netip.ParseAddr(hostText)
+		if parseErr != nil || !address.Is6() {
+			return "", errors.New("origin IPv6 address is invalid")
+		}
+		host = address.String()
+		ipLiteral = true
+	} else {
+		colonCount := strings.Count(authority, ":")
+		if colonCount > 1 {
+			return "", errors.New("IPv6 origins must use brackets")
+		}
+		if colonCount == 1 {
+			parts := strings.SplitN(authority, ":", 2)
+			hostText, portText, portPresent = parts[0], parts[1], true
+		} else {
+			hostText = authority
+		}
+		if hostText == "" {
+			return "", errors.New("origin host is empty")
+		}
+		// Remove one DNS root dot while leaving doubled dots invalid.
+		hostText = strings.TrimSuffix(hostText, ".")
+		if hostText == "" {
+			return "", errors.New("origin host is empty")
+		}
+		if address, parseErr := netip.ParseAddr(hostText); parseErr == nil {
+			if !address.Is4() {
+				return "", errors.New("IPv6 origins must use brackets")
+			}
+			host = address.String()
+			ipLiteral = true
+		} else {
+			asciiHost, idnaErr := idna.Lookup.ToASCII(hostText)
+			if idnaErr != nil {
+				return "", errors.New("origin host is invalid")
+			}
+			host = strings.ToLower(strings.TrimSuffix(asciiHost, "."))
+			if len(host) == 0 || len(host) > 253 {
+				return "", errors.New("origin host is invalid")
+			}
+			for _, label := range strings.Split(host, ".") {
+				if len(label) == 0 || len(label) > 63 ||
+					label[0] == '-' || label[len(label)-1] == '-' {
+					return "", errors.New("origin host is invalid")
+				}
+				for _, character := range label {
+					if !(character >= 'a' && character <= 'z') &&
+						!(character >= 'A' && character <= 'Z') &&
+						!(character >= '0' && character <= '9') && character != '-' {
+						return "", errors.New("origin host is invalid")
+					}
+				}
+			}
+		}
+	}
+
+	var port *int
+	if portPresent {
+		if portText == "" || len(portText) > 5 {
+			return "", errors.New("origin port is invalid")
+		}
+		for _, character := range portText {
+			if character < '0' || character > '9' {
+				return "", errors.New("origin port is invalid")
+			}
+		}
+		parsedPort, parseErr := strconv.Atoi(portText)
+		if parseErr != nil || parsedPort < 1 || parsedPort > 65535 {
+			return "", errors.New("origin port is invalid")
+		}
+		port = &parsedPort
+	}
+	if port == nil || (scheme == "http" && *port == 80) || (scheme == "https" && *port == 443) {
+		port = nil
+	}
+	isLoopback := host == "localhost"
+	if ipLiteral {
+		address, parseErr := netip.ParseAddr(host)
+		isLoopback = parseErr == nil && address.IsLoopback()
+	}
+	if scheme == "http" && !isLoopback {
+		return "", errors.New("http origins are restricted to loopback")
+	}
+	hostPart := host
+	if ipLiteral && strings.Contains(host, ":") {
+		hostPart = "[" + host + "]"
+	}
+	if port != nil {
+		return scheme + "://" + hostPart + ":" + strconv.Itoa(*port), nil
+	}
+	return scheme + "://" + hostPart, nil
+}
+
+func flagWasProvided(args []string, name string) bool {
+	for _, arg := range args {
+		if arg == name || strings.HasPrefix(arg, name+"=") {
+			return true
+		}
+	}
+	return false
+}
+
+func validateExchangeID(value string) error {
+	if len(value) < 16 || len(value) > 128 {
+		return errors.New("exchange-id is invalid")
+	}
+	for _, character := range value {
+		if !(character >= 'a' && character <= 'z') && !(character >= 'A' && character <= 'Z') &&
+			!(character >= '0' && character <= '9') && character != '-' && character != '_' {
+			return errors.New("exchange-id is invalid")
+		}
+	}
+	return nil
+}
+
+func joinExchangeStatePath(configPath string) string {
+	return configPath + ".join-exchange.json"
+}
+
+func loadJoinExchangeState(path string) (*joinExchangeState, error) {
+	directory, name, err := openJoinExchangeStateDirectory(path, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer directory.Close()
+	file, _, err := openJoinExchangeStateFile(directory, name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, (16<<10)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > 16<<10 {
+		return nil, errors.New("join exchange state is invalid")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	var state joinExchangeState
+	if err := decoder.Decode(&state); err != nil || state.Version != 1 || state.ServerURL == "" ||
+		state.CreatedAt <= 0 || validateExchangeID(state.ExchangeID) != nil {
+		return nil, errors.New("join exchange state is invalid")
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return nil, errors.New("join exchange state is invalid")
+	}
+	server, err := resolveInstallServerURL(state.ServerURL, config.Config{}, false)
+	if err != nil || server != state.ServerURL {
+		return nil, errors.New("join exchange state is invalid")
+	}
+	return &state, nil
+}
+
+func saveJoinExchangeState(path string, state joinExchangeState) error {
+	if state.Version != 1 || state.ServerURL == "" || state.CreatedAt <= 0 ||
+		validateExchangeID(state.ExchangeID) != nil {
+		return errors.New("join exchange state is invalid")
+	}
+	server, err := resolveInstallServerURL(state.ServerURL, config.Config{}, false)
+	if err != nil || server != state.ServerURL {
+		return errors.New("join exchange state is invalid")
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	directory, name, err := openJoinExchangeStateDirectory(path, true)
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	if existing, _, openErr := openJoinExchangeStateFile(directory, name); openErr == nil {
+		if closeErr := existing.Close(); closeErr != nil {
+			return closeErr
+		}
+	} else if !errors.Is(openErr, os.ErrNotExist) {
+		return openErr
+	}
+	temporary, temporaryName, err := createJoinExchangeStateTemporary(directory)
+	if err != nil {
+		return err
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = unix.Unlinkat(int(directory.Fd()), temporaryName, 0)
+		}
+	}()
+	if _, err := temporary.Write(append(data, '\n')); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Sync(); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(directory.Fd()), temporaryName, int(directory.Fd()), name); err != nil {
+		return err
+	}
+	removeTemporary = false
+	installed, installedInfo, err := openJoinExchangeStateFile(directory, name)
+	if err != nil {
+		return err
+	}
+	closeErr := installed.Close()
+	if closeErr != nil {
+		return closeErr
+	}
+	if installedInfo.Size() != int64(len(data)+1) {
+		return errors.New("join exchange state path is unsafe")
+	}
+	return syncJoinExchangeStateDirectory(directory)
+}
+
+func clearJoinExchangeState(path string) error {
+	directory, name, err := openJoinExchangeStateDirectory(path, false)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	file, _, err := openJoinExchangeStateFile(directory, name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	if err := unix.Unlinkat(int(directory.Fd()), name, 0); err != nil {
+		return err
+	}
+	return syncJoinExchangeStateDirectory(directory)
+}
+
+func openJoinExchangeStateDirectory(path string, create bool) (*os.File, string, error) {
+	cleanPath := filepath.Clean(path)
+	name := filepath.Base(cleanPath)
+	if name == "." || name == string(filepath.Separator) || strings.Contains(name, string(filepath.Separator)) {
+		return nil, "", errors.New("join exchange state path is unsafe")
+	}
+	directoryPath := filepath.Dir(cleanPath)
+	if create {
+		if err := os.MkdirAll(directoryPath, 0o700); err != nil {
+			return nil, "", err
+		}
+	}
+	before, err := os.Lstat(directoryPath)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := validateJoinExchangeStateDirectory(before); err != nil {
+		return nil, "", err
+	}
+	fd, err := unix.Open(directoryPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, "", errors.New("join exchange state parent is unsafe")
+	}
+	directory := os.NewFile(uintptr(fd), directoryPath)
+	if directory == nil {
+		_ = unix.Close(fd)
+		return nil, "", errors.New("join exchange state parent is unsafe")
+	}
+	after, err := directory.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		_ = directory.Close()
+		return nil, "", errors.New("join exchange state parent changed while opening")
+	}
+	if err := validateJoinExchangeStateDirectory(after); err != nil {
+		_ = directory.Close()
+		return nil, "", err
+	}
+	return directory, name, nil
+}
+
+func validateJoinExchangeStateDirectory(info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm()&0o022 != 0 ||
+		stat.Uid != uint32(os.Geteuid()) {
+		return errors.New("join exchange state parent is unsafe")
+	}
+	return nil
+}
+
+func openJoinExchangeStateFile(directory *os.File, name string) (*os.File, os.FileInfo, error) {
+	path := filepath.Join(directory.Name(), name)
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := validateJoinExchangeStateFile(before); err != nil {
+		return nil, nil, err
+	}
+	fd, err := unix.Openat(int(directory.Fd()), name, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, nil, errors.New("join exchange state path is unsafe")
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if file == nil {
+		_ = unix.Close(fd)
+		return nil, nil, errors.New("join exchange state path is unsafe")
+	}
+	after, err := file.Stat()
+	if err != nil || !os.SameFile(before, after) {
+		_ = file.Close()
+		return nil, nil, errors.New("join exchange state changed while opening")
+	}
+	if err := validateJoinExchangeStateFile(after); err != nil {
+		_ = file.Close()
+		return nil, nil, err
+	}
+	return file, after, nil
+}
+
+func validateJoinExchangeStateFile(info os.FileInfo) error {
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 ||
+		stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
+		return errors.New("join exchange state path is unsafe")
+	}
+	return nil
+}
+
+func createJoinExchangeStateTemporary(directory *os.File) (*os.File, string, error) {
+	for range 16 {
+		var random [12]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", errors.New("failed to create join exchange state")
+		}
+		name := ".agent-remote-join-exchange-" + hex.EncodeToString(random[:])
+		fd, err := unix.Openat(
+			int(directory.Fd()), name,
+			unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_NOFOLLOW|unix.O_CLOEXEC,
+			0o600,
+		)
+		if errors.Is(err, unix.EEXIST) {
+			continue
+		}
+		if err != nil {
+			return nil, "", err
+		}
+		file := os.NewFile(uintptr(fd), filepath.Join(directory.Name(), name))
+		if file == nil {
+			_ = unix.Close(fd)
+			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+			return nil, "", errors.New("failed to create join exchange state")
+		}
+		if err := file.Chmod(0o600); err != nil {
+			_ = file.Close()
+			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+			return nil, "", err
+		}
+		info, err := file.Stat()
+		if err != nil || validateJoinExchangeStateFile(info) != nil {
+			_ = file.Close()
+			_ = unix.Unlinkat(int(directory.Fd()), name, 0)
+			return nil, "", errors.New("join exchange state path is unsafe")
+		}
+		return file, name, nil
+	}
+	return nil, "", errors.New("failed to create join exchange state")
+}
+
+func syncJoinExchangeStateDirectory(directory *os.File) error {
+	err := unix.Fsync(int(directory.Fd()))
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTSUP) {
+		return nil
+	}
+	return err
+}
+
+func timeNowUnix() int64 { return time.Now().Unix() }
+
+func verifyInstallEgoBrowser(cfg *config.Config, runtimeRoot string) error {
+	if runtimeRoot == "" {
+		return errors.New("runtime root is missing")
+	}
+	metadata, err := readEgoBrowserRuntimeMetadata(runtimeRoot)
+	if err != nil || metadata.WrapperVersion != egobrowserartifact.PinnedWrapperVersion ||
+		metadata.SkillVersion != egobrowserartifact.OfficialSkillVersion {
+		return errors.New("runtime metadata is not approved")
+	}
+	if err := egobrowserartifact.Verify(egobrowserartifact.RuntimeConfig{
+		WrapperPath: metadata.WrapperPath, WrapperVersion: metadata.WrapperVersion,
+		SkillPath: metadata.SkillPath, SkillVersion: metadata.SkillVersion,
+		SkillTreeSHA256: metadata.SkillTreeSHA256,
+	}); err != nil {
+		return err
+	}
+	cfg.EgoBrowserWrapperPath = metadata.WrapperPath
+	cfg.EgoBrowserWrapperVersion = metadata.WrapperVersion
+	cfg.EgoBrowserSkillPath = metadata.SkillPath
+	cfg.EgoBrowserSkillVersion = metadata.SkillVersion
+	cfg.EgoBrowserSkillTreeSHA256 = metadata.SkillTreeSHA256
+	cfg.EgoBrowserProtocolVersion = egobrowserartifact.PinnedProtocolVersion
+	return nil
 }
 
 func configureWireGuard(args []string) error {
@@ -115,6 +881,15 @@ type egoBrowserRuntimeMetadata struct {
 	SkillTreeSHA256 string
 }
 
+// joinExchangeState retains only non-secret enrollment recovery data.
+type joinExchangeState struct {
+	Version    int    `json:"version"`
+	ExchangeID string `json:"exchange_id"`
+	ServerURL  string `json:"server_url"`
+	NodeID     string `json:"node_id,omitempty"`
+	CreatedAt  int64  `json:"created_at"`
+}
+
 // configureEgoBrowser synchronizes the config with the verified installed
 // wrapper while preserving the operator's explicit enabled state.
 func configureEgoBrowser(args []string) error {
@@ -149,7 +924,7 @@ func configureEgoBrowser(args []string) error {
 	cfg.EgoBrowserSkillPath = metadata.SkillPath
 	cfg.EgoBrowserSkillVersion = metadata.SkillVersion
 	cfg.EgoBrowserSkillTreeSHA256 = metadata.SkillTreeSHA256
-	cfg.EgoBrowserProtocolVersion = "ego-browser-bridge-v1"
+	cfg.EgoBrowserProtocolVersion = egobrowserartifact.PinnedProtocolVersion
 	if *enable {
 		cfg.EgoBrowserEnabled = true
 	}
@@ -502,5 +1277,5 @@ func withWorker(args []string, fn func(context.Context, worker.Worker) error) er
 }
 
 func printUsage() {
-	fmt.Println("agent-remote-node <register|heartbeat|poll-once|reconcile|run|install-ssh|configure-wireguard|configure-ego-browser> [flags]")
+	fmt.Println("agent-remote-node <register|install|heartbeat|poll-once|reconcile|run|install-ssh|configure-wireguard|configure-ego-browser> [flags]")
 }

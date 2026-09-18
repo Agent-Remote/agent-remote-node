@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VERSION="${VERSION:-0.2.19}"
+SOURCE_VERSION="$(tr -d '[:space:]' < VERSION)"
+VERSION="${VERSION:-$SOURCE_VERSION}"
 OUT_DIR="${OUT_DIR:-dist}"
 TARGETS="${TARGETS:-darwin/amd64 darwin/arm64 linux/amd64/glibc linux/arm64/glibc linux/amd64/musl linux/arm64/musl}"
 DEVICE_PROXY_DIR="${DEVICE_PROXY_DIR:-}"
@@ -14,17 +15,19 @@ if [ ! -f "$RELEASE_DEPENDENCIES" ]; then
   echo "missing release dependency manifest: $RELEASE_DEPENDENCIES" >&2
   exit 1
 fi
+if ! [[ "$SOURCE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]] || \
+   [ "$VERSION" != "$SOURCE_VERSION" ]; then
+  echo "release version must match the canonical VERSION file" >&2
+  exit 1
+fi
+python3 scripts/generate-release-policy.py --check
 expected_ego_version="$(jq -er '.ego_browser_wrapper.version' "$RELEASE_DEPENDENCIES")"
-if ! [[ "$expected_ego_version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]]; then
+expected_ego_protocol="$(jq -er '.ego_browser_wrapper.protocol_version' "$RELEASE_DEPENDENCIES")"
+if ! [[ "$expected_ego_version" =~ ^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$ ]] || \
+   ! [[ "$expected_ego_protocol" =~ ^[0-9A-Za-z][0-9A-Za-z._-]{0,127}$ ]]; then
   echo "invalid ego-browser wrapper version in release dependencies" >&2
   exit 1
 fi
-source_ego_version="$(sed -n 's/^[[:space:]]*PinnedWrapperVersion[[:space:]]*=[[:space:]]*"\([^"]*\)"/\1/p' internal/egobrowserartifact/artifact.go)"
-if [ "$source_ego_version" != "$expected_ego_version" ]; then
-  echo "ego-browser wrapper pin does not match release-dependencies.json" >&2
-  exit 1
-fi
-
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -149,10 +152,18 @@ EOF
     printf '%s\n' "$skill_version" > "$work/ego-browser/SKILL_VERSION"
     printf '%s\n' "$skill_tree_sha256" > "$work/ego-browser/SKILL_TREE_SHA256"
     printf '%s\n' "$(sha256_file "$EGO_BROWSER_SKILL_SOURCE_MANIFEST")" > "$work/ego-browser/SOURCE_MANIFEST_SHA256"
-    jq --arg wrapper_version "$ego_version" \
-      '.ego_browser_wrapper_version = $wrapper_version' config.example.json > "$work/config.example.json"
+    jq \
+      --arg wrapper_version "$ego_version" \
+      --arg protocol_version "$expected_ego_protocol" \
+      --arg skill_version "$skill_version" \
+      --arg skill_tree_sha256 "$skill_tree_sha256" \
+      '.ego_browser_wrapper_version = $wrapper_version
+       | .ego_browser_protocol_version = $protocol_version
+       | .ego_browser_skill_version = $skill_version
+       | .ego_browser_skill_tree_sha256 = $skill_tree_sha256' \
+      config.example.json > "$work/config.example.json"
   fi
-  tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
+  COPYFILE_DISABLE=1 tar -C "$OUT_DIR" -czf "$OUT_DIR/$package.tar.gz" "$package"
 done
 
 echo "release artifacts written to $OUT_DIR"

@@ -26,6 +26,18 @@ go test ./...
 go run ./cmd/agent-remote-node --help
 ```
 
+推荐从已登录的控制工作站发起受管 enrollment：
+
+```sh
+agent-remote node install --node <node-id-or-prefix>
+```
+
+CLI 会先用 checksum 与 Sigstore bundle 验证固定版本的 Node 归档，通过独立 SSH stdin 传输并
+安装成功后，才在另一次 SSH 调用的 stdin 中发送短期加入码。新 Node 默认保持 ego-browser
+关闭；只有管理员明确添加 `--enable-ego-browser` 才表达启用意图，重装已有 Node 则保留原设置。
+
+直接使用 `register --registration-token` 仅是高级旧版兼容入口，不是普通 enrollment 流程：
+
 ```sh
 go run ./cmd/agent-remote-node register \
   --config ./config.json \
@@ -82,14 +94,14 @@ owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔�
 
 不可变 wrapper/Skill 源制品合同见 `docs/ego-browser-artifacts.zh-CN.md`，runtime UID/ACL 诊断、指标和恢复流程见 `docs/ego-browser-operations.md`。Native 与 Docker Sandbox 上符合条件的 Claude tool session 都会收到 runtime-scoped broker capability。Docker 启动会校验并挂载 release-pinned artifact，以准确的受管内容刷新 account 中的 Skill tree，把 wrapper 目录放在 `PATH` 首位，并且只通过进程环境传递 nonce。
 
-`register` 会把节点 token 写入配置的 JSON 文件：
+高级兼容命令 `register` 会把节点 token 写入配置的 JSON 文件：
 
 ```json
 {
   "server_url": "http://localhost:8000",
   "node_id": "00000000-0000-0000-0000-000000000000",
   "node_token": "node_...",
-  "version": "0.2.19",
+  "version": "",
   "supported_tool_types": ["claude"],
   "heartbeat_interval_seconds": 30,
   "poll_interval_seconds": 5,
@@ -147,9 +159,23 @@ Session 转发不会创建公网 listener、Docker 端口发布、NAT 规则或�
 
 当控制平面和节点运行在同一台 Docker 主机上时，可将 `browser_docker_network` 设置为控制平面的 Compose 网络（例如 `agent-remote_default`）。浏览器容器会加入该私有网络，控制平面通过容器 DNS 访问 KasmVNC，无需向宿主机暴露端口。
 
-## 一条命令完成安装
+## 安装
 
-先在管理控制台创建节点，然后在全新的 Debian 12+ 或 Ubuntu 22.04+ VPS 上执行一条命令：
+普通受管流程先在管理控制台创建 Node 及其 SSH 传输信息，再从已登录的控制工作站运行：
+
+```sh
+agent-remote node install --node <node-id-or-prefix>
+```
+
+该流程会先验证并安装 release，再向控制面申请一次性加入码；release 归档和加入码分别使用
+独立的 SSH stdin。持久化 exchange ID 让同一命令可以恢复中断的 enrollment，不会把加入码或
+最终 Node token 放入 argv、环境变量、URL、日志或终端输出。新 Node 默认关闭 ego-browser
+capability，已有 Node 保留原值；`--enable-ego-browser` 只表达管理员的明确意图，仍必须通过
+本机 release 校验。
+
+直接传 registration token 的安装器仅保留给全新 Debian 12+ 或 Ubuntu 22.04+ VPS 上的高级
+旧版 provisioning。使用前必须安装 `cosign`；release checksum 或 Sigstore workflow identity
+任一校验失败时，直接下载路径都会关闭失败：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
@@ -159,7 +185,7 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
   --registration-token <registration-token>
 ```
 
-安装器会补齐所选 backend 的依赖但不会升级已经安装的系统包，配置受限 SSH gateway，安装受管 device proxy，注册节点，启动两个 systemd service，并验证 runtime probe 与控制面 heartbeat。使用默认 `native` backend 时，它还会启用 IPv4 forwarding 和 user namespace，通过 Anthropic 官方 installer 下载 Claude Code `latest`，并在同一个只读受管 runtime 中安装带 `npm` 和 `npx` 的最新已验证 Node.js 22 release。默认配置不要求 KVM 或 Docker。请以 root 或具有 `sudo` 权限的用户运行；安装器只会为系统操作提权。
+该兼容入口会补齐所选 backend 的依赖但不会升级已经安装的系统包，配置受限 SSH gateway，安装受管 device proxy，注册节点，启动两个 systemd service，并验证 runtime probe 与控制面 heartbeat。它会在 argv 中携带短期 registration token，因此只能用于隔离的人工维护环境，并且不得写入 shell history 或日志。使用默认 `native` backend 时，它还会启用 IPv4 forwarding 和 user namespace，通过 Anthropic 官方 installer 下载 Claude Code `latest`，并在同一个只读受管 runtime 中安装带 `npm` 和 `npx` 的最新已验证 Node.js 22 release。默认配置不要求 KVM 或 Docker。请以 root 或具有 `sudo` 权限的用户运行；安装器只会为系统操作提权。
 
 默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。安装器会在装包后逐项验证命令，并通过重装 `gawk` 修复损坏的 `awk` alternatives 链。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
 
@@ -219,7 +245,7 @@ $DEVICE_PROXY_DIR/<target>/VERSION
 `current`。同一版本出现不同内容时会拒绝覆盖；proxy 缺失或不可执行时 capability 保持关闭。
 
 ```sh
-VERSION=0.2.19 DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 ```
 
 发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。

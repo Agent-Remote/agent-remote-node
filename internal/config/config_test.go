@@ -1,12 +1,69 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 )
+
+func TestLoadMigratesMissingEgoBrowserEnabledToFalse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"server_url":"https://control.example","node_id":"node_1","allowed_runtime_backends":["docker_sandbox"]}`
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.EgoBrowserEnabled || cfg.EgoBrowserConfiguredEnabled() {
+		t.Fatalf("missing ego-browser intent was not fail-closed: %#v", cfg)
+	}
+	if err := Save(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(data, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if value, ok := fields["ego_browser_enabled"].(bool); !ok || value {
+		t.Fatalf("migrated config did not persist explicit false: %#v", fields)
+	}
+}
+
+func TestLoadPreservesExplicitEgoBrowserIntent(t *testing.T) {
+	for _, enabled := range []bool{false, true} {
+		path := filepath.Join(t.TempDir(), "config.json")
+		cfg := (Config{ServerURL: "https://control.example", NodeID: "node_1", EgoBrowserEnabled: enabled}).WithDefaults()
+		if err := Save(path, cfg); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := Load(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if loaded.EgoBrowserEnabled != enabled {
+			t.Fatalf("explicit intent changed: want %t got %#v", enabled, loaded)
+		}
+	}
+}
+
+func TestLoadRejectsMalformedEgoBrowserIntent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"server_url":"https://control.example","node_id":"node_1","ego_browser_enabled":"true"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("non-boolean ego-browser intent was accepted")
+	}
+}
 
 func TestWireGuardIPRemovesInterfacePrefix(t *testing.T) {
 	cfg := Config{WireGuardAddress: "10.77.0.1/24"}

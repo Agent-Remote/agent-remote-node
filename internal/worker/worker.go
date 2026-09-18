@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
@@ -26,17 +27,23 @@ import (
 
 // Worker executes node heartbeats, task polling, and reconciliation.
 type Worker struct {
-	cfg           config.Config
-	client        api.Client
-	ledger        *ledger.Ledger
-	bridges       *devicecontrol.BridgeManager
-	browserBroker *egobrowser.Broker
-	brokerErr     error
+	cfg                       config.Config
+	client                    api.Client
+	ledger                    *ledger.Ledger
+	bridges                   *devicecontrol.BridgeManager
+	browserBroker             *egobrowser.Broker
+	brokerErr                 error
+	serverEnrollmentAdmission *atomic.Bool
+	serverEnrollmentKnown     *atomic.Bool
+	serverExecutionAdmission  *atomic.Bool
+	serverExecutionKnown      *atomic.Bool
 }
 
 // New creates a Worker.
 func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker {
 	cfg = cfg.WithDefaults()
+	// Standalone workers cannot receive admission; enrolled nodes start closed.
+	initialServerAdmission := cfg.ServerURL == ""
 	var broker *egobrowser.Broker
 	var brokerErr error
 	if cfg.EgoBrowserEnabled {
@@ -56,9 +63,21 @@ func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker
 			WrapperVersion:         cfg.EgoBrowserWrapperVersion,
 		})
 	}
+	serverEnrollment := &atomic.Bool{}
+	serverEnrollment.Store(initialServerAdmission)
+	serverEnrollmentKnown := &atomic.Bool{}
+	serverEnrollmentKnown.Store(cfg.ServerURL != "")
+	serverAdmission := &atomic.Bool{}
+	serverAdmission.Store(initialServerAdmission)
+	serverAdmissionKnown := &atomic.Bool{}
+	serverAdmissionKnown.Store(cfg.ServerURL != "")
 	return Worker{
 		cfg: cfg, client: client, ledger: taskLedger,
 		bridges: devicecontrol.NewBridgeManager(client), browserBroker: broker, brokerErr: brokerErr,
+		serverEnrollmentAdmission: serverEnrollment,
+		serverEnrollmentKnown:     serverEnrollmentKnown,
+		serverExecutionAdmission:  serverAdmission,
+		serverExecutionKnown:      serverAdmissionKnown,
 	}
 }
 
@@ -71,7 +90,7 @@ func (w Worker) Heartbeat(ctx context.Context) error {
 		w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
 		w.egoBrowserProbeConfig(),
 	)
-	return w.client.SendHeartbeat(ctx, api.HeartbeatRequest{
+	response, err := w.client.SendHeartbeatResponse(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
 		SupportedToolTypes: w.cfg.SupportedToolTypes,
@@ -81,6 +100,42 @@ func (w Worker) Heartbeat(ctx context.Context) error {
 		Resources:          resources,
 		Runtime:            runtimeStatus,
 	})
+	if err != nil {
+		return err
+	}
+	structuredAdmission := response.Data.EnrollmentEnabled != nil || response.Data.ExecutionAdmission != nil
+	if structuredAdmission {
+		// Missing fields in a structured response are denied.
+		enrollmentAllowed := response.Data.EnrollmentEnabled != nil && *response.Data.EnrollmentEnabled
+		executionAllowed := response.Data.ExecutionAdmission != nil && *response.Data.ExecutionAdmission
+		if w.serverEnrollmentAdmission != nil {
+			w.serverEnrollmentAdmission.Store(enrollmentAllowed)
+		}
+		if w.serverEnrollmentKnown != nil {
+			w.serverEnrollmentKnown.Store(true)
+		}
+		if w.serverExecutionAdmission != nil {
+			w.serverExecutionAdmission.Store(executionAllowed)
+		}
+		if w.serverExecutionKnown != nil {
+			w.serverExecutionKnown.Store(true)
+		}
+	} else {
+		// A legacy empty acknowledgement opens the compatibility path.
+		if w.serverEnrollmentAdmission != nil {
+			w.serverEnrollmentAdmission.Store(true)
+		}
+		if w.serverEnrollmentKnown != nil {
+			w.serverEnrollmentKnown.Store(false)
+		}
+		if w.serverExecutionAdmission != nil {
+			w.serverExecutionAdmission.Store(true)
+		}
+		if w.serverExecutionKnown != nil {
+			w.serverExecutionKnown.Store(false)
+		}
+	}
+	return nil
 }
 
 func (w Worker) syncWireGuardPeers(ctx context.Context) error {
@@ -560,17 +615,33 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 }
 
 func (w Worker) egoBrowserProbeConfig() noderuntime.EgoBrowserProbeConfig {
-	return noderuntime.EgoBrowserProbeConfig{
-		Enabled:             w.cfg.EgoBrowserEnabled,
-		WrapperPath:         w.cfg.EgoBrowserWrapperPath,
-		ProtocolVersion:     w.cfg.EgoBrowserProtocolVersion,
-		WrapperVersion:      w.cfg.EgoBrowserWrapperVersion,
-		SkillPath:           w.cfg.EgoBrowserSkillPath,
-		SkillVersion:        w.cfg.EgoBrowserSkillVersion,
-		SkillTreeSHA256:     w.cfg.EgoBrowserSkillTreeSHA256,
-		MaxScriptBytes:      w.cfg.EgoBrowserMaxScriptBytes,
-		MaxExecuteTimeoutMS: w.cfg.EgoBrowserMaxExecuteTimeoutMS,
+	var enrollmentAdmission *bool
+	if w.serverEnrollmentKnown == nil || w.serverEnrollmentKnown.Load() {
+		allowed := w.serverEnrollmentAllowed()
+		enrollmentAdmission = &allowed
 	}
+	return noderuntime.EgoBrowserProbeConfig{
+		Enabled:                       w.cfg.EgoBrowserEnabled,
+		ServerExecutionAdmission:      w.serverAdmissionAllowed(),
+		ServerExecutionAdmissionKnown: w.serverExecutionKnown == nil || w.serverExecutionKnown.Load(),
+		ServerEnrollmentAdmission:     enrollmentAdmission,
+		WrapperPath:                   w.cfg.EgoBrowserWrapperPath,
+		ProtocolVersion:               w.cfg.EgoBrowserProtocolVersion,
+		WrapperVersion:                w.cfg.EgoBrowserWrapperVersion,
+		SkillPath:                     w.cfg.EgoBrowserSkillPath,
+		SkillVersion:                  w.cfg.EgoBrowserSkillVersion,
+		SkillTreeSHA256:               w.cfg.EgoBrowserSkillTreeSHA256,
+		MaxScriptBytes:                w.cfg.EgoBrowserMaxScriptBytes,
+		MaxExecuteTimeoutMS:           w.cfg.EgoBrowserMaxExecuteTimeoutMS,
+	}
+}
+
+func (w Worker) serverAdmissionAllowed() bool {
+	return w.serverExecutionAdmission != nil && w.serverExecutionAdmission.Load()
+}
+
+func (w Worker) serverEnrollmentAllowed() bool {
+	return w.serverEnrollmentAdmission != nil && w.serverEnrollmentAdmission.Load()
 }
 
 func (w Worker) requireBackend(backend string) error {
@@ -680,6 +751,10 @@ func (w Worker) applyEgoBrowserRuntimeContext(payload map[string]any, operation 
 	// nonce. The node broker and root-owned node configuration are authoritative.
 	clearEgoBrowserRuntimeContext(payload)
 	if !w.cfg.EgoBrowserEnabled {
+		return nil, nil
+	}
+	// Local configuration never substitutes for Server execution admission.
+	if !w.serverAdmissionAllowed() {
 		return nil, nil
 	}
 	if w.brokerErr != nil {

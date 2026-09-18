@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/agent-remote-install-test.XXXXXX")"
+source_version="$(tr -d '[:space:]' < "$ROOT/VERSION")"
+ego_wrapper_version="$(jq -er '.ego_browser_wrapper.version' "$ROOT/release-dependencies.json")"
 cleanup_work() {
   chmod -R u+w "$WORK" 2>/dev/null || true
   rm -rf "$WORK"
@@ -287,7 +289,7 @@ EOF
 chmod 0755 "$fake_ego_wrapper"
 ego_wrapper_checksum="$(sha256_file "$fake_ego_wrapper")"
 ego_skill_source="$ROOT/internal/managedskills/skills/ego-browser"
-ego_skill_version="1.2.3"
+ego_skill_version="$(jq -er '.version' "$ROOT/ego-browser-skill-source.json")"
 ego_skill_digest="$(skill_tree_sha256 "$ego_skill_source")"
 ego_source_manifest="$ROOT/ego-browser-skill-source.json"
 ego_source_manifest_checksum="$(sha256_file "$ego_source_manifest")"
@@ -441,12 +443,12 @@ chmod 0755 "$proxy_dir/agent-remote-device-proxy"
 printf '1.2.3\n' > "$proxy_dir/VERSION"
 cp "$fake_ego_wrapper" "$ego_wrapper_dir/ego-browser"
 chmod 0755 "$ego_wrapper_dir/ego-browser"
-printf '0.1.11\n' > "$ego_wrapper_dir/VERSION"
-GOCACHE="$WORK/go-cache" VERSION=9.9.9 OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
+printf '%s\n' "$ego_wrapper_version" > "$ego_wrapper_dir/VERSION"
+GOCACHE="$WORK/go-cache" OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
   DEVICE_PROXY_DIR="$WORK/device-proxies" \
   EGO_BROWSER_WRAPPER_DIR="$WORK/ego-wrappers" \
   "$ROOT/scripts/build-release.sh" >/dev/null
-release_package="$release_dir/agent-remote-node-9.9.9-linux-amd64-glibc"
+release_package="$release_dir/agent-remote-node-$source_version-linux-amd64-glibc"
 for packaged_file in \
   VERSION \
   agent-remote-node \
@@ -472,7 +474,50 @@ for packaged_file in \
   systemd/agent-remote-runtime.sudoers; do
   [ -f "$release_package/$packaged_file" ] || fail "release is missing $packaged_file"
 done
-[ "$(cat "$release_package/VERSION")" = "9.9.9" ] || fail "release version metadata is wrong"
+[ "$(cat "$release_package/VERSION")" = "$source_version" ] || fail "release version metadata is wrong"
 [ -f "$release_package.tar.gz" ] || fail "release archive was not created"
+
+release_archive="$release_package.tar.gz"
+release_archive_name="$(basename "$release_archive")"
+release_checksum="$release_archive.sha256"
+release_bundle="$release_archive.sigstore.json"
+printf '%s  %s\n' "$(sha256_file "$release_archive")" "$release_archive_name" > "$release_checksum"
+printf '%s\n' '{"mediaType":"application/vnd.dev.sigstore.bundle+json;version=0.3"}' > "$release_bundle"
+verification_bin="$WORK/release-verification-bin"
+mkdir -p "$verification_bin"
+cat > "$verification_bin/cosign" <<'EOF'
+#!/bin/sh
+set -eu
+printf '%s\n' "$@" > "$FAKE_COSIGN_LOG"
+EOF
+chmod 0755 "$verification_bin/cosign"
+export FAKE_COSIGN_LOG="$WORK/cosign.log"
+(
+  PATH="$verification_bin:$PATH"
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 AGENT_REMOTE_NODE_VERSION="$source_version" \
+    . "$ROOT/scripts/install.sh"
+  verify_downloaded_release \
+    "$release_archive" "$release_checksum" "$release_bundle" "$release_archive_name"
+)
+grep -q '^verify-blob$' "$FAKE_COSIGN_LOG" || fail "release verification did not invoke cosign"
+grep -Fqx "https://github.com/Agent-Remote/agent-remote-node/.github/workflows/release.yml@refs/tags/v${source_version}" \
+  "$FAKE_COSIGN_LOG" || fail "release verification did not pin the release workflow identity"
+
+tampered_dir="$WORK/tampered-release"
+mkdir -p "$tampered_dir"
+tampered_archive="$tampered_dir/$release_archive_name"
+cp "$release_archive" "$tampered_archive"
+printf 'tampered' >> "$tampered_archive"
+cp "$release_checksum" "$tampered_archive.sha256"
+cp "$release_bundle" "$tampered_archive.sigstore.json"
+if (
+  PATH="$verification_bin:$PATH"
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 AGENT_REMOTE_NODE_VERSION="$source_version" \
+    . "$ROOT/scripts/install.sh"
+  verify_downloaded_release \
+    "$tampered_archive" "$tampered_archive.sha256" "$tampered_archive.sigstore.json" "$release_archive_name"
+) >/dev/null 2>&1; then
+  fail "tampered release archive passed checksum verification"
+fi
 
 echo "install script tests passed"

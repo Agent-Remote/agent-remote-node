@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 REPO="${AGENT_REMOTE_NODE_REPO:-Agent-Remote/agent-remote-node}"
 VERSION="${AGENT_REMOTE_NODE_VERSION:-latest}"
@@ -434,6 +435,45 @@ need_cmd() {
   fi
 }
 
+sha256_file() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | awk '{print $1}'
+  else
+    shasum -a 256 "$1" | awk '{print $1}'
+  fi
+}
+
+validate_download_file() {
+  local path="$1" limit="$2"
+  python3 - "$path" "$limit" <<'PY'
+import os
+import stat
+import sys
+
+path, raw_limit = sys.argv[1:]
+limit = int(raw_limit)
+before = os.lstat(path)
+if (
+    not stat.S_ISREG(before.st_mode)
+    or before.st_uid != os.getuid()
+    or before.st_nlink != 1
+    or before.st_size > limit
+):
+    raise SystemExit("downloaded Node release evidence is unsafe")
+descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+with os.fdopen(descriptor, "rb") as source:
+    after = os.fstat(source.fileno())
+    if (
+        not stat.S_ISREG(after.st_mode)
+        or after.st_uid != os.getuid()
+        or after.st_nlink != 1
+        or after.st_size > limit
+        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+    ):
+        raise SystemExit("downloaded Node release evidence changed while opening")
+PY
+}
+
 run_as_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
@@ -744,6 +784,105 @@ EOF
   fi
 }
 
+verify_downloaded_release() {
+  local archive="$1" checksum="$2" sigstore_bundle="$3" archive_name="$4" actual expected identity package
+  need_cmd cosign
+  case "$archive_name" in
+    agent-remote-node-*.tar.gz) package="${archive_name%.tar.gz}" ;;
+    *) echo "Node release archive name is invalid" >&2; exit 1 ;;
+  esac
+  validate_download_file "$archive" $((4 * 1024 * 1024 * 1024))
+  validate_download_file "$checksum" 4096
+  validate_download_file "$sigstore_bundle" $((16 * 1024 * 1024))
+  actual="$(sha256_file "$archive")"
+  expected="$(python3 - "$checksum" "$archive_name" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path, expected_name = sys.argv[1:]
+raw = Path(path).read_bytes()
+if len(raw) > 4096:
+    raise SystemExit("Node release checksum file is oversized")
+try:
+    fields = raw.decode("ascii").split()
+except UnicodeDecodeError as error:
+    raise SystemExit("Node release checksum file is not ASCII") from error
+if len(fields) != 2 or fields[1].lstrip("*") != expected_name:
+    raise SystemExit("Node release checksum does not name the selected archive")
+digest = fields[0]
+if re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+    raise SystemExit("Node release checksum is invalid")
+print(digest)
+PY
+)"
+  if [ "$actual" != "$expected" ]; then
+    echo "Node release archive SHA-256 verification failed" >&2
+    exit 1
+  fi
+  identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${VERSION}"
+  cosign verify-blob \
+    --bundle "$sigstore_bundle" \
+    --certificate-identity "$identity" \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    "$archive" >/dev/null
+  python3 - "$archive" "$package" "$VERSION" <<'PY'
+import sys
+import tarfile
+from pathlib import PurePosixPath
+
+archive_path, package, version = sys.argv[1:]
+seen = set()
+regular_files = set()
+total = 0
+with tarfile.open(archive_path, "r:gz") as archive:
+    members = archive.getmembers()
+    if not members or len(members) > 10000:
+        raise SystemExit("Node release archive inventory is invalid")
+    for member in members:
+        path = PurePosixPath(member.name)
+        canonical = path.as_posix()
+        serialized = member.name.rstrip("/") if member.isdir() else member.name
+        if (
+            not path.parts
+            or path.parts[0] != package
+            or path.is_absolute()
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or serialized != canonical
+            or canonical in seen
+            or not (member.isdir() or member.isfile())
+            or (member.isdir() and member.size != 0)
+            or member.size < 0
+        ):
+            raise SystemExit("Node release archive contains an unsafe entry")
+        seen.add(canonical)
+        if member.isfile():
+            regular_files.add(canonical)
+        total += member.size
+        if total > 8 * 1024 * 1024 * 1024:
+            raise SystemExit("Node release archive expands beyond its size limit")
+    required = {
+        f"{package}/VERSION",
+        f"{package}/install.sh",
+        f"{package}/agent-remote-node",
+        f"{package}/agent-remote-attach",
+        f"{package}/agent-remote-runtime",
+    }
+    if not required.issubset(regular_files):
+        raise SystemExit("Node release archive is incomplete")
+    version_file = archive.extractfile(f"{package}/VERSION")
+    if version_file is None:
+        raise SystemExit("Node release archive version is unreadable")
+    raw_version = version_file.read(65)
+    try:
+        packaged_version = raw_version.decode("ascii").strip()
+    except UnicodeDecodeError as error:
+        raise SystemExit("Node release archive version is not ASCII") from error
+    if len(raw_version) > 64 or packaged_version != version:
+        raise SystemExit("Node release archive version does not match the selected release")
+PY
+}
+
 check_dependency() {
   local name="$1"
   if ! command -v "$name" >/dev/null 2>&1; then
@@ -1005,7 +1144,7 @@ download_and_install() {
   need_cmd curl
   need_cmd tar
   resolve_version
-  local target package url work archive
+  local target package url work archive checksum sigstore_bundle
   target="$(detect_target)"
   package="$(package_name "$target")"
   url="https://github.com/${REPO}/releases/download/v${VERSION}/${package}.tar.gz"
@@ -1014,10 +1153,18 @@ download_and_install() {
     track_temp "$work"
   fi
   archive="$work/${package}.tar.gz"
+  checksum="$archive.sha256"
+  sigstore_bundle="$archive.sigstore.json"
 
   echo "Downloading $url"
   curl --fail --show-error --location --retry 5 --retry-all-errors --retry-delay 3 "$url" -o "$archive"
-  tar -xzf "$archive" -C "$work"
+  curl --fail --show-error --location --retry 5 --retry-all-errors --retry-delay 3 \
+    "$url.sha256" -o "$checksum"
+  curl --fail --show-error --location --retry 5 --retry-all-errors --retry-delay 3 \
+    "$url.sigstore.json" -o "$sigstore_bundle"
+  verify_downloaded_release "$archive" "$checksum" "$sigstore_bundle" "$(basename "$archive")"
+  tar --extract --gzip --file "$archive" --directory "$work" \
+    --no-same-owner --no-same-permissions
   install_packaged "$work/$package"
 
   if [ "$KEEP_TEMP" = "1" ]; then
