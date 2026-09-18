@@ -246,6 +246,9 @@ func TestInstallNodeExplicitEnableVerifiesBeforeReadingOrExchangingJoinCode(t *t
 }
 
 func TestInstallNodeExchangesJoinCodeAndCommitsVerifiedEnable(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("success path requires a root-owned runtime; CI tests it with sudo")
+	}
 	runtimeRoot := prepareVerifiedEgoBrowserRuntime(t)
 	exchangeID := "exchange-install-success-0001"
 	joinCode := "join-code-success-0123456789"
@@ -478,6 +481,9 @@ func TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling(t *testing.T) {
 	root := prepareVerifiedEgoBrowserRuntime(t)
 	for _, enabled := range []bool{false, true} {
 		t.Run(fmt.Sprintf("enabled_%t", enabled), func(t *testing.T) {
+			if enabled && runtime.GOOS == "linux" && os.Geteuid() != 0 {
+				t.Skip("success path requires a root-owned runtime; CI tests it with sudo")
+			}
 			configPath := filepath.Join(t.TempDir(), "config.json")
 			cfg := config.Config{
 				ServerURL: "https://control.example", NodeID: "node_1",
@@ -501,6 +507,23 @@ func TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling(t *testing.T) {
 				t.Fatalf("ego-browser config was not synchronized safely: %#v", updated)
 			}
 		})
+	}
+}
+
+func TestVerifiedEgoBrowserRuntimeRejectsNonRootOwner(t *testing.T) {
+	if runtime.GOOS != "linux" || os.Geteuid() == 0 {
+		t.Skip("Linux unprivileged ownership check")
+	}
+	root := prepareVerifiedEgoBrowserRuntime(t)
+	err := egobrowserartifact.VerifyPinned(egobrowserartifact.RuntimeConfig{
+		WrapperPath:     filepath.Join(root, "current", "bin", "ego-browser"),
+		WrapperVersion:  egobrowserartifact.PinnedWrapperVersion,
+		SkillPath:       filepath.Join(root, "current", "skill", "ego-browser"),
+		SkillVersion:    egobrowserartifact.OfficialSkillVersion,
+		SkillTreeSHA256: egobrowserartifact.OfficialSkillTreeSHA256,
+	})
+	if err == nil || !strings.Contains(err.Error(), "not root-owned") {
+		t.Fatalf("unowned runtime was not rejected: %v", err)
 	}
 }
 

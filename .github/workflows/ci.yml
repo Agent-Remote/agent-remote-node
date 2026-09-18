@@ -104,6 +104,13 @@ jobs:
         run: scripts/run-quality-checks.sh
       - name: Prove native runtime UID and broker socket ACLs
         run: tests/linux_ego_browser_uid_acl_test.sh
+      - name: Verify root-owned ego-browser release success paths
+        run: |
+          sudo env \
+            "PATH=$PATH" \
+            "HOME=$HOME" \
+            "GOCACHE=$RUNNER_TEMP/root-go-cache" \
+            go test -run '^(TestInstallNodeExchangesJoinCodeAndCommitsVerifiedEnable|TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling)$' ./cmd/agent-remote-node
       - name: Run session network namespace integration
         run: |
           sudo env \

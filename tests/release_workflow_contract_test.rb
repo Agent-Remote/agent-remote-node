@@ -147,6 +147,7 @@ raise "CI does not filter documentation-only changes" unless ci_text.include?("d
 raise "CI coverage upload must not depend on Codecov availability" unless ci_text.include?("fail_ci_if_error: false")
 raise "CI still repeats the full privileged Go test suite" if ci_text.include?("go test -covermode=atomic -coverprofile=coverage.out ./...")
 raise "CI does not run the focused privileged integration test" unless ci_text.include?("TestDialNetworkNamespaceLoopbackIntegration")
+raise "CI does not test the root-owned ego-browser success paths" unless ci_text.include?("Verify root-owned ego-browser release success paths") && ci_text.include?("TestInstallNodeExchangesJoinCodeAndCommitsVerifiedEnable|TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling")
 quality_script = File.read(File.join(repository_root, "scripts/run-quality-checks.sh"))
 raise "quality checks cannot publish a requested coverage profile" unless quality_script.include?('COVERAGE_PROFILE:-')
 
