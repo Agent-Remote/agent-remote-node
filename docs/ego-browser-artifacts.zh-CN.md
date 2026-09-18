@@ -2,11 +2,11 @@
 
 Node release 为远端浏览器工作携带两个独立固定的输入：
 
-- 来自 `Agent-Remote/agent-remote-ego-browser` candidate `0.1.12` 的 Linux
+- 来自 `Agent-Remote/agent-remote-ego-browser` release `0.1.13` 的 Linux
   `ego-browser` wrapper；
 - 来自 `citrolabs/ego-lite` commit
-  `36053d07001a910cb806a15d42d00fdea1cdea3d` 的官方 `ego-browser` Skill
-  `1.2.3`。
+  `d01be93325c7ea59d41c2ca9f4c59b58b4be4046` 的官方 `ego-browser` Skill
+  `2.0.0`。
 
 它们是不可变 release 输入，不会由 tool session 下载或修改。wrapper 通过 Node broker
 传输有界 heredoc；Skill 定义 Agent 工作流。两者都不包含 browser runtime 或本地浏览器
@@ -26,9 +26,9 @@ symlink、special file、hard link、缺失文件或额外文件都会使校验�
 当前 Skill 身份：
 
 ```text
-version:      1.2.3
-commit:       36053d07001a910cb806a15d42d00fdea1cdea3d
-tree SHA-256: 262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c
+version:      2.0.0
+commit:       d01be93325c7ea59d41c2ca9f4c59b58b4be4046
+tree SHA-256: a45cc7fcbea45a6f6222faf83c891b0fd22955193699dd99c9e40b0c0b4a0741
 ```
 
 canonical digest 覆盖按 UTF-8 排序的相对路径、十进制文件大小和准确文件字节，并使用 NUL
@@ -123,10 +123,10 @@ UID 建连、验证第二个 UID 被文件系统拒绝，并在测试临时授�
 新组合完成 canary 前保留旧不可变目录。回滚时把 `current` 指向之前验证的目录并重启 Node
 service；必须丢弃 broker memory、旧 ticket、permit 和 generation。结果未知的脚本不重放。
 
-wrapper 安装完成本身不代表端到端 capability 可以开启。旧 `0.1.11` release evidence 不能
-认证 `0.1.12` candidate；只有 `0.1.12` 经固定 workflow 发布、root evidence 记录准确的
+wrapper 安装完成本身不代表端到端 capability 可以开启。旧 `0.1.12` release evidence 不能
+认证 `0.1.13` release；只有 `0.1.13` 经固定 workflow 发布、root evidence 记录准确的
 Node/Bridge 组合且所有 artifact-bound canary 通过后，Server 才能在生产环境开启该 capability。
-在这些门禁通过前，该 candidate 必须保持 `release_published=false` 和
+在这些门禁通过前，该组合必须按 `release_published=false` 和
 `production_ready=false`。
 
 Native session spec 现在包含由 root 生成的不含敏感信息的路径和 artifact pin 快照。动态 session

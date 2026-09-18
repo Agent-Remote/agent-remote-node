@@ -174,7 +174,7 @@ func TestSharedProtocolVectors(t *testing.T) {
 	if err := decodeStrictJSON(vectors.Capability, &capability); err != nil {
 		t.Fatalf("decode capability vector: %v", err)
 	}
-	if capability.BridgeProtocolVersion != ProtocolVersion || capability.RemotePlatform != "linux" || capability.LocalPlatform != "macos" || capability.SkillVersion != "1.2.3" || capability.LocalRuntimeVersion != "0.4.7.4" {
+	if capability.BridgeProtocolVersion != ProtocolVersion || capability.RemotePlatform != "linux" || capability.LocalPlatform != "macos" || capability.SkillVersion != "2.0.0" || capability.LocalRuntimeVersion != "0.5.0.32" {
 		t.Fatalf("shared capability identity is incompatible: %#v", capability)
 	}
 }

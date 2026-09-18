@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.21 - 2026-09-18
+
+- feat(ego-browser): package the verified Bridge 0.1.13 wrapper and ego-browser Skill 2.0.0.
+
 ## v0.2.20 - 2026-09-18
 
 - test(ego-browser): verify root-owned runtime paths in ci (8183af8)

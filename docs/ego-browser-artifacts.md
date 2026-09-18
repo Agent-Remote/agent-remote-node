@@ -3,9 +3,9 @@
 The Node release carries two separate, pinned inputs for remote browser work:
 
 - the Linux `ego-browser` wrapper from `Agent-Remote/agent-remote-ego-browser`
-  candidate `0.1.12`;
-- the official `ego-browser` Skill `1.2.3` from `citrolabs/ego-lite` commit
-  `36053d07001a910cb806a15d42d00fdea1cdea3d`.
+  release `0.1.13`;
+- the official `ego-browser` Skill `2.0.0` from `citrolabs/ego-lite` commit
+  `d01be93325c7ea59d41c2ca9f4c59b58b4be4046`.
 
 They are immutable release inputs, not files downloaded or modified by a tool
 session. The wrapper transports a bounded heredoc through the Node broker. The
@@ -28,9 +28,9 @@ symlink, special file, hard link, missing file, or extra file fails the check.
 Current Skill identity:
 
 ```text
-version:      1.2.3
-commit:       36053d07001a910cb806a15d42d00fdea1cdea3d
-tree SHA-256: 262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c
+version:      2.0.0
+commit:       d01be93325c7ea59d41c2ca9f4c59b58b4be4046
+tree SHA-256: a45cc7fcbea45a6f6222faf83c891b0fd22955193699dd99c9e40b0c0b4a0741
 ```
 
 The canonical digest covers sorted UTF-8 relative paths, decimal file sizes,
@@ -139,11 +139,11 @@ old tickets, permits, and generations must be discarded. Scripts with unknown
 results are never replayed.
 
 Wrapper installation does not by itself authorize the end-to-end capability.
-The prior `0.1.11` release evidence cannot authenticate the `0.1.12` candidate.
-The Server capability must remain disabled until `0.1.12` is published through
+The prior `0.1.12` release evidence cannot authenticate the `0.1.13` release.
+The Server capability must remain disabled until `0.1.13` is published through
 the pinned workflow, the root evidence records the exact Node/Bridge
 composition, and all artifact-bound canaries pass.
-Until those gates pass, the candidate is `release_published=false` and
+Until those gates pass, treat the combination as `release_published=false` and
 `production_ready=false`.
 
 Native session specs include a root-generated snapshot of the non-sensitive paths and artifact pins

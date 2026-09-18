@@ -183,9 +183,9 @@ ego_docs.each do |name, localized_contracts|
   content = File.read(File.join(repository_root, name))
   [
     ego_wrapper["version"],
-    "1.2.3",
-    "36053d07001a910cb806a15d42d00fdea1cdea3d",
-    "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c",
+    ego_skill_source.fetch("version"),
+    ego_skill_source.fetch("upstream_commit"),
+    ego_skill_source.fetch("tree_sha256"),
     "release_published=false",
     "production_ready=false",
     *localized_contracts

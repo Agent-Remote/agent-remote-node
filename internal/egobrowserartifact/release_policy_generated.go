@@ -4,19 +4,19 @@ package egobrowserartifact
 
 const (
 	// PinnedWrapperVersion identifies the reviewed Linux ego-browser wrapper release.
-	PinnedWrapperVersion = "0.1.12"
+	PinnedWrapperVersion = "0.1.13"
 	// PinnedProtocolVersion identifies the reviewed ego-browser protocol.
 	PinnedProtocolVersion = "ego-browser-bridge-v1"
 	// OfficialSkillName identifies the reviewed upstream Skill name.
 	OfficialSkillName = "ego-browser"
 	// OfficialSkillVersion identifies the reviewed upstream ego-browser Skill release.
-	OfficialSkillVersion = "1.2.3"
+	OfficialSkillVersion = "2.0.0"
 	// OfficialSkillUpstreamRepository identifies the reviewed upstream Skill repository.
 	OfficialSkillUpstreamRepository = "https://github.com/citrolabs/ego-lite"
 	// OfficialSkillSourceCommit identifies the reviewed upstream ego-lite tree.
-	OfficialSkillSourceCommit = "36053d07001a910cb806a15d42d00fdea1cdea3d"
+	OfficialSkillSourceCommit = "d01be93325c7ea59d41c2ca9f4c59b58b4be4046"
 	// OfficialSkillDocumentSHA256 identifies the reviewed upstream SKILL.md bytes.
-	OfficialSkillDocumentSHA256 = "44c119634df847861486c3b104cda3c2faa9dd4c71dbb3a854429098be962293"
+	OfficialSkillDocumentSHA256 = "9402bf03db895209a755d5e2af9b436dbf98eed0911907110a4ea482c30632de"
 	// OfficialSkillTreeSHA256 identifies the reviewed upstream Skill tree.
-	OfficialSkillTreeSHA256 = "262110a09678fd3e0bbb382400588dacb98b24659b3b4a57903703b65d133c7c"
+	OfficialSkillTreeSHA256 = "a45cc7fcbea45a6f6222faf83c891b0fd22955193699dd99c9e40b0c0b4a0741"
 )

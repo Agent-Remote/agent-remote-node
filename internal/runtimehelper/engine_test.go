@@ -214,8 +214,8 @@ func TestSessionRuntimeConfigSnapshotCarriesNonSensitivePaths(t *testing.T) {
 		EgoBrowserSkillPath:       "/srv/agent-remote/ego/current/skill/ego-browser",
 		EgoBrowserBrokerSocket:    "/run/agent-remote/ego-browser.sock",
 		EgoBrowserBrokerRoot:      "/srv/agent-remote/ego-state",
-		EgoBrowserWrapperVersion:  "0.1.12",
-		EgoBrowserSkillVersion:    "1.2.3",
+		EgoBrowserWrapperVersion:  "0.1.13",
+		EgoBrowserSkillVersion:    "2.0.0",
 		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
 	}.WithDefaults()
 	snapshot := sessionRuntimeConfigFromEngine(config)
@@ -928,9 +928,9 @@ func TestDockerRuntimeAcceptsEnabledEgoBrowserContext(t *testing.T) {
 		EgoBrowserWrapperPath:     "/managed/bin/ego-browser",
 		EgoBrowserBrokerSocket:    "/managed/run/broker.sock",
 		EgoBrowserProtocolVersion: "ego-browser-bridge-v1",
-		EgoBrowserWrapperVersion:  "1.2.3",
+		EgoBrowserWrapperVersion:  "0.1.13",
 		EgoBrowserSkillPath:       "/managed/skill/ego-browser",
-		EgoBrowserSkillVersion:    "1.2.3",
+		EgoBrowserSkillVersion:    "2.0.0",
 		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
 	}
 	context, err := parseEgoBrowserRuntimeContext(map[string]any{
