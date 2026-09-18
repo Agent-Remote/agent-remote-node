@@ -904,9 +904,8 @@ func configureEgoBrowser(args []string) error {
 	if *enable && *disable {
 		return errors.New("--enable and --disable are mutually exclusive")
 	}
-	// Upgrades must be able to read a previously enabled config whose wrapper
-	// pin predates the reviewed release. The installed runtime is verified
-	// below before the ordinary (strict) config save is attempted.
+	// Stale artifact pins are accepted here only until the installed release is
+	// verified and the updated configuration passes strict validation.
 	cfg, err := config.LoadForUpgrade(*configPath)
 	if err != nil {
 		return err

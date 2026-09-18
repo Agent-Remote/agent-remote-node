@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -488,6 +489,7 @@ func TestConfigureEgoBrowserSynchronizesVersionWithoutEnabling(t *testing.T) {
 			cfg := config.Config{
 				ServerURL: "https://control.example", NodeID: "node_1",
 				EgoBrowserEnabled: enabled, EgoBrowserWrapperVersion: "0.1.0",
+				EgoBrowserSkillVersion: "1.2.3", EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
 			}.WithDefaults()
 			if err := config.SaveForUpgrade(configPath, cfg); err != nil {
 				t.Fatal(err)
@@ -535,6 +537,33 @@ func TestConfigureEgoBrowserEnableRejectsUnverifiedRuntime(t *testing.T) {
 	}
 	if err := configureEgoBrowser([]string{"--config", configPath, "--runtime-root", root, "--enable"}); err == nil {
 		t.Fatal("unverified ego-browser runtime was enabled")
+	}
+}
+
+func TestConfigureEgoBrowserRejectsUnverifiedUpgradeWithoutChangingConfig(t *testing.T) {
+	root := prepareEgoBrowserMetadataRuntime(t)
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfg := (config.Config{
+		ServerURL: "https://control.example", NodeID: "node_1",
+		EgoBrowserEnabled: true, EgoBrowserWrapperVersion: "0.1.12",
+		EgoBrowserSkillVersion: "1.2.3", EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
+	}).WithDefaults()
+	if err := config.SaveForUpgrade(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configureEgoBrowser([]string{"--config", configPath, "--runtime-root", root}); err == nil {
+		t.Fatal("unverified runtime was accepted during a browser upgrade")
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed browser upgrade changed the saved config")
 	}
 }
 

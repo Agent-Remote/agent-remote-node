@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
@@ -132,6 +133,56 @@ func TestValidateRejectsStaleEnabledEgoBrowserWrapper(t *testing.T) {
 	cfg.EgoBrowserWrapperVersion = "../untrusted"
 	if err := cfg.ValidateForUpgrade(false); err == nil {
 		t.Fatal("malformed stale ego-browser wrapper pin was accepted")
+	}
+}
+
+func TestLoadForUpgradeAcceptsStaleEnabledEgoBrowserSkill(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := (Config{
+		ServerURL:                 "https://control.example",
+		NodeID:                    "node_1",
+		EgoBrowserEnabled:         true,
+		EgoBrowserWrapperVersion:  "0.1.12",
+		EgoBrowserSkillVersion:    "1.2.3",
+		EgoBrowserSkillTreeSHA256: strings.Repeat("a", 64),
+	}).WithDefaults()
+	if err := SaveForUpgrade(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err == nil {
+		t.Fatal("normal loading accepted stale enabled browser artifacts")
+	}
+	loaded, err := LoadForUpgrade(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.EgoBrowserEnabled || loaded.EgoBrowserSkillVersion != "1.2.3" ||
+		loaded.EgoBrowserSkillTreeSHA256 != strings.Repeat("a", 64) {
+		t.Fatalf("upgrade loading changed existing browser intent or pins: %#v", loaded)
+	}
+	loaded.EgoBrowserWrapperVersion = egobrowserartifact.PinnedWrapperVersion
+	loaded.EgoBrowserSkillVersion = egobrowserartifact.OfficialSkillVersion
+	loaded.EgoBrowserSkillTreeSHA256 = egobrowserartifact.OfficialSkillTreeSHA256
+	if err := Save(path, loaded); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("upgraded config failed strict validation: %v", err)
+	}
+}
+
+func TestValidateForUpgradeRejectsMalformedEgoBrowserSkill(t *testing.T) {
+	for _, mutate := range []func(*Config){
+		func(cfg *Config) { cfg.EgoBrowserSkillVersion = "../untrusted" },
+		func(cfg *Config) { cfg.EgoBrowserSkillTreeSHA256 = "not-a-digest" },
+		func(cfg *Config) { cfg.EgoBrowserSkillTreeSHA256 = strings.Repeat("A", 64) },
+		func(cfg *Config) { cfg.EgoBrowserSkillTreeSHA256 = strings.Repeat("a", 63) },
+	} {
+		cfg := (Config{ServerURL: "https://control.example", NodeID: "node_1", EgoBrowserEnabled: true}).WithDefaults()
+		mutate(&cfg)
+		if err := cfg.ValidateForUpgrade(false); err == nil {
+			t.Fatalf("malformed browser Skill pin was accepted for upgrade: %#v", cfg)
+		}
 	}
 }
 

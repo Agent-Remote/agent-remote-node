@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net"
@@ -213,13 +215,12 @@ func (c Config) Validate(requireToken bool) error {
 	return c.validate(requireToken, false)
 }
 
-// ValidateForUpgrade validates configuration while allowing the wrapper pin to
-// be replaced by the explicit ego-browser upgrade command.
+// ValidateForUpgrade permits stale browser artifact pins during a controlled upgrade.
 func (c Config) ValidateForUpgrade(requireToken bool) error {
 	return c.validate(requireToken, true)
 }
 
-func (c Config) validate(requireToken bool, allowStaleWrapper bool) error {
+func (c Config) validate(requireToken bool, allowStaleArtifacts bool) error {
 	if c.ServerURL == "" {
 		return errors.New("server_url is required")
 	}
@@ -269,11 +270,15 @@ func (c Config) validate(requireToken bool, allowStaleWrapper bool) error {
 		if !validEgoBrowserVersion(c.EgoBrowserWrapperVersion) {
 			return errors.New("ego-browser wrapper version is invalid")
 		}
-		if !allowStaleWrapper && c.EgoBrowserWrapperVersion != egobrowserartifact.PinnedWrapperVersion {
+		if !allowStaleArtifacts && c.EgoBrowserWrapperVersion != egobrowserartifact.PinnedWrapperVersion {
 			return errors.New("ego-browser wrapper version is unsupported")
 		}
-		if c.EgoBrowserSkillVersion != egobrowserartifact.OfficialSkillVersion ||
-			c.EgoBrowserSkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256 {
+		if allowStaleArtifacts && (!validEgoBrowserVersion(c.EgoBrowserSkillVersion) ||
+			!validEgoBrowserDigest(c.EgoBrowserSkillTreeSHA256)) {
+			return errors.New("ego-browser official Skill version or digest is invalid")
+		}
+		if !allowStaleArtifacts && (c.EgoBrowserSkillVersion != egobrowserartifact.OfficialSkillVersion ||
+			c.EgoBrowserSkillTreeSHA256 != egobrowserartifact.OfficialSkillTreeSHA256) {
 			return errors.New("ego-browser official Skill version or digest is unsupported")
 		}
 		for name, value := range map[string]string{
@@ -313,6 +318,11 @@ func validEgoBrowserVersion(value string) bool {
 	return true
 }
 
+func validEgoBrowserDigest(value string) bool {
+	decoded, err := hex.DecodeString(value)
+	return err == nil && len(decoded) == sha256.Size && strings.ToLower(value) == value
+}
+
 // WireGuardIP returns the host address without the local interface prefix.
 func (c Config) WireGuardIP() string {
 	prefix, err := netip.ParsePrefix(c.WireGuardAddress)
@@ -327,13 +337,12 @@ func Load(path string) (Config, error) {
 	return load(path, false)
 }
 
-// LoadForUpgrade reads a config while permitting a stale wrapper pin during a
-// controlled runtime synchronization.
+// LoadForUpgrade reads a config with stale browser pins for runtime synchronization.
 func LoadForUpgrade(path string) (Config, error) {
 	return load(path, true)
 }
 
-func load(path string, allowStaleWrapper bool) (Config, error) {
+func load(path string, allowStaleArtifacts bool) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -348,7 +357,7 @@ func load(path string, allowStaleWrapper bool) (Config, error) {
 		cfg.EgoBrowserEnabled = false
 	}
 	cfg.SourcePath = path
-	if allowStaleWrapper {
+	if allowStaleArtifacts {
 		return cfg, cfg.ValidateForUpgrade(false)
 	}
 	return cfg, cfg.Validate(false)
@@ -359,18 +368,17 @@ func Save(path string, cfg Config) error {
 	return save(path, cfg, false)
 }
 
-// SaveForUpgrade atomically writes configuration while permitting the wrapper
-// pin to remain stale until the explicit runtime synchronization completes.
+// SaveForUpgrade persists stale browser pins until runtime synchronization completes.
 func SaveForUpgrade(path string, cfg Config) error {
 	return save(path, cfg, true)
 }
 
-func save(path string, cfg Config, allowStaleWrapper bool) error {
+func save(path string, cfg Config, allowStaleArtifacts bool) error {
 	cfg = cfg.WithDefaults()
 	// Save materializes intent after legacy configs have been normalized.
 	cfg.MarkEgoBrowserEnabledConfigured()
 	var validationErr error
-	if allowStaleWrapper {
+	if allowStaleArtifacts {
 		validationErr = cfg.ValidateForUpgrade(false)
 	} else {
 		validationErr = cfg.Validate(false)
