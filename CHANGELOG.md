@@ -2,6 +2,13 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.20 - 2026-09-18
+
+- test(ego-browser): verify root-owned runtime paths in ci (8183af8)
+- feat(ego-browser): package verified wrapper and managed join flow (abef077)
+- docs(release): remove unsupported unreleased section (b189d65)
+- fix(installer): choose dynamic WireGuard listen ports (8e8773f)
+
 ## v0.2.19 - 2026-09-10
 
 - fix(runtime): persist native session configuration snapshot (e7668f0)
