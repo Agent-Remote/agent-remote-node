@@ -2,6 +2,11 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.22 - 2026-09-18
+
+- fix(ego-browser): migrate stale skill pins during node upgrades (5db4a86)
+- fix(installer): bootstrap checksum-pinned cosign when missing (0b83d93)
+
 ## v0.2.21 - 2026-09-18
 
 - feat(ego-browser): package the verified Bridge 0.1.13 wrapper and ego-browser Skill 2.0.0.
