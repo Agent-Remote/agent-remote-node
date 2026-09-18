@@ -15,6 +15,8 @@ ARCH_OVERRIDE="${AGENT_REMOTE_NODE_ARCH:-}"
 TARGET_OVERRIDE="${AGENT_REMOTE_NODE_TARGET:-}"
 TMP_DIR="${TMPDIR:-/tmp}"
 KEEP_TEMP="${KEEP_TEMP:-0}"
+COSIGN_BOOTSTRAP_VERSION="3.1.3"
+COSIGN_COMMAND=""
 INSTALL_SYSTEMD="${INSTALL_SYSTEMD:-1}"
 CREATE_USER="${CREATE_USER:-1}"
 USE_SUDO="${USE_SUDO:-auto}"
@@ -474,6 +476,61 @@ with os.fdopen(descriptor, "rb") as source:
 PY
 }
 
+cosign_bootstrap_release() {
+  case "$(uname -s)/$(uname -m)" in
+    Linux/x86_64|Linux/amd64)
+      COSIGN_BOOTSTRAP_ASSET="cosign-linux-amd64"
+      COSIGN_BOOTSTRAP_SHA256="4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71"
+      ;;
+    Linux/aarch64|Linux/arm64)
+      COSIGN_BOOTSTRAP_ASSET="cosign-linux-arm64"
+      COSIGN_BOOTSTRAP_SHA256="c5d324e091826b0d7a78eb16fef316450b4eb9aaec045611c08ba06f5e73220a"
+      ;;
+    Darwin/x86_64)
+      COSIGN_BOOTSTRAP_ASSET="cosign-darwin-amd64"
+      COSIGN_BOOTSTRAP_SHA256="2347488e5d5b25336644024dfeca5601b190e91197a71a917bda44744aff106c"
+      ;;
+    Darwin/arm64)
+      COSIGN_BOOTSTRAP_ASSET="cosign-darwin-arm64"
+      COSIGN_BOOTSTRAP_SHA256="5cf948c2f4dfe59687bdd0b8523709067383e03982cc543475c8a7dc70e92a76"
+      ;;
+    *)
+      echo "cosign bootstrap does not support this operating system and architecture" >&2
+      exit 1
+      ;;
+  esac
+}
+
+bootstrap_cosign() {
+  cosign_bootstrap_release
+  need_cmd curl
+  local staging binary actual
+  staging="$(mktemp -d "${TMP_DIR%/}/agent-remote-cosign.XXXXXX")"
+  track_temp "$staging"
+  binary="$staging/cosign"
+  echo "Downloading checksum-pinned cosign v${COSIGN_BOOTSTRAP_VERSION} for release verification" >&2
+  curl --fail --show-error --location --retry 3 --retry-delay 2 \
+    --connect-timeout 20 --max-time 600 --proto '=https' --proto-redir '=https' \
+    "https://github.com/sigstore/cosign/releases/download/v${COSIGN_BOOTSTRAP_VERSION}/${COSIGN_BOOTSTRAP_ASSET}" \
+    -o "$binary"
+  validate_download_file "$binary" $((256 * 1024 * 1024))
+  actual="$(sha256_file "$binary")"
+  if [ "$actual" != "$COSIGN_BOOTSTRAP_SHA256" ]; then
+    echo "cosign bootstrap SHA-256 verification failed" >&2
+    exit 1
+  fi
+  chmod 0500 "$binary"
+  COSIGN_COMMAND="$binary"
+}
+
+ensure_cosign() {
+  if command -v cosign >/dev/null 2>&1; then
+    COSIGN_COMMAND="$(command -v cosign)"
+  else
+    bootstrap_cosign
+  fi
+}
+
 run_as_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
@@ -786,7 +843,6 @@ EOF
 
 verify_downloaded_release() {
   local archive="$1" checksum="$2" sigstore_bundle="$3" archive_name="$4" actual expected identity package
-  need_cmd cosign
   case "$archive_name" in
     agent-remote-node-*.tar.gz) package="${archive_name%.tar.gz}" ;;
     *) echo "Node release archive name is invalid" >&2; exit 1 ;;
@@ -820,8 +876,9 @@ PY
     echo "Node release archive SHA-256 verification failed" >&2
     exit 1
   fi
+  ensure_cosign
   identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${VERSION}"
-  cosign verify-blob \
+  "$COSIGN_COMMAND" verify-blob \
     --bundle "$sigstore_bundle" \
     --certificate-identity "$identity" \
     --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \

@@ -494,6 +494,69 @@ chmod 0755 "$verification_bin/cosign"
 export FAKE_COSIGN_LOG="$WORK/cosign.log"
 (
   PATH="$verification_bin:$PATH"
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 . "$ROOT/scripts/install.sh"
+  curl() { fail "an existing cosign triggered a bootstrap download"; }
+  ensure_cosign
+  [ "$COSIGN_COMMAND" = "$verification_bin/cosign" ] || fail "existing cosign was not reused"
+)
+
+bootstrap_fixture_digest="$(sha256_file "$verification_bin/cosign")"
+bootstrap_download_source="$verification_bin/cosign"
+fake_cosign_download() {
+  local url="" destination=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      https://*) url="$1"; shift ;;
+      -o) destination="$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [ "$url" = "https://github.com/sigstore/cosign/releases/download/v3.1.3/cosign-linux-amd64" ] ||
+    fail "cosign bootstrap selected an unexpected source"
+  [ -n "$destination" ] || fail "cosign bootstrap did not select a private output file"
+  cp "$bootstrap_download_source" "$destination"
+}
+(
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 TMPDIR="$WORK" . "$ROOT/scripts/install.sh"
+  cosign_bootstrap_release() {
+    COSIGN_BOOTSTRAP_ASSET="cosign-linux-amd64"
+    COSIGN_BOOTSTRAP_SHA256="$bootstrap_fixture_digest"
+  }
+  command() {
+    if [ "$1" = -v ] && [ "${2:-}" = cosign ]; then return 1; fi
+    builtin command "$@"
+  }
+  curl() { fake_cosign_download "$@"; }
+  ensure_cosign
+  [ -x "$COSIGN_COMMAND" ] || fail "cosign bootstrap did not stage an executable"
+  "$COSIGN_COMMAND" verify-blob
+  printf '%s\n' "$COSIGN_COMMAND" > "$WORK/bootstrap-path"
+)
+[ ! -e "$(cat "$WORK/bootstrap-path")" ] || fail "cosign bootstrap left its verifier behind"
+
+bootstrap_download_source="$WORK/tampered-cosign"
+cp "$verification_bin/cosign" "$bootstrap_download_source"
+printf 'tampered' >> "$bootstrap_download_source"
+if (
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 TMPDIR="$WORK" . "$ROOT/scripts/install.sh"
+  cosign_bootstrap_release() {
+    COSIGN_BOOTSTRAP_ASSET="cosign-linux-amd64"
+    COSIGN_BOOTSTRAP_SHA256="$bootstrap_fixture_digest"
+  }
+  command() {
+    if [ "$1" = -v ] && [ "${2:-}" = cosign ]; then return 1; fi
+    builtin command "$@"
+  }
+  curl() { fake_cosign_download "$@"; }
+  ensure_cosign
+) > "$WORK/tampered-cosign.log" 2>&1; then
+  fail "tampered cosign bootstrap passed checksum verification"
+fi
+grep -q 'cosign bootstrap SHA-256 verification failed' "$WORK/tampered-cosign.log" ||
+  fail "tampered cosign bootstrap did not fail on its checksum"
+
+(
+  PATH="$verification_bin:$PATH"
   AGENT_REMOTE_INSTALL_LIB_ONLY=1 AGENT_REMOTE_NODE_VERSION="$source_version" \
     . "$ROOT/scripts/install.sh"
   verify_downloaded_release \

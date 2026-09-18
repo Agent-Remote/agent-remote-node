@@ -174,8 +174,9 @@ capability，已有 Node 保留原值；`--enable-ego-browser` 只表达管理�
 本机 release 校验。
 
 直接传 registration token 的安装器仅保留给全新 Debian 12+ 或 Ubuntu 22.04+ VPS 上的高级
-旧版 provisioning。使用前必须安装 `cosign`；release checksum 或 Sigstore workflow identity
-任一校验失败时，直接下载路径都会关闭失败：
+旧版 provisioning。缺少 `cosign` 时，安装器会在本次运行的私有临时目录下载并校验固定 SHA-256
+的官方 verifier；release checksum 或 Sigstore workflow identity 任一校验失败时，直接下载路径
+仍会关闭失败：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \

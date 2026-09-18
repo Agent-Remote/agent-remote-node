@@ -189,8 +189,9 @@ ego-browser capability disabled and preserves an existing Node's setting; `--ena
 an explicit administrator intent and still requires local release verification.
 
 The direct registration-token installer remains available only for advanced legacy provisioning on
-a clean Debian 12+ or Ubuntu 22.04+ VPS. Install `cosign` first; direct downloads fail closed unless
-the release checksum and Sigstore workflow identity both verify:
+a clean Debian 12+ or Ubuntu 22.04+ VPS. If `cosign` is missing, the installer downloads the
+checksum-pinned official verifier into a private temporary directory for this run. Direct downloads
+still fail closed unless the release checksum and Sigstore workflow identity both verify:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
