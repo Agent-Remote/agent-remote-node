@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.23 - 2026-09-19
+
+- fix(ego-browser): package bridge v0.1.14 (b6e3fc0)
+
 ## v0.2.22 - 2026-09-18
 
 - fix(ego-browser): migrate stale skill pins during node upgrades (5db4a86)
