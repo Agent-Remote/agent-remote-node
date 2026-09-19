@@ -4,7 +4,7 @@ package egobrowserartifact
 
 const (
 	// PinnedWrapperVersion identifies the reviewed Linux ego-browser wrapper release.
-	PinnedWrapperVersion = "0.1.14"
+	PinnedWrapperVersion = "0.1.15"
 	// PinnedProtocolVersion identifies the reviewed ego-browser protocol.
 	PinnedProtocolVersion = "ego-browser-bridge-v1"
 	// OfficialSkillName identifies the reviewed upstream Skill name.

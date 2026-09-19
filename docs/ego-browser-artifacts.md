@@ -3,7 +3,7 @@
 The Node release carries two separate, pinned inputs for remote browser work:
 
 - the Linux `ego-browser` wrapper from `Agent-Remote/agent-remote-ego-browser`
-  release `0.1.14`;
+  release `0.1.15`;
 - the official `ego-browser` Skill `2.0.0` from `citrolabs/ego-lite` commit
   `d01be93325c7ea59d41c2ca9f4c59b58b4be4046`.
 
@@ -139,8 +139,8 @@ old tickets, permits, and generations must be discarded. Scripts with unknown
 results are never replayed.
 
 Wrapper installation does not by itself authorize the end-to-end capability.
-The prior `0.1.13` release evidence cannot authenticate the `0.1.14` release.
-The Server capability must remain disabled until `0.1.14` is published through
+The prior `0.1.14` release evidence cannot authenticate the `0.1.15` release.
+The Server capability must remain disabled until `0.1.15` is published through
 the pinned workflow, the root evidence records the exact Node/Bridge
 composition, and all artifact-bound canaries pass.
 Until those gates pass, treat the combination as `release_published=false` and
