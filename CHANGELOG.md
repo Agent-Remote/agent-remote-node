@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.25 - 2026-09-19
+
+- fix(deps): pin ego-browser wrapper 0.1.16 (9f83af1)
+
 ## v0.2.24 - 2026-09-19
 
 - fix(deps): pin ego-browser wrapper 0.1.15 (3819dcc)
