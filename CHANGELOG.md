@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.24 - 2026-09-19
+
+- fix(deps): pin ego-browser wrapper 0.1.15 (3819dcc)
+
 ## v0.2.23 - 2026-09-19
 
 - fix(ego-browser): package bridge v0.1.14 (b6e3fc0)
