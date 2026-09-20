@@ -2481,6 +2481,7 @@ type controlResponseWire struct {
 func controlResponse(b *Broker, messageType, toolSessionID string) controlResponseWire {
 	b.mu.RLock()
 	items := make([]map[string]any, 0, 1)
+	states := make([]*bindingState, 0, 1)
 	for _, state := range b.bindings {
 		if state.metadata.ToolSessionID != toolSessionID {
 			continue
@@ -2492,9 +2493,19 @@ func controlResponse(b *Broker, messageType, toolSessionID string) controlRespon
 			"status":             state.metadata.Status,
 			"lease_health":       state.metadata.LeaseHealth,
 		})
+		states = append(states, state)
 	}
 	b.mu.RUnlock()
-	return controlResponseWire{Protocol: ProtocolVersion, Type: messageType + "_response", Status: "ok", Response: map[string]any{"bindings": items}}
+	for index, state := range states {
+		state.relayMu.Lock()
+		items[index]["relay_connected"] = state.relay != nil && !state.relay.closed.Load()
+		state.relayMu.Unlock()
+	}
+	return controlResponseWire{Protocol: ProtocolVersion, Type: messageType + "_response", Status: "ok", Response: map[string]any{
+		"bindings":                  items,
+		"observation_scope":         "node_binding_and_relay",
+		"local_execution_available": nil,
+	}}
 }
 
 func writeError(connection *net.UnixConn, messageType string, err error) error {

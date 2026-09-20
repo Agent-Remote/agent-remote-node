@@ -64,6 +64,11 @@ resource name is used for attach, forwarding, inspection, or stop.
 must not print tickets, nonce values, session keys, relay URLs, scripts, page
 data, or local browser content.
 
+The observation scope is `node_binding_and_relay`: lease `health` and
+`relay_connected` are separate facts. `local_execution_available` remains
+`null` because Node cannot observe the Mac runtime directly. Confirm execution
+with a bounded browser canary; a healthy lease alone does not prove availability.
+
 ## Content-free metrics
 
 Node logs use `metric=... value=...` key/value events. A collector must attach

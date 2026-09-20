@@ -116,6 +116,30 @@ func testBroker(t *testing.T, binding api.EgoBrowserBinding) *Broker {
 	return broker
 }
 
+func TestDoctorDoesNotInferLocalExecutionFromHealthyLease(t *testing.T) {
+	broker := testBroker(t, testBinding(t, 1))
+	response := controlResponse(broker, "doctor", "session-test")
+	if response.Response["local_execution_available"] != nil || response.Response["observation_scope"] != "node_binding_and_relay" {
+		t.Fatal("doctor overstated its local observations")
+	}
+	items := response.Response["bindings"].([]map[string]any)
+	if len(items) != 1 || items[0]["lease_health"] != "healthy" || items[0]["relay_connected"] != false {
+		t.Fatal("doctor confused a healthy lease with a connected relay")
+	}
+	state := broker.bindings["binding-test"]
+	defer func() { state.relay = nil }()
+	state.relay = newRelaySession(nil)
+	items = controlResponse(broker, "doctor", "session-test").Response["bindings"].([]map[string]any)
+	if items[0]["relay_connected"] != true {
+		t.Fatal("doctor did not observe the relay")
+	}
+	state.relay.closed.Store(true)
+	items = controlResponse(broker, "doctor", "session-test").Response["bindings"].([]map[string]any)
+	if items[0]["relay_connected"] != false {
+		t.Fatal("doctor accepted a closed relay")
+	}
+}
+
 func testBrokerWithoutBindings(t *testing.T) *Broker {
 	t.Helper()
 	stateRoot := t.TempDir()
