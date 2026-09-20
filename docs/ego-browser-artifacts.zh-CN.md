@@ -2,7 +2,7 @@
 
 Node release 为远端浏览器工作携带两个独立固定的输入：
 
-- 来自 `Agent-Remote/agent-remote-ego-browser` release `0.1.18` 的 Linux
+- 来自 `Agent-Remote/agent-remote-ego-browser` release `0.1.19` 的 Linux
   `ego-browser` wrapper；
 - 来自 `citrolabs/ego-lite` commit
   `d01be93325c7ea59d41c2ca9f4c59b58b4be4046` 的官方 `ego-browser` Skill
@@ -123,8 +123,8 @@ UID 建连、验证第二个 UID 被文件系统拒绝，并在测试临时授�
 新组合完成 canary 前保留旧不可变目录。回滚时把 `current` 指向之前验证的目录并重启 Node
 service；必须丢弃 broker memory、旧 ticket、permit 和 generation。结果未知的脚本不重放。
 
-wrapper 安装完成本身不代表端到端 capability 可以开启。旧 `0.1.17` release evidence 不能
-认证 `0.1.18` release；只有 `0.1.18` 经固定 workflow 发布、root evidence 记录准确的
+wrapper 安装完成本身不代表端到端 capability 可以开启。旧 `0.1.18` release evidence 不能
+认证 `0.1.19` release；只有 `0.1.19` 经固定 workflow 发布、root evidence 记录准确的
 Node/Bridge 组合且所有 artifact-bound canary 通过后，Server 才能在生产环境开启该 capability。
 在这些门禁通过前，该组合必须按 `release_published=false` 和
 `production_ready=false`。
