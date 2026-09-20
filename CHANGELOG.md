@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.27 - 2026-09-20
+
+- chore(ego-browser): pin wrapper 0.1.18 (6d671e1)
+
 ## v0.2.26 - 2026-09-20
 
 - fix(ego-browser): clarify diagnostics and pin supervised bridge runtime (935af63)
