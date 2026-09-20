@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.28 - 2026-09-20
+
+- fix(deps): pin ego-browser wrapper 0.1.19 (1245e68)
+
 ## v0.2.27 - 2026-09-20
 
 - chore(ego-browser): pin wrapper 0.1.18 (6d671e1)
