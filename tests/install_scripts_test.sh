@@ -466,7 +466,9 @@ printf '1.2.3\n' > "$proxy_dir/VERSION"
 cp "$fake_ego_wrapper" "$ego_wrapper_dir/ego-browser"
 chmod 0755 "$ego_wrapper_dir/ego-browser"
 printf '%s\n' "$ego_wrapper_version" > "$ego_wrapper_dir/VERSION"
-GOCACHE="$WORK/go-cache" OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
+# Go keys cached objects by source, toolchain, flags, and target; keep the normal
+# build cache while always creating and validating a fresh release archive.
+OUT_DIR="$release_dir" TARGETS=linux/amd64/glibc \
   DEVICE_PROXY_DIR="$WORK/device-proxies" \
   EGO_BROWSER_WRAPPER_DIR="$WORK/ego-wrappers" \
   "$ROOT/scripts/build-release.sh" >/dev/null

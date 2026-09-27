@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -102,7 +103,11 @@ func roundTripHelperRequestWithSetup(t *testing.T, payload []byte, setup func(*S
 		t.Fatal(err)
 	}
 	defer listener.Close()
-	server := NewServer(socketPath, -1, os.Getuid(), NewEngine(EngineConfig{StateRoot: t.TempDir()}))
+	// Protocol tests must not depend on the host Docker daemon or launch a real sandbox probe.
+	missing := filepath.Join(t.TempDir(), "unavailable")
+	server := NewServer(socketPath, -1, os.Getuid(), NewEngine(EngineConfig{
+		StateRoot: t.TempDir(), DockerBinaryPath: missing, BubblewrapPath: missing, SystemdRunPath: missing,
+	}))
 	if setup != nil {
 		setup(&server)
 	}
