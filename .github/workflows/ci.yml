@@ -104,14 +104,6 @@ jobs:
         run: scripts/run-quality-checks.sh
       - name: Prove native runtime UID and broker socket ACLs
         run: tests/linux_ego_browser_uid_acl_test.sh
-      - name: Prove independent writable skill copies and protected permission baselines
-        run: tests/linux_skill_copy_test.sh
-      - name: Prove Helper configuration imports, fences and full-quota socket transfer
-        run: bash tests/linux_config_import_test.sh
-      - name: Prove skill aliases, readonly system mounts and safe unmounting
-        run: tests/linux_skill_mount_test.sh
-      - name: Prove Native skill finalization through real systemd lifecycle
-        run: tests/linux_skill_systemd_test.sh
       - name: Verify root-owned ego-browser release success paths
         run: |
           sudo env \

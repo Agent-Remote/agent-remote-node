@@ -1,5 +1,16 @@
 # Native first-use acceptance proof
 
+## Release acceptance scheduling
+
+For the 2026-09-27 release, the user deferred real Linux and genuine Docker Sandbox acceptance
+until after publication with their assistance. The Linux Skill copy, configuration-import, mount
+and systemd runners are therefore in the manually triggered `skill-runtime-acceptance.yml`
+workflow. Ordinary CI and release checks continue to run. A skipped/manual workflow is not passing
+acceptance evidence. The observed GitHub runner rejected non-root Bubblewrap UID mapping; that
+environment prerequisite must be resolved before claiming successful mount acceptance. This
+workflow does not substitute for genuine Docker Sandbox or actual model acceptance.
+
+
 The separate [daemon lifecycle harness](skill-lifecycle-acceptance.md) builds the formal Worker and
 Helper binaries and preserves the shipped systemd privilege settings. Its runtime-only and real
 Claude learning opt-ins have separate evidence requirements; they do not change this older proof's
