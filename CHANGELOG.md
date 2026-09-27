@@ -2,6 +2,12 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.30 - 2026-09-27
+
+- fix(skills): wire explicit native capability probes into heartbeats (f2e7bf8)
+- perf(test): reuse go build cache and isolate protocol probes (3d7da54)
+- ci(skills): make deferred runtime acceptance manually triggered (c9537f3)
+
 ## v0.2.29 - 2026-09-27
 
 - test(skills): assert ownership rejection in unprivileged linux checks (5717dff)
