@@ -230,8 +230,12 @@ func TestNativeFailedLaunchCleanupPreservesResourcesUntilWritersExit(t *testing.
 			}
 			engine := NewEngine(EngineConfig{SystemctlPath: command, CgroupRoot: t.TempDir(), IPPath: cleanup, UmountPath: cleanup})
 			err := engine.cleanupFailedNativeLaunch(SessionSpec{UnitName: "session.service", SessionRoot: sessionRoot, NetworkNamespace: "ar-test"})
-			if (err != nil) != stopFails {
+			untrustedMountParent := runtime.GOOS == "linux" && os.Geteuid() != 0
+			if (err != nil) != (stopFails || untrustedMountParent) {
 				t.Fatalf("unexpected cleanup result: %v", err)
+			}
+			if !stopFails && untrustedMountParent && !strings.Contains(err.Error(), "root-owned") {
+				t.Fatalf("unprivileged cleanup must reject the untrusted mount parent: %v", err)
 			}
 			data, readErr := os.ReadFile(marker)
 			if stopFails && !os.IsNotExist(readErr) {

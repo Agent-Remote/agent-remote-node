@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -70,6 +71,12 @@ func TestSkillSystemPinsVerifyEmbeddedReleaseAndExactDeviceSelection(t *testing.
 		t.Fatal("device runtime accepted an unpinned skill")
 	}
 	pins.Device = skillmanager.DeviceSkillRelease{NodeReleaseVersion: config.DefaultVersion, ProtocolVersion: 1}
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		if err := verifySkillSystemPins(spec, pins); err == nil {
+			t.Fatal("non-root-owned device proxy accepted")
+		}
+		return
+	}
 	if err := verifySkillSystemPins(spec, pins); err != nil {
 		t.Fatal("matching device release failed", err)
 	}
@@ -135,6 +142,12 @@ func pinnedSkillRuntimeFixture(t *testing.T) SessionSpec {
 
 func TestSkillSystemPinsVerifyEnabledRuntimeArtifactBytes(t *testing.T) {
 	spec := pinnedSkillRuntimeFixture(t)
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		if err := verifySkillSystemPins(spec, testSkillSystemPins()); err == nil {
+			t.Fatal("non-root-owned runtime artifacts accepted")
+		}
+		return
+	}
 	if err := verifySkillSystemPins(spec, testSkillSystemPins()); err != nil {
 		t.Fatal("verified runtime artifact rejected", err)
 	}
