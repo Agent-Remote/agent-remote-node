@@ -74,11 +74,16 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	skillReports, skillChecks := e.probeManagedSkills(ctx, nativeOK)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return map[string]any{
 		"available": nativeOK || dockerOK, "backends": backends,
 		"native": nativeChecks, "docker_sandbox": dockerChecks,
 		"browser_docker": map[string]bool{"docker": dockerChecks["docker"], "daemon": dockerChecks["daemon"]},
 		"dependencies":   details,
+		"skill_manager":  skillReports, "skill_manager_checks": skillChecks,
 	}, nil
 }
 

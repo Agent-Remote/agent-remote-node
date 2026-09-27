@@ -36,6 +36,7 @@ type Config struct {
 	WorkspaceRoot                  string                    `json:"workspace_root"`
 	AccountRoot                    string                    `json:"account_root"`
 	SkillStateRoot                 string                    `json:"skill_state_root"`
+	SkillManagerEnabled            bool                      `json:"skill_manager_enabled"`
 	SkillStatePolicy               *skillmanager.StatePolicy `json:"skill_state_policy"`
 	DockerBinaryPath               string                    `json:"docker_binary_path"`
 	TmuxBinaryPath                 string                    `json:"tmux_binary_path"`

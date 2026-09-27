@@ -21,6 +21,7 @@ func TestApplyBrowserConfig(t *testing.T) {
 		BrowserPublicBaseURL:   "https://browser.example.test",
 		BrowserDockerNetwork:   "agent-remote_default",
 		SkillStateRoot:         "/srv/private-skill-state",
+		SkillManagerEnabled:    true,
 	}.WithDefaults()
 	if err := config.Save(path, nodeConfig); err != nil {
 		t.Fatal(err)
@@ -31,6 +32,7 @@ func TestApplyBrowserConfig(t *testing.T) {
 	}
 	if runtimeConfig.DockerBinaryPath != nodeConfig.DockerBinaryPath ||
 		runtimeConfig.SkillStateRoot != nodeConfig.SkillStateRoot ||
+		runtimeConfig.SkillManagerEnabled != nodeConfig.SkillManagerEnabled ||
 		runtimeConfig.NodeID != nodeConfig.NodeID ||
 		runtimeConfig.SkillStatePolicy != *nodeConfig.SkillStatePolicy ||
 		runtimeConfig.BrowserRoot != nodeConfig.BrowserRoot ||

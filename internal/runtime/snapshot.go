@@ -55,13 +55,15 @@ func Snapshot(allowedBackends []string, runtimeSocketPath string, deviceProxyPat
 
 func probeCapabilities(allowedBackends []string, runtimeSocketPath string, deviceProxyPath string, egoBrowser ...EgoBrowserProbeConfig) api.RuntimeCapabilities {
 	capabilities := api.RuntimeCapabilities{
-		Backends:         []string{},
-		Native:           map[string]bool{},
-		DockerSandbox:    map[string]bool{},
-		BrowserDocker:    map[string]bool{},
-		Dependencies:     map[string]string{},
-		ProbeErrors:      []string{},
-		EgoBrowserBridge: api.EgoBrowserBridgeCapability{ProtocolVersions: []string{}, Backends: []string{}, RemotePlatform: "linux", LocalPlatform: "macos"},
+		Backends:           []string{},
+		Native:             map[string]bool{},
+		DockerSandbox:      map[string]bool{},
+		BrowserDocker:      map[string]bool{},
+		Dependencies:       map[string]string{},
+		ProbeErrors:        []string{},
+		SkillManager:       map[string]api.SkillManagerCapability{},
+		SkillManagerChecks: map[string]bool{},
+		EgoBrowserBridge:   api.EgoBrowserBridgeCapability{ProtocolVersions: []string{}, Backends: []string{}, RemotePlatform: "linux", LocalPlatform: "macos"},
 	}
 	if len(egoBrowser) > 0 {
 		capabilities.EgoBrowserBridge = probeEgoBrowser(egoBrowser[0])
@@ -87,6 +89,8 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 		}
 	}
 	portForwardBackends := supportedFeatureBackends(capabilities, true)
+	capabilities.SkillManager = managedSkillCapabilities(capabilities.Backends, result["skill_manager"])
+	capabilities.SkillManagerChecks = boolMap(result["skill_manager_checks"])
 	if len(portForwardBackends) > 0 {
 		capabilities.SessionPortForwarding = api.SessionPortForwardingCapability{
 			Supported:        true,

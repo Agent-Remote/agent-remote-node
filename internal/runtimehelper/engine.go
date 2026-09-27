@@ -41,6 +41,7 @@ type EngineConfig struct {
 	WorkspaceRoot             string
 	AccountRoot               string
 	SkillStateRoot            string
+	SkillManagerEnabled       bool
 	SkillStatePolicy          skillmanager.StatePolicy
 	RuntimeBinaryPath         string
 	ClaudeRuntimePath         string

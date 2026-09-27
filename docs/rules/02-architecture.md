@@ -1,5 +1,10 @@
 # 02 Architecture
 
+Current Native Skill advertisement policy is defined in `../skill-capability-rollout.md`.
+An explicit default-off Node opt-in plus the real Helper dependency/private-volume probe now
+permits a complete Native report through the Worker heartbeat. This supersedes historical blanket
+advertisement-gated statements below; Docker Sandbox and actual model acceptance remain separate.
+
 The private Helper reclamation coordinator now holds the cancellable lifecycle mutex and proves
 original Native ready spec/launch authority, terminal capture/cleanup, absent transient root/network,
 stable original stopped unit and empty cgroup. Previous-boot inputs require absent current unit/cgroup;

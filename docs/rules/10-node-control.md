@@ -1,5 +1,10 @@
 # 10 Node Control
 
+The current explicit Native capability rollout is specified in `../skill-capability-rollout.md`.
+The deployment-owned default-off `skill_manager_enabled` setting, real Helper probe and strict Worker
+forwarding supersede historical unconditional advertisement gates below. Recovery of already
+accepted work does not depend on that opt-in; Docker Sandbox is never advertised as Skill-capable.
+
 `docs/skill-lifecycle-acceptance.md` records the production daemon acceptance boundary. The opt-in
 runner uses the shipped systemd units, a separate nonroot Worker and real Linux Claude. The
 credential-free `--version` case now proves Native start/natural-exit/finalization/publication/local

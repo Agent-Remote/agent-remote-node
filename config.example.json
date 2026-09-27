@@ -12,6 +12,7 @@
   "workspace_root": "/var/lib/agent-remote/users",
   "account_root": "/var/lib/agent-remote/users",
   "skill_state_root": "/var/lib/agent-remote-skill-state",
+  "skill_manager_enabled": false,
   "skill_state_policy": {
     "checkpoint_bytes": 1073741824,
     "directory_bytes": 10737418240,

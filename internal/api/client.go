@@ -164,15 +164,27 @@ type RuntimeStatus struct {
 
 // RuntimeCapabilities describes independently detected node runtimes.
 type RuntimeCapabilities struct {
-	Backends              []string                        `json:"backends"`
-	Native                map[string]bool                 `json:"native"`
-	DockerSandbox         map[string]bool                 `json:"docker_sandbox"`
-	BrowserDocker         map[string]bool                 `json:"browser_docker"`
-	Dependencies          map[string]string               `json:"dependencies"`
-	ProbeErrors           []string                        `json:"probe_errors"`
-	SessionPortForwarding SessionPortForwardingCapability `json:"session_port_forwarding"`
-	DeviceControl         DeviceControlCapability         `json:"device_control"`
-	EgoBrowserBridge      EgoBrowserBridgeCapability      `json:"ego_browser_bridge"`
+	Backends              []string                          `json:"backends"`
+	Native                map[string]bool                   `json:"native"`
+	DockerSandbox         map[string]bool                   `json:"docker_sandbox"`
+	BrowserDocker         map[string]bool                   `json:"browser_docker"`
+	Dependencies          map[string]string                 `json:"dependencies"`
+	ProbeErrors           []string                          `json:"probe_errors"`
+	SkillManager          map[string]SkillManagerCapability `json:"skill_manager"`
+	SkillManagerChecks    map[string]bool                   `json:"skill_manager_checks"`
+	SessionPortForwarding SessionPortForwardingCapability   `json:"session_port_forwarding"`
+	DeviceControl         DeviceControlCapability           `json:"device_control"`
+	EgoBrowserBridge      EgoBrowserBridgeCapability        `json:"ego_browser_bridge"`
+}
+
+// SkillManagerCapability describes the implemented managed lifecycle for one verified backend.
+type SkillManagerCapability struct {
+	ProtocolVersion           int  `json:"protocol_version"`
+	ManifestVersion           int  `json:"manifest_version"`
+	DeploymentProtocolVersion int  `json:"deployment_protocol_version"`
+	WritableCopies            bool `json:"writable_copies"`
+	Finalization              bool `json:"finalization"`
+	Recovery                  bool `json:"recovery"`
 }
 
 // EgoBrowserBridgeCapability describes the Linux wrapper available to a Node broker.
