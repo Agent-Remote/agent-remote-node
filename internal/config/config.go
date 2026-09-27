@@ -66,6 +66,8 @@ type Config struct {
 	EgoBrowserMaxParallelRequests  int                       `json:"ego_browser_max_parallel_requests"`
 	EgoBrowserMaxScriptBytes       int                       `json:"ego_browser_max_script_bytes"`
 	EgoBrowserMaxExecuteTimeoutMS  int                       `json:"ego_browser_max_execute_timeout_ms"`
+	// skillManagerEnabledSet preserves an explicit disable across defaults and upgrades.
+	skillManagerEnabledSet bool `json:"-"`
 	// egoBrowserEnabledSet distinguishes a missing legacy field from false.
 	egoBrowserEnabledSet    bool   `json:"-"`
 	WireGuardInterface      string `json:"wireguard_interface"`
@@ -76,7 +78,7 @@ type Config struct {
 	WireGuardListenPort     int    `json:"wireguard_listen_port"`
 }
 
-// UnmarshalJSON migrates a missing ego_browser_enabled value to false.
+// UnmarshalJSON preserves explicit feature settings separately from missing fields.
 func (c *Config) UnmarshalJSON(data []byte) error {
 	type plain Config
 	var decoded plain
@@ -89,11 +91,20 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	*c = Config(decoded)
 	_, c.egoBrowserEnabledSet = fields["ego_browser_enabled"]
+	value, present := fields["skill_manager_enabled"]
+	if present && strings.TrimSpace(string(value)) == "null" {
+		return errors.New("skill_manager_enabled must be a boolean")
+	}
+	c.skillManagerEnabledSet = present
 	return nil
 }
 
 // WithDefaults fills optional config values.
 func (c Config) WithDefaults() Config {
+	if !c.skillManagerEnabledSet {
+		c.SkillManagerEnabled = true
+		c.skillManagerEnabledSet = true
+	}
 	if c.Version == "" {
 		c.Version = DefaultVersion
 	}

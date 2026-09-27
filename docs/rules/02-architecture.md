@@ -1,7 +1,8 @@
 # 02 Architecture
 
 Current Native Skill advertisement policy is defined in `../skill-capability-rollout.md`.
-An explicit default-off Node opt-in plus the real Helper dependency/private-volume probe now
+Skill management defaults to enabled for fresh installs and missing configuration fields; an
+explicit false remains disabled across upgrades. The real Helper dependency/private-volume probe
 permits a complete Native report through the Worker heartbeat. This supersedes historical blanket
 advertisement-gated statements below; Docker Sandbox and actual model acceptance remain separate.
 

@@ -61,46 +61,73 @@ func TestSplitCommaList(t *testing.T) {
 }
 
 func TestRegisterReusesExistingTokenAndRefreshesSystemLayout(t *testing.T) {
-	requests := 0
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		requests++
-	}))
-	defer server.Close()
-	configPath := filepath.Join(t.TempDir(), "config.json")
-	existing := config.Config{
-		ServerURL:              server.URL,
-		NodeID:                 "node_1",
-		NodeToken:              "node_existing",
-		AllowedRuntimeBackends: []string{"docker_sandbox"},
-	}.WithDefaults()
-	if err := config.Save(configPath, existing); err != nil {
-		t.Fatal(err)
-	}
-	if err := register([]string{
-		"--config", configPath,
-		"--server-url", server.URL,
-		"--node-id", "node_1",
-		"--registration-token", "already_used",
-		"--runtime-backends", "native",
-		"--system-install",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if requests != 0 {
-		t.Fatalf("existing registration unexpectedly called the control plane %d times", requests)
-	}
-	updated, err := config.Load(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if updated.NodeToken != "node_existing" {
-		t.Fatalf("existing node token was replaced: %q", updated.NodeToken)
-	}
-	if !reflect.DeepEqual(updated.AllowedRuntimeBackends, []string{"native"}) {
-		t.Fatalf("runtime backends were not refreshed: %#v", updated.AllowedRuntimeBackends)
-	}
-	if updated.LedgerPath != "/var/lib/agent-remote-node/ledger.json" {
-		t.Fatalf("system layout was not applied: %#v", updated)
+	for _, mode := range []string{"missing", "enabled", "disabled"} {
+		t.Run(mode, func(t *testing.T) {
+			requests := 0
+			server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+				requests++
+			}))
+			defer server.Close()
+			configPath := filepath.Join(t.TempDir(), "config.json")
+			existing := config.Config{
+				ServerURL:              server.URL,
+				NodeID:                 "node_1",
+				NodeToken:              "node_existing",
+				AllowedRuntimeBackends: []string{"docker_sandbox"},
+			}.WithDefaults()
+			raw, err := json.Marshal(existing)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatal(err)
+			}
+			switch mode {
+			case "missing":
+				delete(fields, "skill_manager_enabled")
+			case "enabled":
+				fields["skill_manager_enabled"] = json.RawMessage("true")
+			case "disabled":
+				fields["skill_manager_enabled"] = json.RawMessage("false")
+			}
+			raw, err = json.Marshal(fields)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(configPath, raw, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if err := register([]string{
+				"--config", configPath,
+				"--server-url", server.URL,
+				"--node-id", "node_1",
+				"--registration-token", "already_used",
+				"--runtime-backends", "native",
+				"--system-install",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if requests != 0 {
+				t.Fatalf("existing registration unexpectedly called the control plane %d times", requests)
+			}
+			updated, err := config.Load(configPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if updated.NodeToken != "node_existing" {
+				t.Fatalf("existing node token was replaced: %q", updated.NodeToken)
+			}
+			if !reflect.DeepEqual(updated.AllowedRuntimeBackends, []string{"native"}) {
+				t.Fatalf("runtime backends were not refreshed: %#v", updated.AllowedRuntimeBackends)
+			}
+			if updated.LedgerPath != "/var/lib/agent-remote-node/ledger.json" {
+				t.Fatalf("system layout was not applied: %#v", updated)
+			}
+			if updated.SkillManagerEnabled != (mode != "disabled") {
+				t.Fatal("registration did not preserve Skill installation intent")
+			}
+		})
 	}
 }
 
