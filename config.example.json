@@ -11,6 +11,14 @@
   "attach_binary_path": "agent-remote-attach",
   "workspace_root": "/var/lib/agent-remote/users",
   "account_root": "/var/lib/agent-remote/users",
+  "skill_state_root": "/var/lib/agent-remote-skill-state",
+  "skill_state_policy": {
+    "checkpoint_bytes": 1073741824,
+    "directory_bytes": 10737418240,
+    "entries": 100000,
+    "minimum_free_bytes": 2147483648,
+    "reserve_percent": 5
+  },
   "docker_binary_path": "docker",
   "tmux_binary_path": "tmux",
   "mutagen_binary_path": "mutagen",

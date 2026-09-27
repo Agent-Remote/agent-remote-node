@@ -62,7 +62,7 @@ func TestHTTPErrorDoesNotExposeResponseOrCredentials(t *testing.T) {
 
 func TestClientRejectsOversizedResponse(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(response, strings.Repeat("x", maxResponseBodyBytes+1))
+		_, _ = io.WriteString(response, strings.Repeat("x", maxTaskPollResponseBytes+1))
 	}))
 	defer server.Close()
 	client := NewClient(server.URL, "node-token")

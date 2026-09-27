@@ -1,7 +1,6 @@
 package toolaccounts
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -95,6 +94,7 @@ type VerifyResult struct {
 
 // ImportConfigPayload describes an import_tool_account_config task payload.
 type ImportConfigPayload struct {
+	RuntimeBackend    string             `json:"runtime_backend"`
 	ToolAccountID     string             `json:"tool_account_id"`
 	ToolType          string             `json:"tool_type"`
 	UserID            string             `json:"user_id"`
@@ -263,40 +263,6 @@ func PrepareBinding(root string, dockerBinary string, tmuxBinary string, payload
 		TmuxStarted:       tmuxStarted,
 		Verifier:          payload.Verifier,
 		RuntimeBackend:    payload.RuntimeBackend,
-	}, nil
-}
-
-// ImportConfig writes local CLI config files into the remote tool account directory.
-func ImportConfig(root string, payload ImportConfigPayload) (ImportConfigResult, error) {
-	accountPath, err := resolveAccountPath(root, payload.UserID, payload.ToolType, payload.ToolAccountID, payload.AccountRemotePath)
-	if err != nil {
-		return ImportConfigResult{}, err
-	}
-	if err := os.MkdirAll(filepath.Join(accountPath, ".claude"), 0o700); err != nil {
-		return ImportConfigResult{}, err
-	}
-	filesWritten := make([]string, 0, len(payload.Files))
-	for _, file := range payload.Files {
-		targetPath, err := resolveImportConfigTarget(accountPath, file.Path)
-		if err != nil {
-			return ImportConfigResult{}, err
-		}
-		content, err := base64.StdEncoding.DecodeString(file.ContentBase64)
-		if err != nil {
-			return ImportConfigResult{}, fmt.Errorf("decode %s: %w", file.Path, err)
-		}
-		mode := sanitizeFileMode(file.Mode)
-		if err := writeFileAtomic(targetPath, content, mode); err != nil {
-			return ImportConfigResult{}, err
-		}
-		filesWritten = append(filesWritten, file.Path)
-	}
-	return ImportConfigResult{
-		Status:            "imported",
-		ToolAccountID:     payload.ToolAccountID,
-		ToolType:          payload.ToolType,
-		AccountRemotePath: accountPath,
-		FilesWritten:      filesWritten,
 	}, nil
 }
 
@@ -551,32 +517,6 @@ func sanitizeFileMode(mode uint32) os.FileMode {
 		return 0o644
 	}
 	return 0o600
-}
-
-func writeFileAtomic(path string, content []byte, mode os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".agent-remote-import-*")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-	if _, err := tmp.Write(content); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(mode); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
 }
 
 func shellCommand(args []string) string {

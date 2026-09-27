@@ -17,6 +17,7 @@ import (
 )
 
 const maxResponseBodyBytes = 1 << 20
+const maxTaskPollResponseBytes = 16 << 20
 
 // Client talks to agent-remote-server.
 type Client struct {
@@ -482,6 +483,8 @@ type EgoBrowserRenewResponse = EgoBrowserNodeRenewResponse
 // TaskEnvelope is a leased task.
 type TaskEnvelope struct {
 	TaskID         string         `json:"task_id"`
+	TaskRecordID   string         `json:"task_record_id"`
+	LeaseAttempt   int64          `json:"lease_attempt"`
 	NodeID         string         `json:"node_id"`
 	TaskType       string         `json:"task_type"`
 	IdempotencyKey string         `json:"idempotency_key"`
@@ -898,11 +901,15 @@ func (c Client) do(ctx context.Context, method string, path string, payload any,
 		return err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBodyBytes+1))
+	responseLimit := int64(maxResponseBodyBytes)
+	if method == http.MethodPost && path == "/api/v1/node-api/tasks/poll" {
+		responseLimit = maxTaskPollResponseBytes
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, responseLimit+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > maxResponseBodyBytes {
+	if int64(len(data)) > responseLimit {
 		return errors.New("server response exceeds size limit")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

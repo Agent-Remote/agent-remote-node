@@ -33,6 +33,8 @@ type Worker struct {
 	bridges                   *devicecontrol.BridgeManager
 	browserBroker             *egobrowser.Broker
 	brokerErr                 error
+	managedAdmissions         *managedRuntimeAdmissions
+	finalizations             *finalizationCoordinator
 	serverEnrollmentAdmission *atomic.Bool
 	serverEnrollmentKnown     *atomic.Bool
 	serverExecutionAdmission  *atomic.Bool
@@ -74,6 +76,8 @@ func New(cfg config.Config, client api.Client, taskLedger *ledger.Ledger) Worker
 	return Worker{
 		cfg: cfg, client: client, ledger: taskLedger,
 		bridges: devicecontrol.NewBridgeManager(client), browserBroker: broker, brokerErr: brokerErr,
+		managedAdmissions:         newManagedRuntimeAdmissions(),
+		finalizations:             newFinalizationCoordinator(),
 		serverEnrollmentAdmission: serverEnrollment,
 		serverEnrollmentKnown:     serverEnrollmentKnown,
 		serverExecutionAdmission:  serverAdmission,
@@ -222,6 +226,11 @@ func (w Worker) run(ctx context.Context, heartbeatInterval time.Duration, pollIn
 	startLoop("heartbeat", heartbeatInterval, false, w.Heartbeat)
 	startLoop("task poll", pollInterval, false, w.PollOnce)
 	startLoop("reconciliation", pollInterval, false, w.Reconcile)
+	startLoop("managed startup confirmations", pollInterval, false, w.recoverManagedStartConfirmations)
+	startLoop("skill deployment confirmations", pollInterval, false, w.recoverDeploymentConfirmations)
+	if w.cfg.ServerURL != "" && w.cfg.NodeToken != "" && slices.Contains(w.cfg.AllowedRuntimeBackends, "native") {
+		startLoop("skill finalizations", pollInterval, false, w.finalizationRecoveryOperation())
+	}
 	if w.cfg.WireGuardPublicKey != "" {
 		startLoop("WireGuard peer sync", heartbeatInterval, false, w.syncWireGuardPeers)
 	}
@@ -341,7 +350,29 @@ func retryDelay(failures int, interval time.Duration, initial time.Duration, max
 }
 
 func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
-	if entry, ok := w.ledger.Get(task.TaskID); ok {
+	if task.TaskType == "recover_tool_account_runtime" {
+		return w.executeRuntimeRecovery(ctx, task)
+	}
+	if deploymentTask(task) {
+		return w.executeDeployment(ctx, task)
+	}
+	if task.TaskType == "takeover_tool_account_skills" {
+		return w.executeTakeover(ctx, task)
+	}
+	entry, ok, err := w.ledger.Get(task.TaskID)
+	if err != nil {
+		return err
+	}
+	if ok && (entry.Status == deploymentPreparedPending || entry.Status == deploymentPreparedConfirmed || deploymentTerminationStatus(entry.Status)) {
+		return errDeploymentPending
+	}
+	if managedStopTask(task) {
+		return w.executeManagedStop(ctx, task)
+	}
+	if toolsessions.RequireLegacySkillStartup(task.Payload) != nil || ok && (entry.Status == managedStartPending || entry.Status == managedStartConfirmed || entry.Status == managedStartRetired) {
+		return w.executeManagedStartup(ctx, task)
+	}
+	if ok {
 		switch entry.Status {
 		case "succeeded":
 			return w.client.CompleteTask(ctx, task.TaskID, entry.Result)
@@ -351,12 +382,21 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	}
 
 	if err := w.client.StartTask(ctx, task.TaskID); err != nil {
+		if isConfigImportOwnershipError(task, err) {
+			taskError := contentSafeTaskError(task, err)
+			if saveErr := w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError}); saveErr != nil {
+				return saveErr
+			}
+			return w.client.FailTask(ctx, task.TaskID, taskError)
+		}
 		return err
 	}
 	result, err := w.executeKnownTask(ctx, task)
 	if err != nil {
 		taskError := contentSafeTaskError(task, err)
-		_ = w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError})
+		if saveErr := w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError}); saveErr != nil {
+			return saveErr
+		}
 		return w.client.FailTask(ctx, task.TaskID, taskError)
 	}
 	if err := w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "succeeded", Result: result}); err != nil {
@@ -366,6 +406,23 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 }
 
 func contentSafeTaskError(task api.TaskEnvelope, err error) map[string]any {
+	if task.TaskType == "create_tool_session" && errors.Is(err, toolsessions.ErrManagedSkillsUnsupported) {
+		return map[string]any{
+			"code": "SKILL_MANAGER_UNSUPPORTED", "message": "Managed skill session preparation is unavailable on this Node.",
+		}
+	}
+	if failure := accountMigrationTaskError(task, err); failure != nil {
+		return failure
+	}
+	if failure := configImportReceiptError(task, err); failure != nil {
+		return failure
+	}
+	if isConfigImportOwnershipError(task, err) {
+		return map[string]any{
+			"code":    "SKILL_MANAGER_OWNS_PATH",
+			"message": "Skill management owns this path; use account import-config --exclude-skills.",
+		}
+	}
 	if task.TaskType == "cancel_ego_browser_request" {
 		return map[string]any{
 			"code":    "EGO_BROWSER_CANCELLATION_FAILED",
@@ -461,18 +518,17 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 		if err != nil {
 			return nil, err
 		}
-		result, err := toolaccounts.ImportConfig(w.cfg.AccountRoot, payload)
+		grant, err := w.client.AuthorizeConfigImport(ctx, task.TaskID)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{
-			"status":              result.Status,
-			"tool_account_id":     result.ToolAccountID,
-			"tool_type":           result.ToolType,
-			"account_remote_path": result.AccountRemotePath,
-			"files_written":       result.FilesWritten,
-			"files_written_count": len(result.FilesWritten),
-		}, nil
+		if grant.NodeID != w.cfg.NodeID || grant.UserID != payload.UserID || grant.AccountID != payload.ToolAccountID {
+			return nil, errors.New("config import authorization identity mismatch")
+		}
+		payload.AccountRemotePath = ""
+		return w.callRuntimeHelperExact(ctx, task, "import_account_config", runtimehelper.ConfigImportRequest{
+			Account: payload, DirectoryMode: grant.DirectoryMode, DirectoryEpoch: grant.DirectoryEpoch,
+		})
 	case "create_tool_session":
 		payload, err := toolsessions.DecodeCreatePayload(task.Payload)
 		if err != nil {

@@ -298,6 +298,12 @@ func validateSessionSpec(config EngineConfig, spec SessionSpec, specPath string)
 	if spec.SSHAgentDirectory != "" && spec.SSHAgentDirectory != filepath.Join(spec.SessionRoot, "ssh-agent") {
 		return errors.New("SSH agent directory is outside session state")
 	}
+	if spec.SkillSnapshotID != "" && (spec.Kind != "session" || !validSkillUUID(spec.SkillSnapshotID)) {
+		return errors.New("spec contains an invalid skill snapshot identity")
+	}
+	if spec.ManagedSkills != (ManagedSessionSpecBinding{}) && (spec.SkillSnapshotID == "" || !validSkillUUID(spec.ManagedSkills.TaskID) || !validLowerHexDigest(spec.ManagedSkills.SnapshotInputDigest) || !validLowerHexDigest(spec.ManagedSkills.RequestDigest)) {
+		return errors.New("spec contains an incomplete managed creation identity")
+	}
 	if spec.DeviceControlProtocolVersion != 0 {
 		expectedArgs, err := managedDeviceControlArgv(spec.SessionID, nil)
 		if err != nil || spec.DeviceControlProtocolVersion != 1 ||

@@ -2,6 +2,13 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.29 - 2026-09-27
+
+- Add managed Skill materialization, isolated session state, account capture, deployment and finalization with resumable exports and retention.
+- Add Helper-owned backend migration and explicit recovery, including source verification and interrupted permission repair with immutable evidence and writer fencing.
+- Preserve privileged filesystem operations behind the runtime Helper and use Server 0.2.27 with CLI 0.2.31 for the new contracts.
+- Validation: repository quality gates and component contracts; remaining real Linux, genuine Docker Sandbox and actual model acceptance are deferred until after release with user assistance. Deferred tests are not certified as passed.
+
 ## v0.2.28 - 2026-09-20
 
 - fix(deps): pin ego-browser wrapper 0.1.19 (1245e68)

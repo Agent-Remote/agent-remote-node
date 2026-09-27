@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
+	"github.com/Agent-Remote/agent-remote-node/internal/skillmanager"
 	"github.com/Agent-Remote/agent-remote-node/internal/wireguard"
 )
 
@@ -21,47 +22,49 @@ var DefaultVersion = "0.0.0-dev"
 
 // Config contains local node runtime settings.
 type Config struct {
-	SourcePath                     string   `json:"-"`
-	ServerURL                      string   `json:"server_url"`
-	NodeID                         string   `json:"node_id"`
-	NodeToken                      string   `json:"node_token"`
-	Version                        string   `json:"version"`
-	SupportedToolTypes             []string `json:"supported_tool_types"`
-	HeartbeatIntervalSeconds       int      `json:"heartbeat_interval_seconds"`
-	PollIntervalSeconds            int      `json:"poll_interval_seconds"`
-	LedgerPath                     string   `json:"ledger_path"`
-	SSHAuthorizedKeysPath          string   `json:"ssh_authorized_keys_path"`
-	AttachBinaryPath               string   `json:"attach_binary_path"`
-	WorkspaceRoot                  string   `json:"workspace_root"`
-	AccountRoot                    string   `json:"account_root"`
-	DockerBinaryPath               string   `json:"docker_binary_path"`
-	TmuxBinaryPath                 string   `json:"tmux_binary_path"`
-	MutagenBinaryPath              string   `json:"mutagen_binary_path"`
-	BrowserRoot                    string   `json:"browser_root"`
-	BrowserImage                   string   `json:"browser_image"`
-	BrowserPublicBaseURL           string   `json:"browser_public_base_url"`
-	BrowserDockerNetwork           string   `json:"browser_docker_network"`
-	AllowedRuntimeBackends         []string `json:"allowed_runtime_backends"`
-	RuntimeSocketPath              string   `json:"runtime_socket_path"`
-	RuntimeBinaryPath              string   `json:"runtime_binary_path"`
-	ClaudeRuntimePath              string   `json:"claude_runtime_path"`
-	DeviceProxyPath                string   `json:"device_proxy_path"`
-	DeviceControlRoot              string   `json:"device_control_root"`
-	EgoBrowserEnabled              bool     `json:"ego_browser_enabled"`
-	EgoBrowserWrapperPath          string   `json:"ego_browser_wrapper_path"`
-	EgoBrowserBrokerSocket         string   `json:"ego_browser_broker_socket"`
-	EgoBrowserBrokerRoot           string   `json:"ego_browser_broker_root"`
-	EgoBrowserProtocolVersion      string   `json:"ego_browser_protocol_version"`
-	EgoBrowserWrapperVersion       string   `json:"ego_browser_wrapper_version"`
-	EgoBrowserSkillPath            string   `json:"ego_browser_skill_path"`
-	EgoBrowserSkillVersion         string   `json:"ego_browser_skill_version"`
-	EgoBrowserSkillTreeSHA256      string   `json:"ego_browser_skill_tree_sha256"`
-	EgoBrowserLeaseSeconds         int      `json:"ego_browser_lease_seconds"`
-	EgoBrowserRenewIntervalSeconds int      `json:"ego_browser_renew_interval_seconds"`
-	EgoBrowserRenewGraceSeconds    int      `json:"ego_browser_renew_grace_seconds"`
-	EgoBrowserMaxParallelRequests  int      `json:"ego_browser_max_parallel_requests"`
-	EgoBrowserMaxScriptBytes       int      `json:"ego_browser_max_script_bytes"`
-	EgoBrowserMaxExecuteTimeoutMS  int      `json:"ego_browser_max_execute_timeout_ms"`
+	SourcePath                     string                    `json:"-"`
+	ServerURL                      string                    `json:"server_url"`
+	NodeID                         string                    `json:"node_id"`
+	NodeToken                      string                    `json:"node_token"`
+	Version                        string                    `json:"version"`
+	SupportedToolTypes             []string                  `json:"supported_tool_types"`
+	HeartbeatIntervalSeconds       int                       `json:"heartbeat_interval_seconds"`
+	PollIntervalSeconds            int                       `json:"poll_interval_seconds"`
+	LedgerPath                     string                    `json:"ledger_path"`
+	SSHAuthorizedKeysPath          string                    `json:"ssh_authorized_keys_path"`
+	AttachBinaryPath               string                    `json:"attach_binary_path"`
+	WorkspaceRoot                  string                    `json:"workspace_root"`
+	AccountRoot                    string                    `json:"account_root"`
+	SkillStateRoot                 string                    `json:"skill_state_root"`
+	SkillStatePolicy               *skillmanager.StatePolicy `json:"skill_state_policy"`
+	DockerBinaryPath               string                    `json:"docker_binary_path"`
+	TmuxBinaryPath                 string                    `json:"tmux_binary_path"`
+	MutagenBinaryPath              string                    `json:"mutagen_binary_path"`
+	BrowserRoot                    string                    `json:"browser_root"`
+	BrowserImage                   string                    `json:"browser_image"`
+	BrowserPublicBaseURL           string                    `json:"browser_public_base_url"`
+	BrowserDockerNetwork           string                    `json:"browser_docker_network"`
+	AllowedRuntimeBackends         []string                  `json:"allowed_runtime_backends"`
+	RuntimeSocketPath              string                    `json:"runtime_socket_path"`
+	RuntimeBinaryPath              string                    `json:"runtime_binary_path"`
+	ClaudeRuntimePath              string                    `json:"claude_runtime_path"`
+	DeviceProxyPath                string                    `json:"device_proxy_path"`
+	DeviceControlRoot              string                    `json:"device_control_root"`
+	EgoBrowserEnabled              bool                      `json:"ego_browser_enabled"`
+	EgoBrowserWrapperPath          string                    `json:"ego_browser_wrapper_path"`
+	EgoBrowserBrokerSocket         string                    `json:"ego_browser_broker_socket"`
+	EgoBrowserBrokerRoot           string                    `json:"ego_browser_broker_root"`
+	EgoBrowserProtocolVersion      string                    `json:"ego_browser_protocol_version"`
+	EgoBrowserWrapperVersion       string                    `json:"ego_browser_wrapper_version"`
+	EgoBrowserSkillPath            string                    `json:"ego_browser_skill_path"`
+	EgoBrowserSkillVersion         string                    `json:"ego_browser_skill_version"`
+	EgoBrowserSkillTreeSHA256      string                    `json:"ego_browser_skill_tree_sha256"`
+	EgoBrowserLeaseSeconds         int                       `json:"ego_browser_lease_seconds"`
+	EgoBrowserRenewIntervalSeconds int                       `json:"ego_browser_renew_interval_seconds"`
+	EgoBrowserRenewGraceSeconds    int                       `json:"ego_browser_renew_grace_seconds"`
+	EgoBrowserMaxParallelRequests  int                       `json:"ego_browser_max_parallel_requests"`
+	EgoBrowserMaxScriptBytes       int                       `json:"ego_browser_max_script_bytes"`
+	EgoBrowserMaxExecuteTimeoutMS  int                       `json:"ego_browser_max_execute_timeout_ms"`
 	// egoBrowserEnabledSet distinguishes a missing legacy field from false.
 	egoBrowserEnabledSet    bool   `json:"-"`
 	WireGuardInterface      string `json:"wireguard_interface"`
@@ -116,6 +119,13 @@ func (c Config) WithDefaults() Config {
 	}
 	if c.AccountRoot == "" {
 		c.AccountRoot = c.WorkspaceRoot
+	}
+	if c.SkillStateRoot == "" {
+		c.SkillStateRoot = skillmanager.DefaultStateRoot
+	}
+	if c.SkillStatePolicy == nil {
+		policy := skillmanager.DefaultStatePolicy()
+		c.SkillStatePolicy = &policy
 	}
 	if c.DockerBinaryPath == "" {
 		c.DockerBinaryPath = "docker"
@@ -226,6 +236,15 @@ func (c Config) validate(requireToken bool, allowStaleArtifacts bool) error {
 	}
 	if c.NodeID == "" {
 		return errors.New("node_id is required")
+	}
+	if err := skillmanager.ValidateStateRoot(c.SkillStateRoot, c.WorkspaceRoot, c.AccountRoot, c.BrowserRoot, c.DeviceControlRoot, c.EgoBrowserBrokerRoot); err != nil {
+		return err
+	}
+	if c.SkillStatePolicy == nil {
+		return errors.New("skill_state_policy is required after applying defaults")
+	}
+	if err := c.SkillStatePolicy.Validate(); err != nil {
+		return err
 	}
 	if requireToken && c.NodeToken == "" {
 		return errors.New("node_token is required")

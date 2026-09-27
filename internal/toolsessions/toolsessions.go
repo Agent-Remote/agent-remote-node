@@ -124,6 +124,9 @@ type StopResult struct {
 
 // DecodeCreatePayload converts a generic task payload into a typed payload.
 func DecodeCreatePayload(payload map[string]any) (CreatePayload, error) {
+	if err := RequireLegacySkillStartup(payload); err != nil {
+		return CreatePayload{}, err
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return CreatePayload{}, err

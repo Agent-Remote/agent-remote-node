@@ -15,10 +15,14 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/Agent-Remote/agent-remote-node/internal/toolaccounts"
+	"github.com/Agent-Remote/agent-remote-node/internal/toolsessions"
 )
 
 const (
 	maxHelperRequestBytes    = 1 << 20
+	maxHelperImportBytes     = 16 << 20
 	fileDescriptorAckTimeout = 5 * time.Second
 )
 
@@ -29,6 +33,7 @@ type Server struct {
 	groupID    int
 	allowedUID int
 	mu         sync.Mutex
+	probeMu    sync.Mutex
 }
 
 // NewServer creates a local runtime-helper server.
@@ -83,9 +88,9 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		_ = json.NewEncoder(connection).Encode(errorResponse("FORBIDDEN_PEER", "Runtime helper peer is not authorized."))
 		return
 	}
-	reader := bufio.NewReader(io.LimitReader(connection, maxHelperRequestBytes+1))
-	data, err := reader.ReadBytes('\n')
-	if err != nil || len(data) > maxHelperRequestBytes {
+	reader := bufio.NewReader(connection)
+	data, err := readBoundedLine(reader, maxHelperImportBytes)
+	if err != nil || len(data) > maxHelperImportBytes {
 		_ = json.NewEncoder(connection).Encode(errorResponse("INVALID_REQUEST", "Runtime helper request is invalid."))
 		return
 	}
@@ -106,8 +111,77 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request has trailing data."))
 		return
 	}
+	limit := maxHelperRequestBytes
+	if request.Operation == accountTakeoverOperation {
+		limit = maxAccountTakeoverRequestBytes
+	}
+	if len(data) > limit && request.Operation != "import_account_config" {
+		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request exceeds its operation limit."))
+		return
+	}
+	if request.Operation == accountTakeoverOperation {
+		s.handleAccountTakeover(ctx, connection, reader, request)
+		return
+	}
 	if request.Operation == "dial_session_loopback" {
 		s.handleSessionLoopback(ctx, connection, request)
+		return
+	}
+	if request.Operation == accountCaptureFileOperation {
+		s.handleAccountCaptureFile(ctx, connection, request)
+		return
+	}
+	if request.Operation == finalizationReaderOperation {
+		s.handleFinalizationReader(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == finalizationFileOperation {
+		s.handleFinalizationFile(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == finalizationListOperation || request.Operation == finalizationInspectOperation {
+		s.handleFinalizationList(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == stoppedExportOperation || request.Operation == stoppedRecoveryOperation {
+		s.handleStoppedExport(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == skillReconciliationOperation || request.Operation == skillAdmissionDrainOperation {
+		s.handleSkillReconciliation(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == finalizationAckOperation || request.Operation == finalizationCleanupOperation {
+		s.handleFinalizationAcknowledgement(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == finalizationReclamationOperation || request.Operation == finalizationReclamationResumeOperation {
+		s.handleFinalizationReclamation(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == skillPreparationOperation {
+		s.handleSkillPreparation(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == deploymentPreparationOperation {
+		s.handleDeploymentPreparation(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == deploymentDrainOperation {
+		s.handleDeploymentDrain(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == migrationRecoveryOperation {
+		s.handleMigrationRecovery(ctx, connection, reader, request)
+		return
+	}
+	if request.Operation == managedSpecOperation || request.Operation == managedLaunchOperation || request.Operation == managedRecoveryOperation || request.Operation == managedCancelOperation {
+		s.handleManagedSpec(ctx, connection, reader, request)
+		return
+	}
+	// A health observation must not expire behind a long copy or reclamation operation.
+	if request.Operation == "probe" {
+		s.handleProbe(ctx, connection, request)
 		return
 	}
 	s.mu.Lock()
@@ -228,6 +302,33 @@ func errorResponse(code string, message string) Response {
 }
 
 func classifyError(err error) string {
+	if errors.Is(err, toolsessions.ErrManagedSkillsUnsupported) {
+		return "SKILL_MANAGER_UNSUPPORTED"
+	}
+	if errors.Is(err, errMigrationWritersUnknown) {
+		return "STATE_MIGRATION_PENDING"
+	}
+	if errors.Is(err, errMigrationFailed) {
+		return "STATE_MIGRATION_FAILED"
+	}
+	if errors.Is(err, errAccountCopyPending) {
+		return "STATE_COPY_PENDING"
+	}
+	if errors.Is(err, errAccountCopyFailed) {
+		return "STATE_COPY_FAILED"
+	}
+	if errors.Is(err, errAccountMigrationPending) {
+		return "MIGRATION_PENDING"
+	}
+	if errors.Is(err, toolaccounts.ErrSkillManagerOwnsPath) {
+		return "SKILL_MANAGER_OWNS_PATH"
+	}
+	if errors.Is(err, errConfigImportPending) {
+		return "CONFIG_IMPORT_PENDING"
+	}
+	if errors.Is(err, errConfigImportFailed) {
+		return "CONFIG_IMPORT_FAILED"
+	}
 	message := strings.ToLower(err.Error())
 	if strings.Contains(message, "required") || strings.Contains(message, "invalid") || strings.Contains(message, "unsafe") || strings.Contains(message, "unsupported") {
 		return "INVALID_SPEC"

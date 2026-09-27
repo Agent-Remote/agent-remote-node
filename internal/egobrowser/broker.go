@@ -363,13 +363,7 @@ func (b *Broker) AuthorizeToolSessionPeer(toolSessionID, expectedNonce string, u
 		return ErrUnavailable
 	}
 	if alreadyAuthorized {
-		b.mu.RLock()
-		existingUID := b.peerUIDs[toolSessionID]
-		b.mu.RUnlock()
-		if existingUID != uid {
-			return fmt.Errorf("%w: tool session peer uid changed", ErrProtocol)
-		}
-		return nil
+		return b.VerifyToolSessionPeer(toolSessionID, expectedNonce, uid)
 	}
 	if _, err := b.listen(); err != nil {
 		return fmt.Errorf("prepare ego-browser broker socket: %w", err)
@@ -386,6 +380,35 @@ func (b *Broker) AuthorizeToolSessionPeer(toolSessionID, expectedNonce string, u
 		return fmt.Errorf("%w: tool session peer uid changed", ErrProtocol)
 	}
 	b.peerUIDs[toolSessionID] = uid
+	return nil
+}
+
+// VerifyToolSessionPeer checks an existing process-local grant without issuing or restoring one.
+// Runtime recovery must use this check: a fresh broker nonce cannot replace a live process's nonce.
+func (b *Broker) VerifyToolSessionPeer(toolSessionID, expectedNonce string, uid uint32) error {
+	if !b.cfg.Enabled {
+		return ErrDisabled
+	}
+	if !validOpaqueText(toolSessionID, 128) || !validOpaqueText(expectedNonce, 256) || uid == 0 {
+		return fmt.Errorf("%w: tool session peer identity", ErrProtocol)
+	}
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	select {
+	case <-b.closed:
+		return ErrUnavailable
+	default:
+	}
+	if b.sessions[toolSessionID] != expectedNonce || b.nonces[expectedNonce] != toolSessionID {
+		return ErrUnavailable
+	}
+	existingUID, authorized := b.peerUIDs[toolSessionID]
+	if !authorized {
+		return ErrUnavailable
+	}
+	if existingUID != uid {
+		return fmt.Errorf("%w: tool session peer uid changed", ErrProtocol)
+	}
 	return nil
 }
 

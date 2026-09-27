@@ -59,6 +59,13 @@ func run(args []string) error {
 	}
 	originalCommand := os.Getenv("SSH_ORIGINAL_COMMAND")
 	if *sessionID == "" && *bindingID == "" {
+		if strings.HasPrefix(strings.TrimSpace(originalCommand), "agent-remote-skill-export") {
+			snapshotID, err := frozenExportFromCommand(originalCommand)
+			if err != nil {
+				return err
+			}
+			return runFrozenExport(cfg, *deviceID, *sshKeyID, snapshotID, *dryRun)
+		}
 		if forwardID, tunnelErr := tunnelFromOriginalCommand(originalCommand); tunnelErr == nil {
 			if *sshKeyID == "" {
 				return fmt.Errorf("SSH key is required for port forwarding")

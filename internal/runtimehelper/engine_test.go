@@ -636,8 +636,9 @@ func TestDockerPrepareAccountPersistsTrustedBindingSpec(t *testing.T) {
 	}
 	engine := NewEngine(EngineConfig{
 		StateRoot: t.TempDir(), AccountRoot: t.TempDir(), NodeUser: identity.Username,
-		TmuxBinaryPath: "agent-remote-missing-tmux",
-		SetfaclPath:    writeTestCommand(t, "setfacl", "exit 0"),
+		TmuxBinaryPath:   "agent-remote-missing-tmux",
+		DockerBinaryPath: supportedDockerCommand(t),
+		SetfaclPath:      writeTestCommand(t, "setfacl", "exit 0"),
 	})
 	result, err := engine.dockerPrepareAccount(map[string]any{
 		"binding_id": "binding_1", "tool_account_id": "account_1", "tool_type": "claude",
@@ -689,16 +690,23 @@ func TestInspectSessionSupportsDockerSandbox(t *testing.T) {
 }
 
 func TestProbeDeclaresDockerOwnershipDependencies(t *testing.T) {
+	t.Setenv("PATH", filepath.Dir(writeTestCommand(t, "git", "exit 0"))+string(os.PathListSeparator)+os.Getenv("PATH"))
 	current, err := user.Current()
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := writeTestCommand(t, "available", "exit 0")
+	if current.Uid == "0" {
+		current, err = user.Lookup("nobody")
+		if err != nil {
+			t.Skip("non-root Docker runtime identity is unavailable")
+		}
+	}
+	command := writeTestCommand(t, "available", `if [ "$1" = sandbox ]; then printf "Usage:\n  docker sandbox %s [OPTIONS]\n" "$2"; fi`)
 	engine := NewEngine(EngineConfig{
 		DockerBinaryPath: command, TmuxBinaryPath: command, SetfaclPath: command,
 		NodeUser: current.Username, StateRoot: t.TempDir(),
 	})
-	result, err := engine.probe()
+	result, err := engine.probe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -717,7 +725,7 @@ func TestCleanupResourcesRemovesVersionedDockerSession(t *testing.T) {
 	engine := NewEngine(EngineConfig{
 		StateRoot:        t.TempDir(),
 		TmuxBinaryPath:   writeTestCommand(t, "tmux", "exit 0"),
-		DockerBinaryPath: writeTestCommand(t, "docker", "exit 0"),
+		DockerBinaryPath: supportedDockerCommand(t),
 	})
 	spec := DockerSessionSpec{
 		Version: dockerSessionSpecVersion, Kind: dockerSessionKindTool,

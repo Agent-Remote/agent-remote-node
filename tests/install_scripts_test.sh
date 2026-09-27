@@ -92,6 +92,28 @@ grep -q 'systemctl restart agent-remote-node.service' "$ROOT/scripts/install.sh"
 grep -q -- '--version "$VERSION"' "$ROOT/scripts/install.sh" || \
   fail "existing node version is not refreshed"
 
+for sandbox_case in supported removed empty wrong-command missing-exec missing-rm; do
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 SANDBOX_CASE="$sandbox_case" bash -c '
+    script=$1; set --; source "$script"
+    timeout() { shift 2; "$@"; }
+    docker() {
+      case "$SANDBOX_CASE" in
+        removed) printf "docker sandbox has been removed\n"; return 0 ;;
+        empty) return 0 ;;
+        wrong-command) printf "Usage:\n  docker sandbox [OPTIONS] COMMAND\n"; return 0 ;;
+        missing-exec) [ "$2" != exec ] || return 1 ;;
+        missing-rm) [ "$2" != rm ] || return 1 ;;
+      esac
+      printf "Usage:\n  docker sandbox %s [OPTIONS]\n" "$2"
+    }
+    if check_docker_sandbox_commands; then
+      [ "$SANDBOX_CASE" = supported ]
+    else
+      [ "$SANDBOX_CASE" != supported ]
+    fi
+  ' sh "$ROOT/scripts/install.sh" || fail "Docker Sandbox command probe accepted $sandbox_case incorrectly"
+done
+
 cleanup_probe="$WORK/cleanup-probe"
 if AGENT_REMOTE_INSTALL_LIB_ONLY=1 bash -c \
   'script=$1; probe=$2; set --; source "$script"; mkdir -p "$probe"; track_temp "$probe"; exit 17' \

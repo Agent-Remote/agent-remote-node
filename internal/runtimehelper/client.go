@@ -44,6 +44,9 @@ type Error struct {
 	Message string `json:"message"`
 }
 
+// Error preserves the helper's bounded stable error code for task reporting.
+func (e *Error) Error() string { return fmt.Sprintf("runtime helper %s: %s", e.Code, e.Message) }
+
 // DialSessionLoopbackPayload identifies one managed session loopback port.
 type DialSessionLoopbackPayload struct {
 	SessionID      string `json:"session_id"`
@@ -73,6 +76,14 @@ func (c Client) Call(ctx context.Context, requestID string, operation string, pa
 		return nil, fmt.Errorf("connect runtime helper: %w", err)
 	}
 	defer connection.Close()
+	if operation == deploymentDrainOperation || operation == migrationRecoveryOperation {
+		stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+		defer stop()
+	}
+	if operation == accountTakeoverOperation || operation == managedSpecOperation || operation == managedLaunchOperation || operation == managedRecoveryOperation || operation == managedCancelOperation || operation == skillReconciliationOperation || operation == skillAdmissionDrainOperation || operation == finalizationListOperation || operation == finalizationInspectOperation || operation == finalizationAckOperation || operation == finalizationCleanupOperation {
+		stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
+		defer stop()
+	}
 	deadline := time.Now().Add(c.timeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline
@@ -87,7 +98,11 @@ func (c Client) Call(ctx context.Context, requestID string, operation string, pa
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return nil, fmt.Errorf("encode runtime helper request: %w", err)
 	}
-	response, err := readHelperResponse(connection)
+	limit := int64(maxHelperResponseBytes)
+	if operation == "import_account_config" {
+		limit = maxHelperImportBytes
+	}
+	response, err := readHelperResponseLimitNumbers(connection, limit, operation == deploymentDrainOperation || operation == accountTakeoverOperation || operation == skillReconciliationOperation || operation == skillAdmissionDrainOperation || operation == finalizationListOperation || operation == finalizationInspectOperation || operation == finalizationAckOperation || operation == finalizationCleanupOperation)
 	if err != nil {
 		return nil, fmt.Errorf("decode runtime helper response: %w", err)
 	}
@@ -98,7 +113,7 @@ func (c Client) Call(ctx context.Context, requestID string, operation string, pa
 		if response.Error == nil {
 			return nil, errors.New("runtime helper returned an unspecified error")
 		}
-		return nil, fmt.Errorf("runtime helper %s: %s", response.Error.Code, response.Error.Message)
+		return nil, response.Error
 	}
 	return response.Result, nil
 }
@@ -159,7 +174,7 @@ func (c Client) DialSessionLoopback(ctx context.Context, requestID string, paylo
 		if response.Error == nil {
 			return nil, errors.New("runtime helper returned an unspecified error")
 		}
-		return nil, fmt.Errorf("runtime helper %s: %s", response.Error.Code, response.Error.Message)
+		return nil, response.Error
 	}
 	if len(fileDescriptors) != 1 {
 		return nil, fmt.Errorf("runtime helper returned %d file descriptors", len(fileDescriptors))
@@ -182,20 +197,35 @@ func (c Client) DialSessionLoopback(ctx context.Context, requestID string, paylo
 }
 
 func readHelperResponse(reader io.Reader) (Response, error) {
-	bounded := bufio.NewReader(io.LimitReader(reader, maxHelperResponseBytes+1))
+	return readHelperResponseLimit(reader, maxHelperResponseBytes)
+}
+
+func readHelperResponseLimit(reader io.Reader, limit int64) (Response, error) {
+	return readHelperResponseLimitNumbers(reader, limit, false)
+}
+
+func readHelperResponseLimitNumbers(reader io.Reader, limit int64, numbers bool) (Response, error) {
+	bounded := bufio.NewReader(io.LimitReader(reader, limit+1))
 	data, err := bounded.ReadBytes('\n')
-	if err != nil || len(data) == 0 || len(data) > maxHelperResponseBytes {
+	if err != nil || len(data) == 0 || int64(len(data)) > limit {
 		return Response{}, errors.New("runtime helper response is invalid")
 	}
-	return decodeHelperResponse(data)
+	return decodeHelperResponseNumbers(data, numbers)
 }
 
 func decodeHelperResponse(data []byte) (Response, error) {
+	return decodeHelperResponseNumbers(data, false)
+}
+
+func decodeHelperResponseNumbers(data []byte, numbers bool) (Response, error) {
 	if err := rejectDuplicateJSONKeys(data); err != nil {
 		return Response{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
+	if numbers {
+		decoder.UseNumber()
+	}
 	var response Response
 	if err := decoder.Decode(&response); err != nil {
 		return Response{}, err

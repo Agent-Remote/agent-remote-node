@@ -158,6 +158,9 @@ func applyBrowserConfig(runtimeConfig *runtimehelper.EngineConfig, path string) 
 	runtimeConfig.BrowserImage = nodeConfig.BrowserImage
 	runtimeConfig.BrowserPublicBaseURL = nodeConfig.BrowserPublicBaseURL
 	runtimeConfig.BrowserDockerNetwork = nodeConfig.BrowserDockerNetwork
+	runtimeConfig.SkillStateRoot = nodeConfig.SkillStateRoot
+	runtimeConfig.NodeID = nodeConfig.NodeID
+	runtimeConfig.SkillStatePolicy = *nodeConfig.SkillStatePolicy
 	runtimeConfig.EgoBrowserEnabled = nodeConfig.EgoBrowserEnabled
 	runtimeConfig.EgoBrowserWrapperPath = nodeConfig.EgoBrowserWrapperPath
 	runtimeConfig.EgoBrowserBrokerSocket = nodeConfig.EgoBrowserBrokerSocket

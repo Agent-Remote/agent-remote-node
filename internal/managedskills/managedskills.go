@@ -48,6 +48,12 @@ type Ownership struct {
 	GID int
 }
 
+// VerifyEmbeddedEgoBrowser checks the embedded bytes against the reviewed release digests.
+func VerifyEmbeddedEgoBrowser() error {
+	_, err := verifiedEgoBrowserSkillFiles()
+	return err
+}
+
 // InstallClaude installs or updates Agent Remote-owned Claude skills without
 // changing any other account configuration.
 func InstallClaude(accountPath string, ownership *Ownership) error {

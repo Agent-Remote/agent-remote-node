@@ -1047,6 +1047,20 @@ check_native_prerequisites() {
   fi
 }
 
+check_docker_sandbox_commands() {
+  command -v docker >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1 || return 1
+  local operation sandbox_help
+  for operation in create exec rm; do
+    sandbox_help="$(timeout --kill-after=1 10 docker sandbox "$operation" --help 2>/dev/null)" || return 1
+    # Exit status alone also accepts Docker's removed-plugin compatibility stub.
+    printf '%s\n' "$sandbox_help" | awk -v operation="$operation" '
+      /^Usage:$/ { usage = 1; next }
+      usage && NF { found = ($1 == "docker" && $2 == "sandbox" && $3 == operation); exit }
+      END { exit !found }
+    ' || return 1
+  done
+}
+
 install_user() {
   if [ "$CREATE_USER" != "1" ]; then
     return
@@ -1112,11 +1126,9 @@ install_packaged() {
 
   install_user
 
-  if backend_enabled docker_sandbox; then
-    if ! command -v docker >/dev/null 2>&1 || ! docker sandbox --help >/dev/null 2>&1; then
-      echo "error docker_sandbox requires a Docker CLI with the docker sandbox command" >&2
-      exit 1
-    fi
+  if backend_enabled docker_sandbox && ! check_docker_sandbox_commands; then
+    echo "error docker_sandbox requires working docker sandbox create, exec and rm commands; a removal notice is not support" >&2
+    exit 1
   fi
   check_dependency tmux
   check_dependency sshd

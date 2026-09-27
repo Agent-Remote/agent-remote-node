@@ -16,9 +16,9 @@ func TestLedgerPersistsEntries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	entry, ok := second.Get("task_1")
-	if !ok {
-		t.Fatal("expected entry")
+	entry, ok, err := second.Get("task_1")
+	if !ok || err != nil {
+		t.Fatal("expected entry", err)
 	}
 	if entry.Status != "succeeded" {
 		t.Fatalf("unexpected status: %s", entry.Status)

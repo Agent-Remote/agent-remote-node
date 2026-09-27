@@ -163,7 +163,7 @@ func TestImportConfigWritesClaudeFiles(t *testing.T) {
 			ContentBase64: base64.StdEncoding.EncodeToString([]byte("{\"theme\":\"dark\"}\n")),
 			Mode:          0o600,
 		}},
-	})
+	}, "legacy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestImportConfigRejectsUnsafePath(t *testing.T) {
 			ContentBase64: base64.StdEncoding.EncodeToString([]byte("{}\n")),
 			Mode:          0o600,
 		}},
-	})
+	}, "legacy")
 	if err == nil {
 		t.Fatal("expected unsafe path to be rejected")
 	}

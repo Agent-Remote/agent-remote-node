@@ -20,6 +20,7 @@ func TestApplyBrowserConfig(t *testing.T) {
 		BrowserImage:           "kasmweb/chrome:test",
 		BrowserPublicBaseURL:   "https://browser.example.test",
 		BrowserDockerNetwork:   "agent-remote_default",
+		SkillStateRoot:         "/srv/private-skill-state",
 	}.WithDefaults()
 	if err := config.Save(path, nodeConfig); err != nil {
 		t.Fatal(err)
@@ -29,6 +30,9 @@ func TestApplyBrowserConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if runtimeConfig.DockerBinaryPath != nodeConfig.DockerBinaryPath ||
+		runtimeConfig.SkillStateRoot != nodeConfig.SkillStateRoot ||
+		runtimeConfig.NodeID != nodeConfig.NodeID ||
+		runtimeConfig.SkillStatePolicy != *nodeConfig.SkillStatePolicy ||
 		runtimeConfig.BrowserRoot != nodeConfig.BrowserRoot ||
 		runtimeConfig.BrowserImage != nodeConfig.BrowserImage ||
 		runtimeConfig.BrowserPublicBaseURL != nodeConfig.BrowserPublicBaseURL ||
