@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.31 - 2026-09-27
+
+- fix: enable skill management by default on installation (8cac568)
+
 ## v0.2.30 - 2026-09-27
 
 - fix(skills): wire explicit native capability probes into heartbeats (f2e7bf8)
