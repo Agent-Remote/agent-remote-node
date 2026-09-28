@@ -121,6 +121,7 @@ The advanced compatibility `register` command writes the node token to the confi
   "attach_binary_path": "agent-remote-attach",
   "workspace_root": "/var/lib/agent-remote/users",
   "account_root": "/var/lib/agent-remote/users",
+  "skill_manager_enabled": true,
   "skill_state_root": "/var/lib/agent-remote-skill-state",
   "skill_state_policy": {
     "checkpoint_bytes": 1073741824,
@@ -151,9 +152,7 @@ an independent root-owned `0700` directory with safe root-owned ancestors, outsi
 workspace, browser and broker roots. Do not put it beneath the installer’s worker-owned data directory.
 Omitted configuration uses the values above; an explicit policy must supply every field. Byte limits
 use bytes, `entries` counts manifest entries, and startup reserve is the greater of
-`minimum_free_bytes` and `reserve_percent` of filesystem capacity. These settings and local storage
-primitives do not enable managed sessions: backend mounts, authenticated transfer and Server
-finalization must be integrated and verified before a backend advertises skill-manager support.
+`minimum_free_bytes` and `reserve_percent` of filesystem capacity. The Helper must pass its actual Native probes before Worker reports Skill capability.
 
 
 On Linux, the installer automatically runs `configure-ego-browser` after installing the managed
@@ -301,194 +300,24 @@ Linux archives also include the managed device proxy.
 
 GitHub Actions runs this packaging flow for `v*` tags and uploads the archives to the GitHub Release.
 
+## Skill Management
+
+Skill management defaults to enabled. The Helper must pass the real Native dependency/runtime/storage
+probe before Worker advertises capability. Explicit false stays disabled across upgrades; old installer
+configurations containing false require an intentional change. Upgrade Worker and Helper together.
+See [Node Skill manager](docs/skill-manager.md) for configuration, safe recovery and implementation.
+
+Configuration imports use fresh task-bound authorization and Helper-selected paths. Managed accounts
+require `account import-config --exclude-skills`. `CONFIG_IMPORT_PENDING` requires reconciliation;
+`CONFIG_IMPORT_FAILED` replays the saved failure, not automatic reimport. Import limits remain 1 MiB
+per file, 8 MiB raw and 12 MiB encoded; polling/import frames permit 16 MiB. Actual ownership tests:
+`bash tests/linux_config_import_test.sh` in its required isolated Linux environment.
+
+Docker Sandbox availability requires successful bounded `create`, `exec` and `rm` capability probes;
+a removal notice with exit code zero is not support. This is separate from Native Skill support.
+
 ## License
 
 agent-remote-node is licensed under GPL-3.0-only. See `LICENSE`.
 
 Third-party dependency notices are listed in `THIRD_PARTY_NOTICES.md`.
-
-### Configuration import ownership checks
-
-Configuration imports require a Server that supports the task-bound
-`/api/v1/node-api/tasks/{task_id}/config-import-authorization` endpoint. Upgrade Server before Node.
-Node rechecks the task's current account directory mode before writing and rejects an incomplete,
-expired or unavailable authorization. A queued task cannot grant itself legacy ownership. If an
-account is migrating or managed, a batch containing `~/.claude/skills` fails with
-`SKILL_MANAGER_OWNS_PATH` before any files are written; use CLI
-`account import-config --exclude-skills` for the remaining configuration. Plugin skills and project
-history keep their separate selection rules. Successful task retries report the saved result.
-
-On Linux, the worker sends authorized imports to the privileged Helper; upgrade both Node binaries
-together. The Helper selects the account path and non-root runtime owner. Its private
-`skill_state_root` retains immutable account fences and exact-input task receipts across restart;
-back up this root with the account data and do not delete it to clear a failed import. Once the Helper
-observes migrating/managed mode, an older legacy authorization cannot reopen skill imports.
-The same fence blocks new legacy sessions, binding processes and backend migrations with
-`MIGRATION_PENDING`; existing sessions are not force-stopped and explicit stop remains available.
-Server also rejects new binding/migration planning for nonlegacy accounts. Managed binding and
-backend migration need dedicated snapshot-aware adapters before those operations can reopen.
-`CONFIG_IMPORT_PENDING` requires reconciliation of an interrupted write; `CONFIG_IMPORT_FAILED`
-replays the saved failure. Neither permits automatic reimport. Non-Linux Helper imports are unsupported.
-
-Import limits are 1 MiB per file, 8 MiB raw total and 12 MiB encoded file-list JSON. Only task polling
-and Helper import frames use a 16 MiB transport ceiling; ordinary calls retain 1 MiB. Run
-`bash tests/linux_config_import_test.sh` for actual Linux ownership, restart and full-quota socket tests.
-See [account fences and receipts](docs/skill-account-fence.md) for recovery boundaries.
-
-These checks do not enable directory takeover or advertise skill-manager support. Takeover still
-requires draining existing imports and excluding legacy writers during the stable initial capture.
-
-The internal snapshot download client verifies the original snapshot/task-record UUID and complete
-Node/user/account/session/backend binding, strict manifest metadata, digest and member resolution.
-Files stream with exact length, hash, text classification and HTTP validator checks; redirects and
-transformed content are rejected. Cancellation closes blocked reads. Downloaded bytes still require
-Helper-owned atomic preparation and pinned system artifact verification before any runtime launch.
-The worker routes managed Native tasks through exact pointer validation, leased recovery/startup and
-durable Server confirmation. Malformed markers cannot enter legacy startup. No managed backend
-capability is advertised while finalization transport and complete runtime acceptance remain pending.
-
-The Helper's separate `prepare_skill_snapshot` stream can now consume the original snapshot for an
-existing trusted Native spec. It requests only manifest digests, independently verifies each object,
-and atomically retains the work tree plus complete input identity. Exact retries preserve learned
-content; changed fixed inputs fail. Socket disconnect cancels preparation, and interrupted transfers
-discard unpublished staging. Creating the trusted spec and coordinating
-mount/start/lease recovery remain outside this preparation operation.
-
-The internal worker preparation coordinator now holds an exact snapshot/task/poll-attempt lease
-while downloading, creating the trusted Native spec and streaming its files to Helper. It cancels on
-uncertain renewal and returns only a local preparation receipt. The internal startup coordinator
-extends one lease through original-launch recovery, preparation, peer admission and launch. It drains
-the exact original runtime on ambiguous failure or lease loss, including loss after a successful
-Helper response. Recovery requires the original live invocation and an existing broker peer grant;
-broker restart or revocation causes retained cancellation instead of replacement authorization.
-The dedicated Native queue uses this coordinator and retains nonterminal failures for recovery;
-preparation success alone is not session readiness.
-
-The managed-start confirmation client binds a ready/stopped result to the original snapshot, task
-record and lease attempt. It accepts only a committed exact echo; uncertain writes require an explicit
-retry of the same outcome. A separate worker loop inspects pending receipts even after task polling
-ends. A newer poll attempt must fence an unaccepted old proposal before it can be replaced.
-An exact unaccepted cancelled observation instead retires the original proposal with its evidence.
-Retirement stops background inspection and rejects delayed startup replay without granting runtime
-or cleanup authority; independent finalization still saves the retained work.
-The task ledger now syncs a private
-temporary file before atomic replacement and syncs its parent before accepting the write. An uncertain
-publication blocks further task execution until reopen, and corrupt empty/null ledgers fail closed.
-
-The finalization API client now streams a frozen complete input through separate begin, upload,
-complete, status and publication routes. It binds the original snapshot, termination classification,
-digest and upload attempt; unclean input remains detached. Real Server-to-Go tests verify persistence,
-publication and exact replay. The Helper now atomically freezes private file objects with its journal
-and passes exact-bound read-only descriptors to the worker. Runtime work and transient files can be
-removed without losing those original upload bytes. Historical journals upgrade only under the
-finalizer's writer-exit proof and exact content verification. An independent background loop now
-pages through retained Native captures, uploads the original bytes and persists separate Server
-persistence/publication receipts in `<ledger_path>.skill-finalizations`. Restart and lost responses
-resume the same input; conflicts and superseded decisions are retained. Exact acknowledgements now
-advance the privileged Helper journal before a separate operation verifies stopped writers and cleans
-transient resources. Cleanup has its own durable receipt and preserves all frozen objects and work.
-The loop also reconciles unfinished Native bundles against their original sealed launch, freezes
-same-boot natural exits after whole-cgroup exit proof, and transfers the result. Missing transient
-specs do not prevent this recovery. Same-boot prepared or unprovable launches remain pending;
-running observations cannot restore broker admission. First upload now separately confirms exact
-termination with Server, independently of a full runtime inventory or preparation lease. Lost replies
-reuse the original capture, and the stopped receipt never substitutes for content persistence.
-For sealed same-boot launches, lost broker admission now drains the original enabled runtime through
-a separate Helper operation and retains its content. Startup and background inspection serialize;
-new registrations cannot restore original grants. Browser-disabled sessions remain running.
-Interrupted same-boot starting records now retain a verified `observed` invocation before running
-inspection, admission-loss draining or natural-exit capture. This phase does not certify readiness;
-leased recovery must still verify the original runtime. Common managed stops use the same retained
-invocation even when transient specs are missing.
-After a distinct valid kernel boot, retained prepared/starting/observed/started bundles now recover through
-repeated passive unit/cgroup/network/mount absence checks. New captures are unclean unless original
-termination was already durably classified. Acknowledged previous-boot cleanup can resume without
-stopping, unmounting or deleting newly present resources. See `docs/skill-runtime-recovery.md`.
-The isolated kernel-reboot acceptance and its verified scope are described below.
-
-The separate `prepare_managed_session_spec` operation now creates a trusted Native spec without
-launching. A private intent and immutable nonce-free draft make exact retries and interrupted
-publication recoverable on the original boot. Completed retries verify original files and runtime
-identity; missing or changed state is retained as an error. Account skills are not rewritten.
-The operation requires the closed account fence and existing account directories. The dedicated
-Native queue owns preparation, startup and confirmation under one lease.
-
-`start_managed_session` now launches the prepared Native session at most once. A durable private
-intent precedes systemd-run; readiness seals the original invocation ID. Same-boot recovery checks
-the active original unit and mounts without repairing them; a missing/stopped unit is finalized and
-never relaunched. Completed retries replay historical readiness even after transient cleanup.
-Disconnect cancellation stops writers and retains unclean work. Real isolated systemd tests cover
-these paths with synthetic tools. `recover_managed_session` separately checks current liveness;
-stopped historical starts require finalization. Already-confirmed runtimes after broker restart and
-previous-boot retained bundles now have separate recovery paths. Normal-stop saving and status are
-connected as described below; complete real Server/worker/Claude acceptance remains pending.
-
-Preparation and Native mounting verify the snapshot's fixed system releases. Ego-browser pins must
-match embedded provenance and bytes; enabled wrapper artifacts are verified separately. The device
-skill requires the Helper build's exact Node release and selected protocol, and is hidden when not
-selected. Mount replay verifies actual system copies without repairing them. Old snapshots lacking
-pins remain recoverable but cannot launch against today's artifacts.
-
-Native takeover capture and queue recovery are documented in
-[`docs/skill-account-capture.md`](docs/skill-account-capture.md). It closes a durable account fence,
-checks historical and local Native writers without stopping them, and retains a separate private
-copy plus manifest for retries. Pending import intents and uncertain backend evidence block it.
-Dedicated Native tasks now renew their exact lease through Helper capture and authenticated transfer;
-Server reservation and immutable capture recover retries without reimporting later source edits.
-Server session admission now initiates original Native reservations. Docker sandbox/orphan inventory, interrupted backend-copy recovery,
-verified rollback and full runtime acceptance remain required. Original directories are retained;
-no capability is advertised by this implementation.
-
-Backend account migrations retain a durable whole-migration intent and supervise backup copies plus
-target/rollback ACL commands with systemd. Unknown writer exit prevents rollback and replacement
-tasks (`STATE_MIGRATION_PENDING`). Exact terminal receipts replay the saved success/failure without
-re-copying or changing permissions; failed results use `STATE_MIGRATION_FAILED`. The Helper flushes
-account and backup filesystems before terminal persistence. Complete migration/copy receipts can
-satisfy Native takeover's backend-writer check; old copy-only evidence cannot. Interrupted started
-work and mixed-backend writer proof still require further work. Ordinary Native session admission
-now initiates takeover, as described above.
-
-Managed Native stop freezes the original session before attempting Server saving for up to 10 seconds.
-The immediate attempt and independent background recovery share one finalization ledger instance;
-network failure preserves frozen input and does not keep writers alive. Stop tasks report only immutable
-process identity; current saving status is queried by the original snapshot UUID on the Server.
-
-A disposable two-kernel reboot acceptance is available as `tests/linux_skill_kernel_reboot_test.sh`.
-It boots a real managed Native runtime in QEMU TCG, abruptly powers off the VM and recovers its
-persistent Skill data under a new kernel. ARM64 and amd64 acceptance passed; select the guest with
-`AGENT_REMOTE_KERNEL_TEST_ARCH=arm64` or `amd64` (default: Docker host architecture). See
-[recovery contract](docs/skill-runtime-recovery.md) for the verified scope and requirements.
-
-The deployment transport client now reads the complete original account-directory input through
-separate task/attempt-bound Node endpoints, verifies the Server's canonical plan and tree digests,
-and streams exact manifest file bytes under the current poll lease. Dedicated worker execution now
-keeps one renewable lease across download, Helper preparation and exact Server confirmation.
-
-The dedicated `prepare_skill_deployment` Helper operation now atomically retains the complete
-original directory under its attempt identity. The private receipt pins the full input; exact replay
-verifies retained bytes without modifying account or session state. The worker journals the receipt
-before confirmation; independent read-only inspection recovers a lost acknowledgement without
-invoking the Helper. Dedicated failure/cancellation now uses the durable recovery path below;
-Server ordinary polling now schedules compatible pending targets; Node capability activation remains pending. See [independent preparation](docs/skill-deployment-preparation.md).
-
-The separate `drain_skill_deployment` Helper operation now permanently fences an original attempt
-under the same lock as preparation. Its durable receipt survives lost responses and restart while
-preserving retained content. The worker requires committed Server revocation before invoking drain.
-
-The dedicated HTTP client now preserves Server revocation intent and exact Helper drain through
-terminal confirmation and read-only result inspection. It rejects altered bindings/classification
-and uncertain writes are not automatically retried. The worker saves the request, committed intent,
-Helper drain and accepted terminal observation in distinct durable phases. Independent recovery
-handles lost responses without a preparation lease and preserves any original success proposal.
-Confirmed success cannot be downgraded. Server ordinary scheduling is implemented; full runtime
-acceptance and Node capability advertisement remain pending.
-
-The [first-use proof](docs/skill-first-use-acceptance.md) covers ordinary acceptance and polling,
-real systemd descendant writers, the initial Helper fence/capture, takeover response-loss recovery,
-and resolved deployment. It does not establish Claude startup or Docker/sbx acceptance.
-
-Frozen Native data can now be exported through the existing SSH forced command with the matching
-CLI's `skill state export --snapshot UUID --scope account-directory --account-id UUID --output PATH`.
-It reads only an existing immutable Helper capture, with live original-user/device/key checks,
-independently of Server upload quota. It never stops a session, acknowledges upload or reclaims data.
-See [frozen snapshot export](docs/skill-node-export.md) for protocol and verification boundaries.

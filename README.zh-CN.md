@@ -110,6 +110,7 @@ owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔�
   "attach_binary_path": "agent-remote-attach",
   "workspace_root": "/var/lib/agent-remote/users",
   "account_root": "/var/lib/agent-remote/users",
+  "skill_manager_enabled": true,
   "skill_state_root": "/var/lib/agent-remote-skill-state",
   "skill_state_policy": {
     "checkpoint_bytes": 1073741824,
@@ -140,8 +141,7 @@ owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔�
 和 broker 根目录独立；不能放进安装器授予 worker 所有权的数据目录。未设置时使用上述默认值；
 显式设置 policy 时须提供全部字段。字节上限单位是 byte，`entries` 计量 manifest 条目数，
 启动保留空间取 `minimum_free_bytes` 与文件系统容量的 `reserve_percent` 百分比中的较大值。
-这些配置和本地存储基础尚不启用 managed session；后端挂载、认证传输和 Server finalization
-完成集成与验证后，才能公布 skill-manager 能力。
+Helper 必须通过实际 Native 探测后，Worker 才会报告 Skill 能力。
 
 
 在 Linux 上，安装器安装或升级受管 runtime 后会自动运行 `configure-ego-browser`。它从不可变
@@ -272,157 +272,22 @@ DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
 
 GitHub Actions 会在 `v*` tag 上运行该打包流程，并把归档上传到 GitHub Release。
 
+## Skill 管理
+
+Skill 默认开启；Helper 的真实 Native 依赖、运行程序和存储探测通过后，Worker 才会上报能力。
+显式 false 会跨升级保留，旧安装器写入的 false 需按管理员意图修改；Worker 和 Helper 必须一起升级。
+配置、恢复边界与实现入口见 [Node Skill 管理](docs/skill-manager.md)。
+
+配置导入必须获得当前任务授权，由 Helper 决定路径；受管账号使用 `account import-config --exclude-skills`。
+`CONFIG_IMPORT_PENDING` 需先对账，`CONFIG_IMPORT_FAILED` 重放原失败，不能自动重新导入。
+限制为单文件 1 MiB、原始总量 8 MiB、编码列表 12 MiB；轮询/导入帧允许 16 MiB。
+真实属主测试入口为 `bash tests/linux_config_import_test.sh`，须在其要求的隔离 Linux 环境执行。
+
+Docker Sandbox 的 create / exec / rm 探测须限时成功，退出码为零的移除提示不代表支持；
+此检查与 Native Skill 能力分开。
+
 ## 许可证
 
 agent-remote-node 使用 GPL-3.0-only 许可证。详见 `LICENSE`。
 
 第三方依赖声明见 `THIRD_PARTY_NOTICES.md`。
-
-### 配置导入所有权校验
-
-配置导入要求 Server 支持绑定精确任务的
-`/api/v1/node-api/tasks/{task_id}/config-import-authorization` 接口；升级时先更新 Server，
-再更新 Node。Node 写入前重新检查账户目录模式，授权不完整、过期或服务不可用时拒绝写入，
-不能信任排队任务自报的 legacy 模式。账户处于 migrating 或 managed 模式时，包含
-`~/.claude/skills` 的整批任务在任何文件写入前返回 `SKILL_MANAGER_OWNS_PATH`。
-可用 CLI `account import-config --exclude-skills` 迁移其他配置。插件 skills 与项目历史
-继续遵循各自选择规则；成功任务的重试只回报原结果。
-
-Linux worker 将授权后的导入交给特权 Helper；升级时应同时更新两个 Node 二进制。
-Helper 决定账户路径和非 root 运行身份。私有 `skill_state_root` 持久保存账户围栏与
-精确输入任务收据，应随账户数据一同备份，不能通过删除该目录来清除失败导入。
-Helper 一旦观察到 migrating/managed 模式，旧 legacy 授权便不能重新开放技能导入。
-同一围栏还以 `MIGRATION_PENDING` 拒绝新的 legacy 会话、绑定进程和后端迁移；不会强停
-已有会话，显式停止入口仍然可用。Server 同样拒绝非 legacy 账户的新绑定及迁移规划。
-受管绑定和后端迁移须完成各自的快照适配后才能重新开放。
-`CONFIG_IMPORT_PENDING` 表示中断写入需要核实，`CONFIG_IMPORT_FAILED` 重放已保存的失败；
-两者都不会自动重新写入。非 Linux Helper 明确不支持配置导入。
-
-导入限制为单文件 1 MiB、原始合计 8 MiB、编码后的文件列表 JSON 12 MiB。
-仅任务轮询和 Helper 导入消息使用 16 MiB 传输上限，普通调用仍为 1 MiB。
-运行 `bash tests/linux_config_import_test.sh` 可验证真实 Linux 权限、重启和满配额 socket
-传输。恢复边界见[账户围栏与收据](docs/skill-account-fence.md)。
-
-这些检查不启用目录接管，也不广告 skill-manager 能力。首次接管仍须排空既有导入任务，
-并在稳定初始捕获期间排除 legacy 写入者。
-
-内部快照下载客户端核对原始快照、任务记录 UUID 及完整 Node/用户/账户/会话/后端身份，
-严格验证清单元数据、摘要和成员解析结果。文件以流方式验证长度、哈希、文本分类及 HTTP
-校验头，拒绝重定向和内容转换；取消请求会关闭阻塞读取。下载内容仍须经过 Helper 的原子准备
-和固定系统制品校验才能启动。受管 Native 队列现会校验原始指针，串联租约内恢复、启动与
-持久化确认；非法标记不能进入旧版启动。收尾传输和完整运行时验收完成前仍不广告受管能力。
-
-内部 worker 准备协调器现会维持精确 snapshot、任务记录和领取轮次的短期租约，串联原始快照下载、
-受管 Native spec 创建及 Helper 流式副本准备。续租不确定时取消依赖操作，只返回本地准备收据。
-另有内部启动协调器让同一租约贯穿原始启动恢复、副本准备、运行 UID 授权与启动；模糊失败或
-租约失效后，会独立停止原始会话，即使 Helper 已先返回成功。恢复要求原 invocation 仍存活，且
-broker 中原有 session/nonce/UID 授权仍有效；broker 重启或撤销后会停止并保留原会话，不授予
-替代凭据。专用 Native 队列已使用该协调器，保留非终态失败供恢复；仅准备成功不等于会话就绪。
-
-受管启动确认客户端将就绪或停止结果绑定到原始快照、任务记录和领取轮次，只接受已提交且
-精确回显的收据。独立后台循环查询待确认收据，不依赖任务再次下发；旧结果只有在新领取轮次
-明确排除旧提交后才能被替换。若精确观察确认原提案未被接受且任务已取消，账本保留原提案与
-取消证据并将其退休，停止后台重复查询和迟到启动重放；这不授予运行或清理权限，独立收尾
-流程仍负责保存原始工作数据。任务账本现会先
-同步私有临时文件，再原子替换并同步父目录；发布结果不确定时阻止继续执行任务，直到重新
-打开账本。空文件或 null 等损坏账本不能被当作“从未执行过任务”。
-
-最终化 API 客户端现已分别接入收尾计划、流式上传、完整持久化、查询与发布，绑定原始快照、
-终止分类、树摘要和上传轮次；异常退出只接受 detached 发布结果。真实 Server 与 Go 联调已验证
-持久化、发布和精确重试。Helper 现会将独立私有文件对象与 journal 一起原子保存，并向 worker
-传递绑定原始身份的只读文件描述符；原工作目录和临时运行文件删除后仍保留待上传的原字节。
-旧 journal 仅在 finalizer 证明写入者退出且原字节校验通过后升级。独立后台循环现会分页扫描 Native
-冻结记录、上传原字节，并在 `<ledger_path>.skill-finalizations` 中分别持久化 Server 保存与发布收据。
-重启和丢失回复后继续同一输入；冲突及被取代的发布保持保留。精确收据现会先推进 Helper 特权 journal，
-再由独立操作核对原写入者已退出并清理临时资源。清理完成另有持久记录，原 work 与冻结对象始终保留。
-后台循环也会按原始已封存启动记录核对未冻结的 Native 会话，在确认同一开机周期内整个 cgroup
-已无写入者后冻结自然退出数据并传输；临时 spec 丢失不阻止此恢复。同一开机周期内尚未启动或无法核验的记录继续保留；运行中观测不能恢复 broker 授权。首次上传前现会向 Server 独立确认精确终止输入，
-不依赖完整运行清单同步或旧准备租约。回复丢失时重用原始冻结输入；stopped 收据不代表内容已保存。
-同一开机周期内已封存启动的会话丢失 broker 授权后，后台现会通过独立 Helper 操作停止原运行时并
-保留内容。启动与后台核对互斥，新注册不能恢复原授权；未启用浏览器的会话保持运行。确认进入不同
-内核 boot 后，准备完成、启动中和已启动副本现会重复核对 unit/cgroup/网络命名空间及挂载缺席，再按
-unclean 恢复；已有终止分类保持不变。Server 已确认保存的旧临时目录可继续中断清理，不能停止或移除
-新开机周期的资源。同期开机的 starting 记录现可在重复核验后保存独立的 observed invocation，
-再进入存活检查、授权丢失停止或自然退出收尾；观察阶段不代表就绪，租约内恢复仍须核验原运行时。
-公共停止路径也会使用原 invocation，包括临时 spec 丢失时。详见 `docs/skill-runtime-recovery.md`；
-真实内核重启验收仍待完成。
-
-独立的 `prepare_managed_session_spec` 操作现可创建受信任 Native spec，但不会启动运行时。
-它先保存私有创建意图和不含 nonce 的不可变完整草稿，再发布 spec 与完成收据；同一启动周期内
-可恢复中断的发布。完成后的重试仅核对原始文件和运行身份，缺失或变化时保留现场并报错。
-操作要求已有账户围栏和账户目录，不重写账户技能。Native 队列已让同一租约覆盖准备、启动和确认。
-
-`start_managed_session` 现可至多一次启动已准备的 Native 会话：systemd-run 前持久化私有启动意图，
-就绪后封存原始 invocation ID。同一启动周期内恢复只核对原服务及挂载，不修复运行中的挂载；
-服务缺失或停止则进入收尾，绝不重新执行。完成收据在临时目录清理后仍可重放历史就绪结果，
-不代表当前存活。断连取消会停止写入者并保留未清洁副本。以上路径已由隔离的真实 systemd 配合
-测试程序验证。`recover_managed_session` 另行检查当前存活，历史启动已结束则要求收尾；worker
-已确认运行时在 broker 重启后的处理及旧开机周期副本恢复已有独立路径。正常停止保存与状态报告
-已接通，见下文；真实 Server/worker/Claude 完整验收仍待完成。
-
-Helper 的独立 `prepare_skill_snapshot` 流式操作已能为已有受信任 Native spec 准备原始快照。
-它只请求清单中的摘要，独立验证每个对象，并原子保存工作副本及完整输入身份；相同输入重试
-保留会话学习，固定输入变化则失败。连接断开会取消准备，中断传输清除未发布的暂存目录。
-创建受信任 spec 及挂载、启动、租约恢复由专用 Native 队列协调。
-
-准备和 Native 挂载会校验快照固定的系统版本：ego-browser 的版本、commit 与内容树须匹配
-内嵌制品，启用的 wrapper 制品另行验证；设备技能须匹配 Helper 编译版本与已选协议，未选择时
-不挂载。挂载重试还会核对实际系统副本，不自动修复已挂载文件。缺少固定版本的旧快照仍能恢复
-和收尾，但不能使用当前制品重新启动。
-
-Native 接管、稳定捕获与任务恢复见
-[`docs/skill-account-capture.md`](docs/skill-account-capture.md)。Helper 先持久化账户围栏，
-只检查、不停止历史及本地 Native 写入者，再将完整内容与清单保存在独立私有副本中供重试。
-未完成导入意图或无法证明的后端状态会阻止捕获。专用 Native Worker 任务现已用同一当前租约
-覆盖捕获和上传，重启后复用 Server 预约与 Helper 原始捕获，不重复导入后来修改的原目录。
-Server 普通会话入口已接通原节点 Native 预约；Docker 沙箱及孤儿资源清点、历史后端复制恢复、
-可验证回滚和真实运行时验收仍待完成。
-原目录始终保留，这些原语不会广告受管能力。
-
-账户后端迁移在备份前持久记录完整迁移意图，复制及目标/回滚 ACL 命令分别由 systemd 监督。
-退出状态不明时保留 `STATE_MIGRATION_PENDING`，禁止并发回滚或以新任务绕过。Helper 同步账户和
-备份文件系统后才持久记录终态；同一输入重放已保存的成功/失败，不重复复制或权限修改。终态失败
-返回 `STATE_MIGRATION_FAILED`，不代表回滚成功。复制阶段仍保留 `STATE_COPY_PENDING` 和
-`STATE_COPY_FAILED`。完整迁移及复制回执可满足 Native 接管的后端写入者检查，旧复制阶段记录仍不足。
-中断后仍处于 started 的任务恢复、混合后端退出证明尚待完成；普通 Native 会话入口已接通
-接管预约，如上所述。原账户与备份继续保留。
-
-Docker Sandbox 的安装及 Helper 探测会核对 create、exec、rm 各命令的实际用法；仅返回退出码 0 的
-停用提示不代表支持。若 Docker 已移除旧 sandbox 插件，新账户/会话启动会在写入账户和工作区前失败；
-停止与清理保留受信任运行时记录，避免丢失遗留资源证据。该检查不代表整个沙箱已无写入者，
-也不代表受管 skill 后端验收通过。独立的新版 sbx 接口尚未替代现有运行时适配器。
-
-受管 Native 停止先冻结原会话，再最多尝试向 Server 保存 10 秒。限时尝试与独立后台恢复共用
-同一个收尾日志实例；网络失败保留冻结输入，不会为了等待网络而维持写入进程。停止任务仅回报
-不可变的进程终止身份，最新保存进度通过原始快照 UUID 在 Server 查询。
-
-`tests/linux_skill_kernel_reboot_test.sh` 提供独立虚拟机的双内核重启验收：先启动真实受管 Native
-运行时，再强制切断虚拟机电源，最后在新内核下恢复持久 Skill 数据。ARM64 与 amd64 验收均已通过；
-可用 `AGENT_REMOTE_KERNEL_TEST_ARCH=arm64` 或 `amd64` 选择来宾架构，默认使用 Docker 宿主架构。
-测试范围与依赖见[恢复协议](docs/skill-runtime-recovery.md)。
-
-部署传输客户端现通过独立的任务/尝试接口读取原完整账户目录，校验 Server 的规范计划摘要和
-目录摘要，并在当前领取租约下流式验证清单文件。专用 Worker 执行现以同一个持续续租覆盖
-下载、Helper 准备和精确 Server 确认。
-
-独立的 `prepare_skill_deployment` Helper 操作现按原尝试身份原子保存完整目录。私有回执固定
-全部输入，重复执行重新校验保留字节，不改账户或会话状态。Worker 在确认前持久保存原回执，
-独立只读查询无需调用 Helper 即可恢复丢失的确认响应。专用失败／取消现使用下述持久恢复流程；
-Server 普通轮询现可调度兼容的待部署目标，Node 能力启用仍待验收，详见[独立部署准备](docs/skill-deployment-preparation.md)。
-
-独立 `drain_skill_deployment` Helper 操作现与准备共用序列化锁，持久封禁原尝试；响应丢失或
-重启后仍可恢复同一回执，并保留已有内容。Worker 必须先保存 Server 已提交的原撤权意图，才能调用排空。
-
-专用 HTTP 客户端现固定 Server 原撤权意图与精确 Helper 排空凭据，支持终态确认及只读结果
-观察；绑定或分类改变会拒绝，不会自动重试不确定的写请求。Worker 现分阶段持久保存原请求、
-已提交意图、Helper 排空回执及终态观察；后台恢复无需准备租约，并保留原成功提案。已确认成功
-不能降级。Server 公共调度已实现，完整运行时验收及 Node 能力广告仍待完成。
-
-[首次使用验收](docs/skill-first-use-acceptance.md)覆盖普通受理和轮询、真实 systemd 子写入进程、
-Helper 初次封禁和捕获、接管确认丢失恢复及完整部署；该证据不代表 Claude 启动或 Docker/sbx 验收。
-
-原 Native Node 的冻结数据可由配套 CLI 的
-`skill state export --snapshot UUID --scope account-directory --account-id UUID --output PATH`
-经既有 SSH 强制命令导出。只读取 Helper 已保存的完整冻结捕获，持续重验原用户、设备和公钥，
-不依赖 Server 上传配额；不会停止会话、确认上传或回收数据。
-协议及验收范围见[冻结快照导出](docs/skill-node-export.md)。
