@@ -27,7 +27,8 @@ type ReclamationAuthorization struct {
 }
 
 // Match requires the original frozen input and a separately verified terminal acknowledgement.
-// A later terminal publication may retain the same incoming checkpoint; it cannot replace its bytes.
+// A later terminal publication or in-place conflict resolution may retain the same incoming checkpoint;
+// neither can replace its bytes. The Server resolves conflicts on the original publication identity.
 func (a ReclamationAuthorization) Match(ack FinalizationAcknowledgement) error {
 	state, err := ack.State()
 	if err != nil || ack.Publication == nil || (state != "published" && state != "conflicted" && state != "detached") {
@@ -41,7 +42,8 @@ func (a ReclamationAuthorization) Match(ack FinalizationAcknowledgement) error {
 	if a.Version != 1 || a.VerifiedAt.IsZero() || a.ExpiresAt.Sub(a.VerifiedAt) != time.Minute ||
 		a.PublicationAttempt <= 0 || a.PublicationAttempt < ack.Publication.Attempt ||
 		(a.PublicationAttempt == ack.Publication.Attempt) != (a.PublicationID == ack.Publication.ID) ||
-		a.PublicationAttempt == ack.Publication.Attempt && a.PublicationStatus != ack.Publication.Status {
+		a.PublicationAttempt == ack.Publication.Attempt && a.PublicationStatus != ack.Publication.Status &&
+			!(ack.Publication.Status == "conflicted" && a.PublicationStatus == "published") {
 		return errors.New("invalid reclamation authorization lifetime or publication")
 	}
 	if a.PublicationStatus != "published" && a.PublicationStatus != "conflicted" && a.PublicationStatus != "detached" ||

@@ -324,8 +324,6 @@ func TestReclamationRetainsUnresolvedConflictUntilLaterPublication(t *testing.T)
 	if _, err := bundle.Lstat("finalization/reclamation.json"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("conflict refusal left intent", err)
 	}
-	authority.PublicationID = binding.NodeID
-	authority.PublicationAttempt++
 	authority.PublicationStatus = "published"
 	intent := markReclamation(t, bundle, capture, authority)
 	if err := ReclaimFinalizationContent(context.Background(), bundle, intent, reclamationQuiescent); err != nil {
