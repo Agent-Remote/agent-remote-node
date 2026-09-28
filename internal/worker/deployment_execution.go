@@ -93,6 +93,10 @@ func runDeployment(ctx context.Context, client deploymentPreparationClient, help
 func deploymentFailureReason(err error) string {
 	var response *api.HTTPError
 	if errors.As(err, &response) {
+		// Account disablement revokes this attempt through the existing drain protocol.
+		if response.Code == "ACCOUNT_NOT_AVAILABLE" {
+			return "AUTHORIZATION_DENIED"
+		}
 		request := api.SkillDeploymentTerminationRequest{LeaseAttempt: 1, ErrorCode: response.Code}
 		if request.Validate() == nil {
 			return response.Code

@@ -38,6 +38,67 @@ func terminatedObservation(r api.SkillDeploymentTerminatedResult) api.SkillDeplo
 	return api.SkillDeploymentTerminationObservation{Result: r, Accepted: true, CurrentLeaseAttempt: r.Intent.Request.LeaseAttempt + 1, TaskStatus: status}
 }
 
+func TestDeploymentDisabledAccountRevokesAndDrainsOriginalAttempt(t *testing.T) {
+	for _, phase := range []string{"lease", "input"} {
+		t.Run(phase, func(t *testing.T) {
+			input, _, journal := workerDeploymentFixture(t)
+			binding := input.SkillDeploymentIdentity
+			taskID := "prepare_account_skills:" + binding.AttemptID
+			client := deploymentWorkerClient(input)
+			rejection := &api.HTTPError{StatusCode: 409, Code: "ACCOUNT_NOT_AVAILABLE"}
+			if phase == "lease" {
+				client.lease = func(context.Context, skillmanager.SkillDeploymentIdentity, int64) (api.SkillDeploymentLease, error) {
+					return api.SkillDeploymentLease{}, rejection
+				}
+			} else {
+				client.get = func(context.Context, skillmanager.SkillDeploymentIdentity, int64) (skillmanager.SkillDeployment, error) {
+					return skillmanager.SkillDeployment{}, rejection
+				}
+			}
+			intent := workerTerminationIntent(binding, 1, "AUTHORIZATION_DENIED")
+			intent.Retryable = false
+			var revoked, drained, confirmed bool
+			client.terminationRequest = func(_ context.Context, b skillmanager.SkillDeploymentIdentity, request api.SkillDeploymentTerminationRequest) (api.SkillDeploymentTerminationIntent, error) {
+				if b != binding || request != intent.Request {
+					t.Fatal("disabled account changed original revocation identity", b, request)
+				}
+				revoked = true
+				return intent, nil
+			}
+			client.terminationInspect = func(_ context.Context, result api.SkillDeploymentTerminatedResult) (api.SkillDeploymentTerminationObservation, error) {
+				return api.SkillDeploymentTerminationObservation{Result: result, CurrentLeaseAttempt: 1, TaskStatus: "leased"}, nil
+			}
+			client.terminationConfirm = func(_ context.Context, result api.SkillDeploymentTerminatedResult) (api.SkillDeploymentTerminationObservation, error) {
+				if !drained || result.Intent != intent {
+					t.Fatal("terminal result preceded original drain")
+				}
+				confirmed = true
+				return terminatedObservation(result), nil
+			}
+			helper := deploymentTerminationHelperStub{
+				deploymentHelperStub: func(context.Context, string, skillmanager.SkillDeployment, runtimehelper.SkillDeploymentDownloader) (skillmanager.DeploymentPreparation, error) {
+					t.Fatal("disabled account prepared content")
+					return skillmanager.DeploymentPreparation{}, nil
+				},
+				drain: func(_ context.Context, id string, b skillmanager.SkillDeploymentIdentity) (skillmanager.DeploymentDrain, error) {
+					if !revoked || b != binding || id != "deployment-drain:"+binding.TaskID {
+						t.Fatal("drain preceded original revocation")
+					}
+					drained = true
+					return skillmanager.DeploymentDrain{Version: 1, Binding: b, HelperReceiptID: b.TaskID}, nil
+				},
+			}
+			if err := runDeployment(context.Background(), client, helper, journal, taskID, binding, 1); err != nil {
+				t.Fatal("disabled account did not converge", err)
+			}
+			entry, exists, err := journal.ledger.Get(taskID)
+			if err != nil || !exists || entry.Status != deploymentTerminationConfirmed || !revoked || !drained || !confirmed {
+				t.Fatal("missing permanent terminal evidence", entry.Status, err)
+			}
+		})
+	}
+}
+
 func TestDeploymentTerminationRestartAtEachLostResponse(t *testing.T) {
 	for _, lost := range []string{"none", "revocation", "drain", "confirmation"} {
 		t.Run(lost, func(t *testing.T) {
