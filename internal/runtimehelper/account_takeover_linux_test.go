@@ -210,7 +210,7 @@ func TestNativeTakeoverRejectsUnverifiedHistoryAndPendingImport(t *testing.T) {
 
 func TestNativeTakeoverInspectsLocallyRetainedBinding(t *testing.T) {
 	engine, binding, root := accountTakeoverFixture(t)
-	id := binding.TaskID
+	id := "bind-" + strings.ReplaceAll(binding.AccountID, "-", "")[:12] + "-9111c635eb5e"
 	sessionRoot := filepath.Join(engine.config.StateRoot, "sessions", id)
 	if err := os.MkdirAll(sessionRoot, 0o700); err != nil {
 		t.Fatal(err)
@@ -237,6 +237,12 @@ func TestNativeTakeoverInspectsLocallyRetainedBinding(t *testing.T) {
 	}
 	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, nil); !errors.Is(err, errTakeoverWritersActive) {
 		t.Fatal("local binding absent from Server inventory was skipped", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "unit-state"), []byte("LoadState=not-found\nActiveState=inactive\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, nil); err != nil {
+		t.Fatal("stopped binding prevented account takeover", err)
 	}
 }
 

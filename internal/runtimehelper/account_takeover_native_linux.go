@@ -109,7 +109,9 @@ func (e Engine) localNativeTakeoverUnits(binding skillmanager.AccountTakeoverBin
 	}
 	otherUnits := make(map[string]bool)
 	for _, entry := range entries {
-		if !entry.IsDir() || !validSkillUUID(entry.Name()) {
+		// Binding runtimes use bind-<account>-<attempt>, not a session UUID.
+		// Apply the same safe identifier grammar as the trusted runtime spec.
+		if !entry.IsDir() || validateID(entry.Name(), "session_id") != nil {
 			return nil, errTakeoverWritersUnknown
 		}
 		spec, err := e.readNativeTakeoverSpec(root, entry.Name())
