@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.36 - 2026-09-28
+
+- fix(skills): reclaim original input after conflict resolution (a404d1c)
+
 ## v0.2.35 - 2026-09-28
 
 - fix(skills): accept kernel namespace roots during reclamation (9d87ad0)
