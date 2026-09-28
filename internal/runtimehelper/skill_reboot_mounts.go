@@ -73,7 +73,7 @@ func verifyNoRebootMounts(ctx context.Context, reader io.Reader, paths ...string
 				containing = mount
 			}
 		}
-		if containing == nil {
+		if containing == nil || !filepath.IsAbs(containing.root) {
 			return errors.New("previous-boot resource filesystem cannot be located")
 		}
 		relative, err := filepath.Rel(containing.point, path)
@@ -130,7 +130,7 @@ func readRebootMounts(ctx context.Context, reader io.Reader) ([]rebootMount, err
 		if !ok || majorErr != nil || minorErr != nil {
 			return nil, errors.New("previous-boot mount device is invalid")
 		}
-		root, err := unescapeMountPath(fields[3])
+		root, err := unescapeMountRoot(fields[3], fields[separator+1])
 		if err != nil {
 			return nil, err
 		}
@@ -178,4 +178,23 @@ func unescapeMountPath(value string) (string, error) {
 		return "", errors.New("kernel mount path is not canonical")
 	}
 	return path, nil
+}
+
+// Namespace filesystems identify their roots by kernel inode, not by an absolute path.
+// Keep their mountpoints in the inventory so a namespace mounted onto protected content still blocks deletion.
+func unescapeMountRoot(value, filesystem string) (string, error) {
+	if filesystem == "nsfs" {
+		kind, inode, ok := strings.Cut(value, ":[")
+		switch kind {
+		case "net", "mnt", "uts", "ipc", "pid", "pid_for_children", "user", "cgroup", "time", "time_for_children":
+			if ok && strings.HasSuffix(inode, "]") {
+				number := strings.TrimSuffix(inode, "]")
+				parsed, err := strconv.ParseUint(number, 10, 64)
+				if err == nil && parsed > 0 && strconv.FormatUint(parsed, 10) == number {
+					return value, nil
+				}
+			}
+		}
+	}
+	return unescapeMountPath(value)
 }

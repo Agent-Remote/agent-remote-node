@@ -14,6 +14,13 @@ func TestHelperFinalizationRebootMountInventory(t *testing.T) {
 		valid               bool
 	}{
 		{"absent", "", "/runtime/session", true},
+		{"network_namespace", "3 1 0:4 net:[4026531840] /run/netns/example rw - nsfs nsfs rw\n", "/runtime/session", true},
+		{"namespace_on_target", "3 1 0:4 net:[4026531840] /runtime/session/net rw - nsfs nsfs rw\n", "/runtime/session", false},
+		{"namespace_ancestor", "3 1 0:4 net:[4026531840] /runtime rw - nsfs nsfs rw\n", "/runtime/session", false},
+		{"namespace_wrong_filesystem", "3 1 0:4 net:[4026531840] /run/netns/example rw - ext4 /dev/root rw\n", "/runtime/session", false},
+		{"namespace_invalid_inode", "3 1 0:4 net:[bad] /run/netns/example rw - nsfs nsfs rw\n", "/runtime/session", false},
+		{"namespace_invalid_type", "3 1 0:4 unknown:[4026531840] /run/netns/example rw - nsfs nsfs rw\n", "/runtime/session", false},
+
 		{"separate_volume", "", "/skills/session/work", true},
 		{"sibling", "3 1 8:1 /other /runtime/session-other rw - ext4 /dev/root rw\n", "/runtime/session", true},
 		{"mounted_root", "3 1 8:3 / /runtime/session rw - tmpfs tmpfs rw\n", "/runtime/session", false},
