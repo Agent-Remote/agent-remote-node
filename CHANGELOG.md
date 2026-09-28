@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.37 - 2026-09-28
+
+- fix(skills): drain leased deployments after account disablement (fc4817e)
+
 ## v0.2.36 - 2026-09-28
 
 - fix(skills): reclaim original input after conflict resolution (a404d1c)
