@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.34 - 2026-09-28
+
+- fix(skills): exclude launch receipts from finalization inventory (c8134e2)
+
 ## v0.2.33 - 2026-09-28
 
 - fix(skills): accept server binding ids in takeover inventories (963bfe3)
