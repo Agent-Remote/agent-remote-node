@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.33 - 2026-09-28
+
+- fix(skills): accept server binding ids in takeover inventories (963bfe3)
+
 ## v0.2.32 - 2026-09-28
 
 - fix(skills): inspect retained native binding runtime identifiers (f1bb62b)
