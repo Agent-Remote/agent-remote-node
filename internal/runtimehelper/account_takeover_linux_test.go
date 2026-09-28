@@ -238,10 +238,19 @@ func TestNativeTakeoverInspectsLocallyRetainedBinding(t *testing.T) {
 	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, nil); !errors.Is(err, errTakeoverWritersActive) {
 		t.Fatal("local binding absent from Server inventory was skipped", err)
 	}
+	backend := "native"
+	writers := []skillmanager.AccountWriter{{Kind: "binding", NodeID: binding.NodeID, ResourceID: id, RuntimeBackend: &backend, TaskID: &binding.TaskID}}
+	binding.InventoryDigest, err = skillmanager.AccountInventoryDigest(writers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, writers); !errors.Is(err, errTakeoverWritersActive) {
+		t.Fatal("Server binding inventory did not retain the active writer", err)
+	}
 	if err := os.WriteFile(filepath.Join(root, "unit-state"), []byte("LoadState=not-found\nActiveState=inactive\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, nil); err != nil {
+	if _, err := engine.captureNativeAccountTakeover(context.Background(), binding, writers); err != nil {
 		t.Fatal("stopped binding prevented account takeover", err)
 	}
 }

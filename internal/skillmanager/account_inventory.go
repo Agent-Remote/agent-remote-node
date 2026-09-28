@@ -32,10 +32,13 @@ func AccountInventoryDigest(writers []AccountWriter) (string, error) {
 			return "", errors.New("invalid account writer identity")
 		}
 		switch writer.Kind {
-		case "session", "binding":
+		case "session":
 			if validateAccountIdentity(writer.ResourceID) != nil {
 				return "", errors.New("invalid account runtime resource identity")
 			}
+		case "binding":
+			// Binding IDs use the safe runtime identifier grammar checked above.
+			// The Server creates bind-<account>-<attempt>, while task IDs remain UUIDs.
 		case "import", "backend":
 			if writer.TaskID == nil {
 				return "", errors.New("account mutation inventory lacks task identity")

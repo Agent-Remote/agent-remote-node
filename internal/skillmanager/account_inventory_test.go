@@ -25,6 +25,8 @@ func TestAccountInventoryRejectsUnverifiableResources(t *testing.T) {
 		{Kind: "session", NodeID: "bad", ResourceID: "x"},
 		{Kind: "import", NodeID: "33333333-3333-4333-8333-333333333333", ResourceID: "import:x"},
 		{Kind: "session", NodeID: "33333333-3333-4333-8333-333333333333", ResourceID: "/host/path"},
+		{Kind: "binding", NodeID: "33333333-3333-4333-8333-333333333333", ResourceID: "../bind-238ba116ae75-9111c635eb5e"},
+		{Kind: "session", NodeID: "33333333-3333-4333-8333-333333333333", ResourceID: "bind-238ba116ae75-9111c635eb5e"},
 	} {
 		if _, err := AccountInventoryDigest([]AccountWriter{writer}); err == nil {
 			t.Fatal("invalid inventory accepted")
@@ -32,5 +34,15 @@ func TestAccountInventoryRejectsUnverifiableResources(t *testing.T) {
 	}
 	if _, err := AccountInventoryDigest(make([]AccountWriter, 10_001)); err == nil {
 		t.Fatal("unbounded inventory accepted")
+	}
+}
+
+func TestAccountInventoryMatchesServerBindingIdentifier(t *testing.T) {
+	backend, taskID := "native", "66666666-6666-4666-8666-666666666666"
+	writer := AccountWriter{Kind: "binding", NodeID: "33333333-3333-4333-8333-333333333333", ResourceID: "bind-238ba116ae75-9111c635eb5e", RuntimeBackend: &backend, TaskID: &taskID}
+	actual, err := AccountInventoryDigest([]AccountWriter{writer})
+	// Server json.dumps([writer], sort_keys=True, separators=(",", ":"), ensure_ascii=True).
+	if err != nil || actual != "3ec4129b2e0671bc9acf21530a679b3de9624e782d82caec993f8da619d13a73" {
+		t.Fatalf("binding inventory hash mismatch: %s %v", actual, err)
 	}
 }
