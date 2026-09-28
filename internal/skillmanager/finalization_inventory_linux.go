@@ -31,6 +31,11 @@ func ListFinalizationSessions(ctx context.Context, store *os.Root, cursor string
 			return nil, false, false, err
 		}
 		for _, entry := range entries {
+			// Launch receipts share this directory but are not finalization bundles.
+			if entry.Type().IsRegular() && strings.HasPrefix(entry.Name(), "session-launch-") && strings.HasSuffix(entry.Name(), ".json") &&
+				validSkillUUID(strings.TrimSuffix(strings.TrimPrefix(entry.Name(), "session-launch-"), ".json")) {
+				continue
+			}
 			if !strings.HasPrefix(entry.Name(), "session-") {
 				continue
 			}

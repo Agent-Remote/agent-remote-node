@@ -77,3 +77,35 @@ func TestExistingStateInventoryDistinguishesAbsentFromUnsafe(t *testing.T) {
 		t.Fatal("link masqueraded as absent store", err)
 	}
 }
+
+func TestFinalizationInventoryRecognizesLaunchJournals(t *testing.T) {
+	id := "11111111-1111-4111-8111-111111111111"
+	for _, kind := range []string{"regular", "symlink", "directory", "malformed"} {
+		t.Run(kind, func(t *testing.T) {
+			store, _ := privateStore(t)
+			if err := store.Mkdir(sessionBundleName(id), 0700); err != nil {
+				t.Fatal(err)
+			}
+			name := "session-launch-" + id + ".json"
+			var err error
+			switch kind {
+			case "regular", "malformed":
+				if kind == "malformed" {
+					name = "session-launch-invalid.json"
+				}
+				err = store.WriteFile(name, []byte("{}"), 0600)
+			case "symlink":
+				err = store.Symlink("/missing", name)
+			case "directory":
+				err = store.Mkdir(name, 0700)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids, more, invalid, err := ListFinalizationSessions(context.Background(), store, "")
+			if err != nil || more || !reflect.DeepEqual(ids, []string{id}) || invalid != (kind != "regular") {
+				t.Fatalf("launch journal classification: ids=%v more=%v invalid=%v err=%v", ids, more, invalid, err)
+			}
+		})
+	}
+}
