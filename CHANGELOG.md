@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.38 - 2026-09-29
+
+- fix: validate runtime configuration before creating session state (3c7e957)
+
 ## v0.2.37 - 2026-09-28
 
 - fix(skills): drain leased deployments after account disablement (fc4817e)
