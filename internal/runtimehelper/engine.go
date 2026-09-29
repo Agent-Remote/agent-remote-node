@@ -1386,11 +1386,39 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 			return SessionSpec{}, err
 		}
 	}
+	// Reject invalid configuration before creating runtime state: incomplete session
+	// directories intentionally block Skill takeover when writer safety is unknown.
+	digest := shortDigest(sessionID, 12)
+	timezone := optionalText(payload, "timezone", "UTC")
+	locale := optionalText(payload, "locale", "en_US.UTF-8")
+	if !safeTimezone(timezone) || !safeLocale(locale) || !localeAvailable(locale) {
+		return SessionSpec{}, errors.New("timezone or locale is invalid")
+	}
+	tmuxName := optionalText(payload, "tmux_session_name", "ar-native-"+digest)
+	if err := validateName(tmuxName, "tmux_session_name"); err != nil {
+		return SessionSpec{}, err
+	}
+	policy, err := parseRuntimePolicy(payload["runtime_policy"])
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	deviceControlProtocol, err := parseDeviceControlProtocol(payload["device_control"], kind)
+	if err != nil {
+		return SessionSpec{}, err
+	}
+	if deviceControlProtocol != 0 {
+		if err := validateManagedDeviceProxy(e.config.DeviceProxyPath); err != nil {
+			return SessionSpec{}, err
+		}
+		argv, err = managedDeviceControlArgv(sessionID, argv)
+		if err != nil {
+			return SessionSpec{}, err
+		}
+	}
 	identity, err := e.ensureIdentity(userID)
 	if err != nil {
 		return SessionSpec{}, err
 	}
-	digest := shortDigest(sessionID, 12)
 	sessionRoot := filepath.Join(e.config.StateRoot, "sessions", sessionID)
 	if err := ensureRootDirectory(sessionRoot, 0o711); err != nil {
 		return SessionSpec{}, err
@@ -1421,34 +1449,10 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 	if err := writeOwnedFile(filepath.Join(sessionRoot, "process-exited"), nil, 0o600, identity); err != nil {
 		return SessionSpec{}, err
 	}
-	timezone := optionalText(payload, "timezone", "UTC")
-	locale := optionalText(payload, "locale", "en_US.UTF-8")
-	if !safeTimezone(timezone) || !safeLocale(locale) || !localeAvailable(locale) {
-		return SessionSpec{}, errors.New("timezone or locale is invalid")
-	}
-	tmuxName := optionalText(payload, "tmux_session_name", "ar-native-"+digest)
-	if err := validateName(tmuxName, "tmux_session_name"); err != nil {
-		return SessionSpec{}, err
-	}
 	runtimeRoot := filepath.Clean(filepath.Join(filepath.Dir(e.config.ClaudeRuntimePath), ".."))
-	policy, err := parseRuntimePolicy(payload["runtime_policy"])
-	if err != nil {
-		return SessionSpec{}, err
-	}
-	deviceControlProtocol, err := parseDeviceControlProtocol(payload["device_control"], kind)
-	if err != nil {
-		return SessionSpec{}, err
-	}
 	deviceControlDirectory := ""
 	deviceProxyPath := ""
 	if deviceControlProtocol != 0 {
-		if err := validateManagedDeviceProxy(e.config.DeviceProxyPath); err != nil {
-			return SessionSpec{}, err
-		}
-		argv, err = managedDeviceControlArgv(sessionID, argv)
-		if err != nil {
-			return SessionSpec{}, err
-		}
 		deviceControlDirectory = filepath.Join(sessionRoot, "device-control")
 		if err := os.Mkdir(deviceControlDirectory, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return SessionSpec{}, err
