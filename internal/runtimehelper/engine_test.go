@@ -1561,14 +1561,30 @@ func TestWaitForSessionReadyRequiresStableTmuxSession(t *testing.T) {
 	tmuxPath := filepath.Join(binDir, "tmux")
 	for path, body := range map[string]string{
 		systemctlPath: "#!/bin/sh\necho active\n",
-		tmuxPath:      "#!/bin/sh\nexit 0\n",
+		tmuxPath:      "#!/bin/sh\n[ \"$(id -u)\" -ne 0 ]\n",
 	} {
 		if err := os.WriteFile(path, []byte(body), 0o700); err != nil {
 			t.Fatal(err)
 		}
 	}
+	identity, err := user.Current()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		identity, err = user.Lookup("nobody")
+		if err != nil {
+			t.Skip("non-root fixture identity is unavailable")
+		}
+		for _, path := range []string{filepath.Dir(binDir), binDir, tmuxPath} {
+			if err := os.Chmod(path, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	engine := NewEngine(EngineConfig{SystemctlPath: systemctlPath, TmuxBinaryPath: tmuxPath})
-	err := engine.waitForSessionReady(context.Background(), SessionSpec{
+	err = engine.waitForSessionReady(context.Background(), SessionSpec{
+		Username: identity.Username,
 		UnitName: "agent-remote-session-test.service", TmuxSocketPath: "/tmp/test.sock", TmuxSessionName: "test",
 	})
 	if err != nil {

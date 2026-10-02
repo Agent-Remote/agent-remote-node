@@ -29,6 +29,18 @@ func run(args []string) error {
 		return errors.New("usage: agent-remote-runtime <serve|probe|supervise|exec|attach|sync-command>")
 	}
 	switch args[0] {
+	case "terminal-host":
+		return runtimehelper.TerminalHost(os.Stdin, os.Stdout)
+	case "terminal-client":
+		fs := flag.NewFlagSet("terminal-client", flag.ContinueOnError)
+		socket := fs.String("socket", "", "private terminal bridge")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if *socket == "" || fs.NArg() != 0 {
+			return errors.New("terminal socket required")
+		}
+		return runtimehelper.TerminalClient(*socket)
 	case "serve":
 		return serve(args[1:])
 	case "probe":

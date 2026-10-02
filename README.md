@@ -16,6 +16,32 @@ Node-side runtime for agent-remote.
 
 The node runs on a VPS and talks to `agent-remote-server` by polling the control plane. It does not expose public HTTP ports.
 
+Managed tmux sessions support drag-to-copy: dragging selects response text even when the agent
+requests mouse events, and releasing copies the selection through OSC 52. The updated local CLI
+writes it to the desktop clipboard; plain SSH requires terminal OSC 52 support and permission.
+Normal clicks and wheel bindings remain unchanged. Native terminal selection remains available
+with the terminal's Shift/Option override. Settings apply to both runtime backends on the next
+attach (legacy Docker terminals must be recreated). `set-clipboard external` permits tmux selections without allowing applications to populate
+tmux clipboard buffers; clipboard reads are not bridged by the CLI.
+
+Managed sessions use an explicit empty tmux configuration and owned key tables. Ctrl+B then D
+keeps Claude running while detaching; Ctrl+B then [ opens history; arrows/PageUp/PageDown navigate,
+Space starts selection, Enter/Y copies, and Esc/Q returns to Claude. Ctrl+B then ] pastes the tmux
+buffer and Ctrl+B twice sends a literal Ctrl+B. Host command prompts, menus, new windows, splits
+and session switching are unavailable. New panes retain 20,000 history lines. RGB capability is
+added without replacing other features; extended keys are negotiated only when requested by the
+application, with a 10 ms escape timeout. A brief tmux message confirms a selection was sent;
+the CLI reports rejected/unfinished local clipboard writes separately.
+
+Docker terminals now run tmux as a per-user non-root identity on a private per-session socket.
+A separate root systemd service owns the fixed Docker exec command and accepts only a verified
+pane TTY descriptor plus resize notifications from that identity. No Docker privilege is given to
+tmux or the worker. Launch secrets travel through a private pipe and are not stored in the spec.
+Docker terminal hosting requires systemd 249+ and useradd. Existing legacy Docker terminals cannot
+be attached after upgrade: stop and recreate tool sessions, or restart account binding. Legacy
+state remains readable and stoppable; active sessions are never silently migrated or replayed.
+See [terminal validation](docs/terminal-interaction.md) for test coverage and upgrade details.
+
 ## Commands
 
 ```sh

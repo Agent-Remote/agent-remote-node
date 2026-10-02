@@ -736,6 +736,24 @@ func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
+	spec := DockerSessionSpec{
+		Version: dockerSessionSpecVersion, Kind: dockerSessionKindBinding,
+		SessionID: decoded.BindingID, UserID: decoded.UserID,
+		TmuxSessionName: decoded.TmuxSessionName, SandboxName: "",
+		BootID: currentBootID(), RuntimeUID: identity.UID, RuntimeGID: identity.GID,
+	}
+	runtimeConfig.StartTerminal = func(sandbox string, command, environment []string) error {
+		spec.SandboxName = sandbox
+		if err := e.prepareDockerTerminal(&spec); err != nil {
+			return err
+		}
+		// Record cleanup authority before starting a persistent process. Failed
+		// starts retain the spec so an uncertain unit can still be stopped.
+		if err := e.saveDockerSessionSpec(spec); err != nil {
+			return err
+		}
+		return e.startDockerTerminal(spec, command, environment)
+	}
 	result, err := toolaccounts.PrepareBinding(
 		e.config.AccountRoot,
 		e.config.DockerBinaryPath,
@@ -746,15 +764,13 @@ func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, er
 	if err != nil {
 		return nil, err
 	}
-	spec := DockerSessionSpec{
-		Version: dockerSessionSpecVersion, Kind: dockerSessionKindBinding,
-		SessionID: decoded.BindingID, UserID: decoded.UserID,
-		TmuxSessionName: result.TmuxSessionName, SandboxName: result.ContainerName,
-		BootID: currentBootID(), RuntimeUID: identity.UID, RuntimeGID: identity.GID,
-	}
+	spec.SandboxName = result.ContainerName
 	if err := e.saveDockerSessionSpec(spec); err != nil {
+		if stopErr := e.stopDockerTerminal(spec); stopErr != nil {
+			return nil, errors.Join(err, stopErr)
+		}
 		_, _ = toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, toolsessions.StopPayload{
-			SessionID: decoded.BindingID, TmuxSessionName: result.TmuxSessionName,
+			SessionID: decoded.BindingID, TmuxSessionName: result.TmuxSessionName, TerminalStopped: spec.TmuxSocketPath != "",
 			SandboxName: result.ContainerName, RuntimeBackend: "docker_sandbox",
 		})
 		return nil, err
@@ -792,6 +808,18 @@ func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, erro
 	if err != nil {
 		return nil, err
 	}
+	runtimeConfig.StartTerminal = func(sandbox string, command, environment []string) error {
+		spec.SandboxName = sandbox
+		if err := e.prepareDockerTerminal(&spec); err != nil {
+			return err
+		}
+		// Record cleanup authority before starting a persistent process. Failed
+		// starts retain the spec so an uncertain unit can still be stopped.
+		if err := e.saveDockerSessionSpec(spec); err != nil {
+			return err
+		}
+		return e.startDockerTerminal(spec, command, environment)
+	}
 	result, err := toolsessions.Prepare(
 		e.config.WorkspaceRoot,
 		e.config.AccountRoot,
@@ -801,12 +829,14 @@ func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, erro
 		runtimeConfig,
 	)
 	if err != nil {
-		_ = e.removeDockerSessionSpec(decoded.SessionID)
 		return nil, err
 	}
 	if err := e.saveDockerSessionSpec(spec); err != nil {
+		if stopErr := e.stopDockerTerminal(spec); stopErr != nil {
+			return nil, errors.Join(err, stopErr)
+		}
 		_, _ = toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, toolsessions.StopPayload{
-			SessionID: decoded.SessionID, TmuxSessionName: result.TmuxSessionName,
+			SessionID: decoded.SessionID, TmuxSessionName: result.TmuxSessionName, TerminalStopped: spec.TmuxSocketPath != "",
 			SandboxName: result.SandboxName, RuntimeBackend: "docker_sandbox",
 		})
 		return nil, err
@@ -850,6 +880,10 @@ func (e Engine) dockerStopSession(payload map[string]any) (map[string]any, error
 	if !dockerSandboxAvailable(e.config.DockerBinaryPath) {
 		return nil, errDockerSandboxUnavailable
 	}
+	if err := e.stopDockerTerminal(spec); err != nil {
+		return nil, err
+	}
+	decoded.TerminalStopped = spec.TmuxSocketPath != ""
 	result, err := toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
 	if err != nil {
 		return nil, err
@@ -1002,7 +1036,7 @@ func (e Engine) listSessions() (map[string]any, error) {
 			continue
 		}
 		seenDockerSessions[sessionID] = struct{}{}
-		active := exec.Command(e.config.TmuxBinaryPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil
+		active := dockerTmuxCommand(e.config.TmuxBinaryPath, spec, "has-session", "-t", spec.TmuxSessionName).Run() == nil
 		summary := map[string]any{
 			"session_id": spec.SessionID, "runtime_backend": "docker_sandbox",
 			"runtime_resource_id": spec.SandboxName, "active": active,
@@ -1289,7 +1323,7 @@ func (e Engine) inspectSession(payload map[string]any) (map[string]any, error) {
 		if dockerSessionKind(spec) != dockerSessionKindTool {
 			return nil, errors.New("managed Docker resource is not a tool session")
 		}
-		active := exec.Command(e.config.TmuxBinaryPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil
+		active := dockerTmuxCommand(e.config.TmuxBinaryPath, spec, "has-session", "-t", spec.TmuxSessionName).Run() == nil
 		return map[string]any{
 			"session_id": sessionID, "active": active, "runtime_backend": backend,
 			"runtime_resource_id": spec.SandboxName,
@@ -1693,7 +1727,7 @@ func (e Engine) waitForSessionReady(ctx context.Context, spec SessionSpec) error
 		if state == "failed" || state == "inactive" || state == "deactivating" || state == "unknown" {
 			return fmt.Errorf("native runtime unit %s became %s before tmux was ready", spec.UnitName, state)
 		}
-		if state == "active" && exec.CommandContext(ctx, e.config.TmuxBinaryPath, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName).Run() == nil {
+		if state == "active" && nativeTmuxReady(ctx, e.config.TmuxBinaryPath, spec) {
 			readyChecks++
 			if readyChecks >= 10 {
 				return nil
@@ -2735,6 +2769,7 @@ func AttachSession(config EngineConfig, sessionID string, runtimeBackend string,
 	tmuxSessionName := ""
 	sshMode := ""
 	sshAgentDirectory := ""
+	agentUID, agentGID := 0, 0
 	uid, gid := 0, 0
 	dropPrivileges := false
 	switch runtimeBackend {
@@ -2760,13 +2795,20 @@ func AttachSession(config EngineConfig, sessionID string, runtimeBackend string,
 		sshMode = spec.SSHMode
 		sshAgentDirectory = spec.SSHAgentDirectory
 		dropPrivileges = true
+		agentUID, agentGID = uid, gid
 	case "docker_sandbox":
 		engine := NewEngine(config)
 		spec, err := engine.loadDockerSessionSpec(sessionID)
 		if err != nil {
 			return err
 		}
-		uid, gid = spec.RuntimeUID, spec.RuntimeGID
+		if spec.TmuxSocketPath == "" {
+			return errors.New("legacy Docker terminal cannot be attached safely; stop it and create a new session or restart account login")
+		}
+		uid, gid = spec.TerminalUID, spec.TerminalGID
+		agentUID, agentGID = spec.RuntimeUID, spec.RuntimeGID
+		tmuxSocketPath = spec.TmuxSocketPath
+		dropPrivileges = true
 		tmuxSessionName = spec.TmuxSessionName
 		sshMode = spec.SSHMode
 		sshAgentDirectory = spec.SSHAgentDirectory
@@ -2781,7 +2823,7 @@ func AttachSession(config EngineConfig, sessionID string, runtimeBackend string,
 		if err := validateForwardedSSHAgentSocket(sshAgentSocket); err != nil {
 			return err
 		}
-		startedProxy, err := startSSHAgentProxy(sshAgentDirectory, sshAgentSocket, uid, gid)
+		startedProxy, err := startSSHAgentProxy(sshAgentDirectory, sshAgentSocket, agentUID, agentGID)
 		if err != nil {
 			return err
 		}
@@ -2792,7 +2834,7 @@ func AttachSession(config EngineConfig, sessionID string, runtimeBackend string,
 	if err != nil {
 		return err
 	}
-	if err := tmuxsession.Configure(binary, tmuxSocketPath, tmuxSessionName); err != nil {
+	if err := tmuxsession.ConfigureAs(binary, tmuxSocketPath, tmuxSessionName, uid, gid); err != nil {
 		return err
 	}
 	cmd := exec.Command(binary, tmuxsession.AttachArgs(tmuxSocketPath, tmuxSessionName)...)

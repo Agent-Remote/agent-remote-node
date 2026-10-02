@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
-	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
 const controlPlaneRoot = "/var/lib/agent-remote/users"
@@ -26,9 +25,10 @@ type RuntimeTemplate struct {
 
 // SandboxRuntime contains root-validated Docker execution and ownership details.
 type SandboxRuntime struct {
-	UID         int
-	GID         int
-	SetfaclPath string
+	StartTerminal func(sandbox string, command []string, environment []string) error
+	UID           int
+	GID           int
+	SetfaclPath   string
 }
 
 // CreateBindingPayload describes a create_binding_session task payload.
@@ -302,15 +302,12 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string
 	if err := ensureSandbox(dockerBinary, accountPath, payload); err != nil {
 		return false, err
 	}
-	if err := exec.Command(tmuxBinary, "has-session", "-t", payload.TmuxSessionName).Run(); err == nil {
-		if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
-			return false, err
-		}
-		return true, nil
+	if sandboxRuntime.StartTerminal == nil {
+		return false, errors.New("managed nonprivileged terminal launcher is required")
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, accountPath, payload, sandboxRuntime)))...)
-	cmd.Dir = accountPath
-	cmd.Env = append(clearEgoBrowserEnvironment(os.Environ()),
+	var environment []string
+
+	environment = append(clearEgoBrowserEnvironment(os.Environ()),
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,
 		"AGENT_REMOTE_TOOL_TYPE="+payload.ToolType,
 		"AGENT_REMOTE_REGION="+payload.RegionCode,
@@ -318,10 +315,7 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, accountPath string
 		"LANG="+payload.Locale,
 		"LC_ALL="+payload.Locale,
 	)
-	if err := cmd.Run(); err != nil {
-		return false, err
-	}
-	if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
+	if err := sandboxRuntime.StartTerminal(containerName(payload.ToolAccountID), sandboxExecCommand(dockerBinary, accountPath, payload, sandboxRuntime), environment); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -517,26 +511,6 @@ func sanitizeFileMode(mode uint32) os.FileMode {
 		return 0o644
 	}
 	return 0o600
-}
-
-func shellCommand(args []string) string {
-	quoted := make([]string, 0, len(args))
-	for _, arg := range args {
-		quoted = append(quoted, shellQuote(arg))
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	if strings.IndexFunc(value, func(r rune) bool {
-		return !(r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '=' || r == '+' || r == ',' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z')
-	}) == -1 {
-		return value
-	}
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func existingClaudeAuthPaths(accountPath string) ([]string, error) {

@@ -14,7 +14,9 @@ import (
 func TestNewSessionArgs(t *testing.T) {
 	command := waitForClientCommand("/usr/bin/tmux", "/run/agent/tmux.sock", "agent-session", "claude")
 	want := []string{
+		"-f", "/dev/null",
 		"-S", "/run/agent/tmux.sock",
+		"start-server", ";", "set-option", "-g", "history-limit", "20000", ";",
 		"new-session", "-d", "-x", "160", "-y", "48",
 		"-s", "agent-session", command,
 	}
@@ -27,6 +29,7 @@ func TestNewSessionArgs(t *testing.T) {
 func TestNewSessionArgsWithoutSocket(t *testing.T) {
 	command := waitForClientCommand("tmux", "", "agent-session", "claude")
 	want := []string{
+		"-f", "/dev/null", "start-server", ";", "set-option", "-g", "history-limit", "20000", ";",
 		"new-session", "-d", "-x", "160", "-y", "48",
 		"-s", "agent-session", command,
 	}
@@ -72,19 +75,16 @@ func TestConfigure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{
-		"-S /run/agent/tmux.sock set-hook -t agent-session client-attached wait-for -S " + clientReadyChannel("agent-session"),
-		"-S /run/agent/tmux.sock set-hook -t agent-session client-resized " + resizeHookCommand(binary, "/run/agent/tmux.sock"),
-		"-S /run/agent/tmux.sock set-option -t agent-session status off",
-		"-S /run/agent/tmux.sock set-option -t agent-session focus-events on",
-		"-S /run/agent/tmux.sock set-window-option -t agent-session aggressive-resize off",
-		"-S /run/agent/tmux.sock set-window-option -t agent-session window-size largest",
-		"-S /run/agent/tmux.sock set-option -s terminal-features xterm*:RGB",
+	for _, expected := range []string{
+		"unbind-key -a -T root", "unbind-key -a -T prefix", "set-clipboard external",
+		"terminal-features[100] xterm*:RGB", "extended-keys on", "destroy-unattached off",
+		"escape-time 10", "MouseDragEnd1Pane run-shell -b",
+	} {
+		if !strings.Contains(string(data), expected) {
+			t.Fatalf("missing managed policy %q", expected)
+		}
 	}
-	got := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Configure() commands = %#v, want %#v", got, want)
-	}
+
 }
 
 func TestConfigureWithRealTmux(t *testing.T) {
@@ -98,15 +98,56 @@ func TestConfigureWithRealTmux(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
 	socketPath := filepath.Join(socketDir, "tmux.sock")
-	if output, err := exec.Command(binary, NewSessionArgs(binary, socketPath, "agent-session", "sleep 30")...).CombinedOutput(); err != nil {
+	home := t.TempDir()
+	marker := filepath.Join(home, "unwanted-config")
+	if err := os.WriteFile(filepath.Join(home, ".tmux.conf"), []byte("run-shell 'touch "+marker+"'\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	start := exec.Command(binary, NewSessionArgs(binary, socketPath, "agent-session", "sleep 30")...)
+	start.Env = append(os.Environ(), "HOME="+home)
+	if output, err := start.CombinedOutput(); err != nil {
 		t.Fatalf("start tmux: %v: %s", err, output)
 	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatal("managed tmux loaded a host user configuration")
+	}
+
 	t.Cleanup(func() {
 		_ = exec.Command(binary, "-S", socketPath, "kill-server").Run()
 	})
 
 	if err := Configure(binary, socketPath, "agent-session"); err != nil {
 		t.Fatal(err)
+	}
+	if err := Configure(binary, socketPath, "agent-session"); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"root", "prefix", "copy-mode", "copy-mode-vi"} {
+		keys, err := exec.Command(binary, "-S", socketPath, "list-keys", "-T", table).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, forbidden := range []string{"command-prompt", "new-window", "split-window", "switch-client", "display-menu", "choose-tree", "copy-pipe"} {
+			if strings.Contains(string(keys), forbidden) {
+				t.Fatalf("%s exposes %s", table, forbidden)
+			}
+		}
+	}
+	history, err := exec.Command(binary, "-S", socketPath, "display-message", "-p", "-t", "agent-session:0.0", "#{history_limit}").Output()
+	if err != nil || strings.TrimSpace(string(history)) != "20000" {
+		t.Fatalf("pane history: %q %v", history, err)
+	}
+	features, err := exec.Command(binary, "-S", socketPath, "show-options", "-s", "terminal-features").Output()
+	if err != nil || !strings.Contains(string(features), "terminal-features[0]") || !strings.Contains(string(features), "terminal-features[100]") {
+		t.Fatalf("default features were lost: %q %v", features, err)
+	}
+	clipboard, err := exec.Command(binary, "-S", socketPath, "show-options", "-sv", "set-clipboard").Output()
+	if err != nil || strings.TrimSpace(string(clipboard)) != "external" {
+		t.Fatalf("tmux clipboard policy = %q, err = %v", clipboard, err)
+	}
+	overrides, err := exec.Command(binary, "-S", socketPath, "show-options", "-s", "terminal-overrides").Output()
+	if err != nil || strings.Count(string(overrides), "Ms=") != 1 {
+		t.Fatalf("clipboard capability duplicated across attaches: %q, %v", overrides, err)
 	}
 	windowSize, err := exec.Command(binary, "-S", socketPath, "show-window-options", "-v", "-t", "agent-session", "window-size").CombinedOutput()
 	if err != nil {
@@ -363,4 +404,33 @@ func waitForLineCount(t *testing.T, path string, want int) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatalf("signal count = %d, want at least %d", got, want)
+}
+
+func TestMouseDragCopiesSelectionWithApplicationMouseReporting(t *testing.T) {
+	binary, err := exec.LookPath("tmux")
+	if err != nil {
+		t.Skip("tmux is not installed")
+	}
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 is required for PTY mouse regression")
+	}
+	root, err := os.MkdirTemp("/tmp", "agent-remote-mouse-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	socket := filepath.Join(root, "tmux.sock")
+	command := `sh -c 'printf "\033[?1000h\033[?1006hcopy this response\n"; sleep 30'`
+	args := append([]string{"-f", os.DevNull}, NewSessionArgs(binary, socket, "copy-test", command)...)
+	if out, err := exec.Command(binary, args...).CombinedOutput(); err != nil {
+		t.Fatalf("start tmux: %v: %s", err, out)
+	}
+	t.Cleanup(func() { _ = exec.Command(binary, "-S", socket, "kill-server").Run() })
+	if err := Configure(binary, socket, "copy-test"); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(python, "testdata/mouse_copy.py", binary, socket, "copy-test").CombinedOutput(); err != nil {
+		t.Fatalf("mouse selection regression: %v: %s", err, out)
+	}
 }

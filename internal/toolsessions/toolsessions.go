@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
-	"github.com/Agent-Remote/agent-remote-node/internal/tmuxsession"
 )
 
 const controlPlaneRoot = "/var/lib/agent-remote/users"
@@ -93,6 +92,7 @@ type CreateResult struct {
 // SandboxRuntime contains root-validated execution details that a task payload
 // cannot choose directly.
 type SandboxRuntime struct {
+	StartTerminal    func(sandbox string, command []string, environment []string) error
 	UID              int
 	GID              int
 	SetfaclPath      string
@@ -103,6 +103,7 @@ type SandboxRuntime struct {
 
 // StopPayload describes a stop_tool_session task payload.
 type StopPayload struct {
+	TerminalStopped   bool   `json:"-"`
 	SessionID         string `json:"session_id"`
 	TmuxSessionName   string `json:"tmux_session_name"`
 	SandboxName       string `json:"sandbox_name"`
@@ -291,10 +292,11 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 
 // Stop terminates a tmux-held tool session and removes its sandbox when available.
 func Stop(dockerBinary string, tmuxBinary string, payload StopPayload) (StopResult, error) {
-	tmuxStopped := false
-	if payload.TmuxSessionName != "" {
+	tmuxStopped := payload.TerminalStopped
+	if !tmuxStopped && payload.TmuxSessionName != "" {
 		if _, err := exec.LookPath(tmuxBinary); err == nil {
-			cmd := exec.Command(tmuxBinary, "kill-session", "-t", payload.TmuxSessionName)
+			args := []string{"kill-session", "-t", payload.TmuxSessionName}
+			cmd := exec.Command(tmuxBinary, args...)
 			if err := cmd.Run(); err == nil || isTmuxMissingSession(err) {
 				tmuxStopped = true
 			} else {
@@ -333,15 +335,12 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 	if err := ensureSandbox(dockerBinary, workspacePath, accountPath, developerProfilePath, payload, runtime); err != nil {
 		return false, err
 	}
-	if err := exec.Command(tmuxBinary, "has-session", "-t", payload.TmuxSessionName).Run(); err == nil {
-		if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
-			return false, err
-		}
-		return true, nil
+	if runtime.StartTerminal == nil {
+		return false, errors.New("managed nonprivileged terminal launcher is required")
 	}
-	cmd := exec.Command(tmuxBinary, tmuxsession.NewSessionArgs(tmuxBinary, "", payload.TmuxSessionName, shellCommand(sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload, runtime)))...)
-	cmd.Dir = workspacePath
-	cmd.Env = append(clearManagedEnvironment(os.Environ()),
+	var environment []string
+
+	environment = append(clearManagedEnvironment(os.Environ()),
 		"AGENT_REMOTE_WORKSPACE_PATH="+workspacePath,
 		"AGENT_REMOTE_ACCOUNT_PATH="+accountPath,
 		"AGENT_REMOTE_DEVELOPER_CREDENTIAL_PROFILE_PATH="+developerProfilePath,
@@ -350,11 +349,8 @@ func startTmuxSession(dockerBinary string, tmuxBinary string, workspacePath stri
 		"LANG="+payload.Locale,
 		"LC_ALL="+payload.Locale,
 	)
-	cmd.Env = append(cmd.Env, runtime.Environment...)
-	if err := cmd.Run(); err != nil {
-		return false, err
-	}
-	if err := tmuxsession.Configure(tmuxBinary, "", payload.TmuxSessionName); err != nil {
+	environment = append(environment, runtime.Environment...)
+	if err := runtime.StartTerminal(payload.SandboxName, sandboxExecCommand(dockerBinary, workspacePath, accountPath, developerProfilePath, payload, runtime), environment); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -699,26 +695,6 @@ func isPathInside(root string, candidate string) bool {
 	root = filepath.Clean(root)
 	candidate = filepath.Clean(candidate)
 	return candidate == root || strings.HasPrefix(candidate, root+string(os.PathSeparator))
-}
-
-func shellCommand(args []string) string {
-	quoted := make([]string, 0, len(args))
-	for _, arg := range args {
-		quoted = append(quoted, shellQuote(arg))
-	}
-	return strings.Join(quoted, " ")
-}
-
-func shellQuote(value string) string {
-	if value == "" {
-		return "''"
-	}
-	if strings.IndexFunc(value, func(r rune) bool {
-		return !(r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || r == '=' || r == '+' || r == ',' || r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z')
-	}) == -1 {
-		return value
-	}
-	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func isTmuxMissingSession(err error) bool {

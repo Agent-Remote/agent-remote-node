@@ -104,6 +104,8 @@ jobs:
         run: scripts/run-quality-checks.sh
       - name: Prove native runtime UID and broker socket ACLs
         run: tests/linux_ego_browser_uid_acl_test.sh
+      - name: Verify isolated terminal privileges and PTY interactions
+        run: bash tests/linux_terminal_host_test.sh
       - name: Verify root-owned ego-browser release success paths
         run: |
           sudo env \

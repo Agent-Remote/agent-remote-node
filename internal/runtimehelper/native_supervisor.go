@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"os/user"
 	"regexp"
 	"strconv"
 	"strings"
@@ -18,6 +19,27 @@ import (
 )
 
 var nativePaneIDPattern = regexp.MustCompile(`^%[0-9]{1,20}$`)
+
+func nativeTmuxReady(ctx context.Context, binary string, spec SessionSpec) bool {
+	identity, err := user.Lookup(spec.Username)
+	if err != nil {
+		return false
+	}
+	uid, uidErr := strconv.Atoi(identity.Uid)
+	gid, gidErr := strconv.Atoi(identity.Gid)
+	if uidErr != nil || gidErr != nil || uid <= 0 || gid <= 0 {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, binary, "-S", spec.TmuxSocketPath, "has-session", "-t", spec.TmuxSessionName)
+	// Even a read-only tmux client speaks to a runtime-owned socket. The
+	// privileged helper must never connect to it with ambient root authority.
+	if os.Geteuid() == 0 {
+		cmd.SysProcAttr = terminalCredential(uid, gid)
+	}
+	return cmd.Run() == nil
+}
 
 func superviseManagedNative(ctx context.Context, config EngineConfig, spec SessionSpec, command string) error {
 	stop := make(chan os.Signal, 1)

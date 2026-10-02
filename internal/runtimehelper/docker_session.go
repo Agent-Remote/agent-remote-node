@@ -31,6 +31,9 @@ const (
 // DockerSessionSpec is the root-owned identity and feature manifest for one
 // tmux-held Docker Sandbox session.
 type DockerSessionSpec struct {
+	TmuxSocketPath               string `json:"tmux_socket_path,omitempty"`
+	TerminalUID                  int    `json:"terminal_uid,omitempty"`
+	TerminalGID                  int    `json:"terminal_gid,omitempty"`
 	Version                      int    `json:"version,omitempty"`
 	Kind                         string `json:"kind,omitempty"`
 	SessionID                    string `json:"session_id"`
@@ -93,7 +96,10 @@ func (e Engine) saveDockerSessionSpec(spec DockerSessionSpec) error {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return err
 	}
-	return e.grantDockerSessionStateTraversal(spec)
+	if err := e.grantDockerSessionStateTraversal(spec); err != nil {
+		return err
+	}
+	return e.grantDockerTerminalTraversal(spec)
 }
 
 func (e Engine) loadDockerSessionSpec(sessionID string) (DockerSessionSpec, error) {
@@ -129,6 +135,14 @@ func (e Engine) validateDockerSessionSpec(spec DockerSessionSpec, sessionID stri
 		validateName(spec.TmuxSessionName, "tmux_session_name") != nil ||
 		validateName(spec.SandboxName, "sandbox_name") != nil {
 		return errors.New("Docker session spec identity is invalid")
+	}
+	if spec.TmuxSocketPath != "" {
+		expected := filepath.Join(e.dockerSessionRoot(sessionID), "terminal", "tmux", "tmux.sock")
+		if spec.Version != dockerSessionSpecVersion || spec.TmuxSocketPath != expected || spec.TerminalUID <= 0 || spec.TerminalGID <= 0 {
+			return errors.New("invalid Docker terminal isolation")
+		}
+	} else if spec.TerminalUID != 0 || spec.TerminalGID != 0 {
+		return errors.New("incomplete Docker terminal identity")
 	}
 	if spec.Version == 0 {
 		return nil

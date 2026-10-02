@@ -120,3 +120,17 @@ The mandatory Node lifecycle, storage and recovery rules are centralized in
 [Skill manager](../skill-manager.md) and its linked cross-repository contract. Read them before changing
 Skill code. Preserve exact original bindings, private Helper authority, writer/reader exclusion,
 immutable receipts and retention; do not reconstruct authorization from historical task success.
+
+## Managed Terminal Boundary
+
+Both backends use non-root tmux servers and session-private sockets. Docker tool/binding
+terminals use a per-user runtime identity separate from the Node service UID inside the sandbox.
+The helper starts a root transient systemd terminal host, sends a bounded launch manifest over
+private stdin, and keeps nonces out of persisted specs, command arguments and tmux environments.
+The host starts tmux after dropping UID/GID and supplementary groups. The pane-side client sends
+one TTY FD over a session-private Unix socket; the host checks SO_PEERCRED, terminal type and exact
+pane identity before starting the fixed Docker command. Subsequent input can only notify resize.
+The trusted Docker spec stores terminal UID/GID and socket path; attach drops to that identity.
+Stopping the transient unit precedes sandbox removal. Legacy privileged tmux sessions are readable
+and stoppable but cannot be attached or silently adopted. Key-table restrictions supplement these
+process/socket boundaries and must never be treated as the sole isolation mechanism.

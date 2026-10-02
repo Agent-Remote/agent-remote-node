@@ -16,6 +16,25 @@ agent-remote 的节点侧运行时。
 
 节点运行在 VPS 上，并通过轮询控制平面与 `agent-remote-server` 通信。它不会暴露公开 HTTP 端口。
 
+受管 tmux 会话支持拖选复制：即使 Agent 开启鼠标事件，拖动仍会选择回复文本，松开后通过
+OSC 52 发送选区。更新后的本机 CLI 将其写入系统剪贴板；直接使用普通 SSH 时，需要终端支持
+并允许 OSC 52。普通点击和滚轮绑定不变，终端的 Shift／Option 强制原生选择方式仍可使用。
+Native 和新版 Docker Sandbox 会在下次连接时应用设置；旧版 Docker 终端需要重建。`set-clipboard external`
+只允许 tmux 选区触发复制，不允许应用通过 OSC 52 填充 tmux 缓冲区；CLI 不桥接剪贴板读取。
+
+受管会话使用明确的空 tmux 配置和专用按键表，不读取宿主机用户配置。Ctrl+B 后按 D 可断开并
+保留 Claude；Ctrl+B 后按 `[` 进入历史，方向键／PageUp／PageDown 移动，空格开始选择，Enter／Y
+复制，Esc／Q 返回。Ctrl+B 后按 `]` 粘贴 tmux 缓冲区，连续两次 Ctrl+B 向 Claude 发送 Ctrl+B。
+不提供宿主机命令提示符、菜单、新窗口、分屏或跨会话切换。新 pane 保留 20,000 行历史，RGB
+配置保留其他终端能力，扩展按键仅在应用请求后协商启用，Esc 等待为 10ms。发送选区后显示短暂
+tmux 提示；本地剪贴板拒绝或未完成的请求由 CLI 单独反馈。
+
+Docker 的 tmux 改用每用户非 root 身份和每会话独立 socket；单独的 root systemd 服务运行固定的
+Docker exec，仅接收该身份提供且与指定 pane 匹配的 TTY 描述符和缩放通知。tmux 与 worker 都不获得
+Docker 权限。启动凭据通过私有管道传输，不写入 spec。Docker 终端托管要求 systemd 249+ 和 useradd。
+升级后旧版 Docker 终端拒绝连接，需要停止并重建工具会话，或重新发起账户绑定；旧状态仍可读取和
+停止，不会静默迁移正在运行的会话或重放命令。验证范围见[终端交互说明](docs/terminal-interaction.md)。
+
 ## 命令
 
 ```sh

@@ -1136,6 +1136,11 @@ install_packaged() {
   check_dependency cp
   check_dependency wg
   check_dependency wg-quick
+  if backend_enabled docker_sandbox; then
+    check_dependency systemd-run
+    check_dependency systemctl
+    check_dependency useradd
+  fi
   if backend_enabled native; then
     check_dependency bwrap
     check_dependency systemd-run

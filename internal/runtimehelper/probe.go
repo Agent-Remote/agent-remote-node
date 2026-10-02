@@ -49,6 +49,11 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 		nativeOK = nativeOK && available
 	}
 	dockerChecks := map[string]bool{
+		"systemd_run": commandAvailable(e.config.SystemdRunPath),
+		"systemd_249": probeSystemdAtLeast(ctx, e.config.SystemdRunPath, 249),
+		"systemctl":   commandAvailable(e.config.SystemctlPath),
+		"useradd":     commandAvailable("useradd"),
+
 		"linux":            runtime.GOOS == "linux",
 		"root":             os.Geteuid() == 0,
 		"docker":           commandAvailable(e.config.DockerBinaryPath),
