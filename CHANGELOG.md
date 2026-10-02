@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.39 - 2026-10-02
+
+- feat: improve tmux terminal interaction and isolation (c21288b)
+
 ## v0.2.38 - 2026-09-29
 
 - fix: validate runtime configuration before creating session state (3c7e957)
