@@ -883,6 +883,7 @@ func (e Engine) dockerStopSession(payload map[string]any) (map[string]any, error
 	if err := e.stopDockerTerminal(spec); err != nil {
 		return nil, err
 	}
+	e.stopDockerCapability(spec.DockerSocketPath)
 	decoded.TerminalStopped = spec.TmuxSocketPath != ""
 	result, err := toolsessions.Stop(e.config.DockerBinaryPath, e.config.TmuxBinaryPath, decoded)
 	if err != nil {
@@ -1281,6 +1282,7 @@ func (e Engine) stopSession(ctx context.Context, payload map[string]any) (map[st
 	if err := e.cleanupNativeSkillMount(spec); err != nil {
 		return nil, err
 	}
+	e.stopDockerCapability(spec.DockerSocketPath)
 	if err := os.RemoveAll(spec.SessionRoot); err != nil {
 		return nil, err
 	}
@@ -1377,6 +1379,8 @@ type SessionSpec struct {
 	EgoBrowserSkillVersion    string `json:"ego_browser_skill_version,omitempty"`
 	EgoBrowserSkillTreeSHA256 string `json:"ego_browser_skill_tree_sha256,omitempty"`
 	EgoBrowserTaskSpace       string `json:"ego_browser_task_space,omitempty"`
+	DockerSocketPath          string `json:"docker_socket_path,omitempty"`
+	DockerWrapperPath         string `json:"docker_wrapper_path,omitempty"`
 	// RuntimeConfig is a non-sensitive snapshot used by the unprivileged
 	// supervisor and exec child; it never contains node credentials.
 	RuntimeConfig *SessionRuntimeConfig `json:"runtime_config,omitempty"`
@@ -1496,6 +1500,12 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 		}
 		deviceProxyPath = filepath.Clean(e.config.DeviceProxyPath)
 	}
+	dockerSocketPath, dockerWrapperPath := "", ""
+	if kind == "session" {
+		if _, dockerSocketPath, dockerWrapperPath, err = prepareDockerCapability(sessionRoot, sessionID, workspacePath, e.config.DockerBinaryPath, identity.UID, identity.GID); err != nil {
+			return SessionSpec{}, fmt.Errorf("prepare session Docker capability: %w", err)
+		}
+	}
 	spec := SessionSpec{
 		Version:                        ProtocolVersion,
 		Kind:                           kind,
@@ -1537,6 +1547,8 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 		EgoBrowserSkillVersion:         egoContext.SkillVersion,
 		EgoBrowserSkillTreeSHA256:      egoContext.SkillTreeSHA256,
 		EgoBrowserTaskSpace:            egoContext.TaskSpace,
+		DockerSocketPath:               dockerSocketPath,
+		DockerWrapperPath:              dockerWrapperPath,
 		RuntimeConfig:                  sessionRuntimeConfigFromEngine(e.config),
 		Policy:                         policy,
 	}
@@ -1547,9 +1559,11 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 		saveErr = e.saveSpec(spec)
 	}
 	if saveErr != nil {
+		e.stopDockerCapability(spec.DockerSocketPath)
 		return SessionSpec{}, saveErr
 	}
 	if err := e.grantSpecAccess(spec); err != nil {
+		e.stopDockerCapability(spec.DockerSocketPath)
 		return SessionSpec{}, err
 	}
 	return spec, nil
@@ -1703,6 +1717,16 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 	if spec.EgoBrowserEnabled {
 		for _, entry := range egoBrowserEnvironment(spec, false) {
 			args = append(args, "--setenv="+entry)
+		}
+	}
+	if spec.DockerSocketPath != "" {
+		if spec.DockerWrapperPath != "" && filepath.Dir(spec.DockerSocketPath) == filepath.Join(spec.SessionRoot, "docker") {
+			args = append(args,
+				"--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker",
+				"--dir", "/run/agent-remote/docker",
+				"--bind", filepath.Dir(spec.DockerSocketPath), "/run/agent-remote/docker",
+				"--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock",
+			)
 		}
 	}
 	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--state-root", e.config.StateRoot, "--spec", e.specPath(spec.SessionID))

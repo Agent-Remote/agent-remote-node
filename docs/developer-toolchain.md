@@ -36,3 +36,19 @@ command -v claude git gh python3 rg jq cmake go rustc cargo java tmux
 
 The Docker socket and host package manager are intentionally unavailable to Claude. This keeps
 the image reproducible and prevents a session from changing the host environment.
+
+## Session Docker capability
+
+Claude tool sessions may use `docker` through a session-owned wrapper. The
+wrapper talks to a root-owned runtime broker over a private Unix socket; the
+host `/var/run/docker.sock` is never mounted into Native or Docker Sandbox
+sessions. Requests are authenticated with the session runtime UID and limited
+to `build`, `run`, `exec`, `logs`, `ps`, `inspect`, `stop`, `rm`, `pull`, and
+`compose`.
+
+The broker rejects privileged mode, host PID/network, devices, arbitrary host
+bind mounts, Docker socket mounts, daemon host overrides, and build contexts
+outside the managed workspace; `docker run` host port publishing is disabled. Containers created by `docker run` receive a
+session label and generated name; resource operations are checked against that
+label. Session shutdown removes the broker socket and Docker Sandbox cleanup
+remains authoritative for the Claude runtime itself.

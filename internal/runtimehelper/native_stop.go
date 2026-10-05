@@ -281,6 +281,7 @@ func confirmEmptyCgroup(rootPath, group string) error {
 // A failed or cancelled start can still have created a live systemd unit. Cleanup uses a
 // fresh bounded context because cancellation of the launch is not evidence of writer exit.
 func (e Engine) cleanupFailedNativeLaunch(spec SessionSpec) error {
+	e.stopDockerCapability(spec.DockerSocketPath)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	termination, err := e.stopNativeWriters(ctx, spec)

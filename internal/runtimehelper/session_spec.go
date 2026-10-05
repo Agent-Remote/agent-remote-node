@@ -318,6 +318,12 @@ func validateSessionSpec(config EngineConfig, spec SessionSpec, specPath string)
 	if err := validateSpecEgoBrowserContext(config, &spec, false); err != nil {
 		return err
 	}
+	if spec.DockerSocketPath != "" || spec.DockerWrapperPath != "" {
+		if spec.DockerSocketPath != filepath.Join(spec.SessionRoot, "docker", "broker.sock") ||
+			spec.DockerWrapperPath != filepath.Join(spec.SessionRoot, "docker", "bin", "docker") {
+			return errors.New("spec contains unmanaged Docker capability paths")
+		}
+	}
 	if spec.EgoBrowserEnabled {
 		if err := validateEgoBrowserArtifacts(
 			spec.EgoBrowserWrapperPath,

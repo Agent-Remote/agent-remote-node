@@ -48,6 +48,8 @@ type DockerSessionSpec struct {
 	DeviceControlProtocolVersion int    `json:"device_control_protocol_version,omitempty"`
 	DeviceControlDirectory       string `json:"device_control_directory,omitempty"`
 	DeviceProxyPath              string `json:"device_proxy_path,omitempty"`
+	DockerSocketPath             string `json:"docker_socket_path,omitempty"`
+	DockerWrapperPath            string `json:"docker_wrapper_path,omitempty"`
 }
 
 func (e Engine) dockerRuntimeIdentity() (runtimeIdentity, error) {
@@ -155,7 +157,7 @@ func (e Engine) validateDockerSessionSpec(spec DockerSessionSpec, sessionID stri
 	}
 	if spec.Kind == dockerSessionKindBinding &&
 		(spec.SSHMode != "" || spec.SSHAgentDirectory != "" || spec.DeviceControlProtocolVersion != 0 ||
-			spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "") {
+			spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "" || spec.DockerSocketPath != "" || spec.DockerWrapperPath != "") {
 		return errors.New("Docker binding spec contains tool-session features")
 	}
 	if spec.SSHMode != "" && spec.SSHMode != "disabled" && spec.SSHMode != "deploy_key" && spec.SSHMode != "agent_forwarding" {
@@ -176,11 +178,19 @@ func (e Engine) validateDockerSessionSpec(spec DockerSessionSpec, sessionID stri
 	} else if spec.DeviceControlProtocolVersion != 0 || spec.DeviceControlDirectory != "" || spec.DeviceProxyPath != "" {
 		return errors.New("Docker session spec contains unconfigured device control paths")
 	}
+	if spec.DockerSocketPath != "" || spec.DockerWrapperPath != "" {
+		if spec.Kind != dockerSessionKindTool || spec.DockerSocketPath != filepath.Join(e.dockerSessionRoot(sessionID), "docker", "broker.sock") || spec.DockerWrapperPath != filepath.Join(e.dockerSessionRoot(sessionID), "docker", "bin", "docker") {
+			return errors.New("Docker session spec contains invalid Docker capability paths")
+		}
+	}
 	return nil
 }
 
 func (e Engine) grantDockerSessionStateTraversal(spec DockerSessionSpec) error {
-	if spec.DeviceControlProtocolVersion != 1 {
+	if runtime.GOOS != "linux" && spec.DeviceControlProtocolVersion != 1 {
+		return nil
+	}
+	if spec.DeviceControlProtocolVersion != 1 && spec.DockerSocketPath == "" {
 		return nil
 	}
 	stateRoot := e.config.WithDefaults().StateRoot
@@ -216,6 +226,20 @@ func (e Engine) prepareDockerSessionRuntime(
 	runtimeConfig := toolsessions.SandboxRuntime{
 		UID: identity.UID, GID: identity.GID, SetfaclPath: e.config.WithDefaults().SetfaclPath,
 	}
+	workspacePath := filepath.Join(e.config.WorkspaceRoot, decoded.UserID, "workspaces", decoded.WorkspaceID, "files")
+	_, spec.DockerSocketPath, spec.DockerWrapperPath, err = prepareDockerCapability(e.dockerSessionRoot(decoded.SessionID), decoded.SessionID, workspacePath, e.config.DockerBinaryPath, identity.UID, identity.GID)
+	if err != nil {
+		return DockerSessionSpec{}, toolsessions.SandboxRuntime{}, fmt.Errorf("prepare Docker capability: %w", err)
+	}
+	if err := e.grantDockerSessionStateTraversal(spec); err != nil {
+		e.stopDockerCapability(spec.DockerSocketPath)
+		return DockerSessionSpec{}, toolsessions.SandboxRuntime{}, err
+	}
+	runtimeConfig.Mounts = append(runtimeConfig.Mounts, filepath.Join(e.dockerSessionRoot(decoded.SessionID), "docker"))
+	runtimeConfig.Environment = append(runtimeConfig.Environment,
+		"PATH="+filepath.Join(e.dockerSessionRoot(decoded.SessionID), "docker", "bin")+":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+		"FCLAUDE_DOCKER_SOCKET="+spec.DockerSocketPath,
+	)
 	if decoded.DeveloperCredentials != nil {
 		spec.SSHMode = decoded.DeveloperCredentials.SSHMode
 		if spec.SSHMode != "disabled" && spec.SSHMode != "deploy_key" && spec.SSHMode != "agent_forwarding" {

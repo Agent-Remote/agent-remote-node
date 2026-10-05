@@ -43,6 +43,7 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 		"network_ns":      pathExists("/proc/self/ns/net"),
 		"tun":             pathExists("/dev/net/tun"),
 		"disk_watermark":  diskAvailableAt(e.config.StateRoot, 2<<30),
+		"docker_broker":   runtime.GOOS == "linux" && commandAvailable(e.config.DockerBinaryPath),
 	}
 	nativeOK := true
 	for _, available := range nativeChecks {
@@ -63,6 +64,7 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 		"git":              commandAvailable("git"),
 		"setfacl":          commandAvailable(e.config.SetfaclPath),
 		"runtime_identity": dockerIdentityError == nil,
+		"docker_broker":    runtime.GOOS == "linux" && commandAvailable(e.config.DockerBinaryPath),
 	}
 	dockerOK := true
 	for _, available := range dockerChecks {

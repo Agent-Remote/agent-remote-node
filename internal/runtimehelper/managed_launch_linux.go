@@ -145,6 +145,13 @@ func (e Engine) launchManagedOnce(ctx context.Context, store *os.Root, spec Sess
 			err = errors.Join(errManagedStartPending, e.cleanupFailedNativeLaunch(spec))
 		}
 	}()
+	if spec.DockerSocketPath != "" {
+		if _, active := dockerCapabilityBrokers.Load(spec.DockerSocketPath); !active {
+			if _, _, _, err := prepareDockerCapability(spec.SessionRoot, spec.SessionID, spec.WorkspacePath, e.config.DockerBinaryPath, spec.RuntimeUID, spec.RuntimeGID); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if err := e.launch(ctx, spec); err != nil {
 		return nil, err
 	}
