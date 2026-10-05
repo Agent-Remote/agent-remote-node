@@ -1719,16 +1719,6 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 			args = append(args, "--setenv="+entry)
 		}
 	}
-	if spec.DockerSocketPath != "" {
-		if spec.DockerWrapperPath != "" && filepath.Dir(spec.DockerSocketPath) == filepath.Join(spec.SessionRoot, "docker") {
-			args = append(args,
-				"--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker",
-				"--dir", "/run/agent-remote/docker",
-				"--bind", filepath.Dir(spec.DockerSocketPath), "/run/agent-remote/docker",
-				"--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock",
-			)
-		}
-	}
 	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--state-root", e.config.StateRoot, "--spec", e.specPath(spec.SessionID))
 	if output, err := exec.CommandContext(ctx, e.config.SystemdRunPath, args...).CombinedOutput(); err != nil {
 		return errors.Join(fmt.Errorf("systemd-run failed: %w: %s", err, strings.TrimSpace(string(output))), e.cleanupFailedNativeLaunch(spec))
@@ -3099,6 +3089,17 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		"--setenv", "LC_ALL", spec.Locale,
 		"--setenv", "LANGUAGE", spec.Locale,
 	)
+	if spec.DockerSocketPath != "" && spec.DockerWrapperPath != "" && filepath.Dir(spec.DockerSocketPath) == filepath.Join(spec.SessionRoot, "docker") {
+		// Docker capability mounts belong to the Bubblewrap command executed by
+		// the supervised runtime. Passing these options to systemd-run makes
+		// systemd parse --ro-bind/--dir as its own options and abort the launch.
+		args = append(args,
+			"--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker",
+			"--dir", "/run/agent-remote/docker",
+			"--bind", filepath.Dir(spec.DockerSocketPath), "/run/agent-remote/docker",
+			"--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock",
+		)
+	}
 	if spec.SkillSnapshotID != "" {
 		systemNames := []string{"ego-browser"}
 		if spec.DeviceControlProtocolVersion != 0 {

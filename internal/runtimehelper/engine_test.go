@@ -901,6 +901,25 @@ func TestBubblewrapUsesManagedLimitedTempDirectory(t *testing.T) {
 	assertArgumentSequence(t, args, "--setenv", "SSH_AUTH_SOCK", "/run/agent-remote/ssh-agent/agent.sock")
 }
 
+func TestBubblewrapMountsSessionDockerCapabilityInsideSandbox(t *testing.T) {
+	spec := SessionSpec{
+		RuntimeRoot:       "/runtime",
+		WorkspacePath:     "/workspace-host",
+		AccountPath:       "/account-host",
+		SessionRoot:       "/runtime-state/session",
+		DockerSocketPath:  "/runtime-state/session/docker/broker.sock",
+		DockerWrapperPath: "/runtime-state/session/docker/bin/docker",
+		Timezone:          "UTC",
+		Locale:            "en_US.UTF-8",
+		RuntimeCommand:    "/opt/agent-remote/runtime/bin/claude",
+	}
+
+	args := bubblewrapArgs(EngineConfig{}, spec)
+	assertArgumentSequence(t, args, "--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker")
+	assertArgumentSequence(t, args, "--bind", "/runtime-state/session/docker", "/run/agent-remote/docker")
+	assertArgumentSequence(t, args, "--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock")
+}
+
 func TestBubblewrapOvermountsOfficialEgoBrowserSkillReadOnly(t *testing.T) {
 	spec := SessionSpec{
 		RuntimeRoot: "/runtime", WorkspacePath: "/workspace-host", AccountPath: "/account-host",
