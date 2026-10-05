@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.42 - 2026-10-05
+
+- fix(runtime): mount docker capability inside bubblewrap (34cb8c4)
+
 ## v0.2.41 - 2026-10-05
 
 - feat(runtime): add session-scoped docker capability (ffaa3f2)
