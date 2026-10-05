@@ -915,9 +915,10 @@ func TestBubblewrapMountsSessionDockerCapabilityInsideSandbox(t *testing.T) {
 	}
 
 	args := bubblewrapArgs(EngineConfig{}, spec)
-	assertArgumentSequence(t, args, "--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker")
+	assertArgumentSequence(t, args, "--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/docker-bin/docker")
 	assertArgumentSequence(t, args, "--bind", "/runtime-state/session/docker", "/run/agent-remote/docker")
 	assertArgumentSequence(t, args, "--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock")
+	assertArgumentSequence(t, args, "--setenv", "PATH", "/opt/agent-remote/docker-bin:/opt/agent-remote/runtime/bin:/opt/agent-remote/ego-browser/bin:/usr/local/bin:/usr/bin:/bin")
 }
 
 func TestBubblewrapOvermountsOfficialEgoBrowserSkillReadOnly(t *testing.T) {

@@ -3094,10 +3094,12 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 		// the supervised runtime. Passing these options to systemd-run makes
 		// systemd parse --ro-bind/--dir as its own options and abort the launch.
 		args = append(args,
-			"--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/runtime/bin/docker",
+			"--dir", "/opt", "--dir", "/opt/agent-remote", "--dir", "/opt/agent-remote/docker-bin",
+			"--ro-bind", spec.DockerWrapperPath, "/opt/agent-remote/docker-bin/docker",
 			"--dir", "/run/agent-remote/docker",
 			"--bind", filepath.Dir(spec.DockerSocketPath), "/run/agent-remote/docker",
 			"--setenv", "FCLAUDE_DOCKER_SOCKET", "/run/agent-remote/docker/broker.sock",
+			"--setenv", "PATH", "/opt/agent-remote/docker-bin:/opt/agent-remote/runtime/bin:/opt/agent-remote/ego-browser/bin:/usr/local/bin:/usr/bin:/bin",
 		)
 	}
 	if spec.SkillSnapshotID != "" {
