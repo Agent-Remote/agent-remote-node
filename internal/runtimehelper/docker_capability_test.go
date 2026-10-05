@@ -1,6 +1,7 @@
 package runtimehelper
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,5 +47,30 @@ func TestDockerCapabilityTargetSkipsOptions(t *testing.T) {
 	}
 	if got := dockerCapabilityTarget([]string{"logs", "container"}); got != "container" {
 		t.Fatalf("logs target = %q", got)
+	}
+}
+
+func TestPrepareDockerCapabilityMakesWrapperParentTraversable(t *testing.T) {
+	root := t.TempDir()
+	broker, _, wrapper, err := prepareDockerCapability(root, "session_1", root, "/usr/bin/docker", 1001, 1001)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if broker != nil {
+		t.Cleanup(broker.closeBroker)
+	}
+	parentInfo, err := os.Stat(filepath.Dir(wrapper))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := parentInfo.Mode().Perm(); got != 0o755 {
+		t.Fatalf("wrapper parent mode = %o, want 755", got)
+	}
+	wrapperInfo, err := os.Stat(wrapper)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := wrapperInfo.Mode().Perm(); got != 0o555 {
+		t.Fatalf("wrapper mode = %o, want 555", got)
 	}
 }

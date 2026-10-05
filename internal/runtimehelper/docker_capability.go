@@ -355,6 +355,11 @@ func prepareDockerCapability(root, sessionID, workdir, docker string, uid, gid i
 	if err := os.Chmod(directory, 0o755); err != nil {
 		return nil, "", "", err
 	}
+	// Bubblewrap opens the wrapper as the session runtime UID. The wrapper
+	// itself is read-only, but its parent must be traversable by that UID.
+	if err := os.Chmod(filepath.Dir(wrapper), 0o755); err != nil {
+		return nil, "", "", err
+	}
 	wrapperContents := strings.ReplaceAll(dockerCapabilityWrapperTemplate, "__SESSION_ID__", sessionID)
 	if err := os.WriteFile(wrapper, []byte(wrapperContents), 0o755); err != nil {
 		return nil, "", "", err
