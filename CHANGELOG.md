@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.44 - 2026-10-05
+
+- fix(runtime): mount docker wrapper outside runtime root (99a656a)
+
 ## v0.2.43 - 2026-10-05
 
 - fix(runtime): allow sandbox to traverse docker wrapper (051ad12)
