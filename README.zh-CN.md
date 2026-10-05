@@ -224,7 +224,11 @@ curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main
 
 该兼容入口会补齐所选 backend 的依赖但不会升级已经安装的系统包，配置受限 SSH gateway，安装受管 device proxy，注册节点，启动两个 systemd service，并验证 runtime probe 与控制面 heartbeat。它会在 argv 中携带短期 registration token，因此只能用于隔离的人工维护环境，并且不得写入 shell history 或日志。使用默认 `native` backend 时，它还会启用 IPv4 forwarding 和 user namespace，通过 Anthropic 官方 installer 下载 Claude Code `latest`，并在同一个只读受管 runtime 中安装带 `npm` 和 `npx` 的最新已验证 Node.js 22 release。默认配置不要求 KVM 或 Docker。请以 root 或具有 `sudo` 权限的用户运行；安装器只会为系统操作提权。
 
-默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。安装器会在装包后逐项验证命令，并通过重装 `gawk` 修复损坏的 `awk` alternatives 链。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
+默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。默认的 `full` 开发工具链还包括 CMake/Ninja/Meson、Clang/LLDB/GDB、ShellCheck、fzf、Valgrind、Go、Rust、Java/Maven、Ruby、PHP、Perl、PostgreSQL/MariaDB/Redis 客户端和常用开发头文件。安装器会在装包后逐项验证命令，并通过重装 `gawk` 修复损坏的 `awk` alternatives 链。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
+
+工具链可以按需缩小：`--developer-toolchain full`（默认，完整常用开发环境）、`--developer-toolchain core`（编译、调试和脚本工具，不安装额外语言和数据库客户端）或 `--developer-toolchain none`（不安装额外扩展，只保留原有基础命令基线）。安装使用 `apt-get --no-upgrade`，不会隐式升级已有系统包；成功安装后会把发行版、精确 Debian 包版本、命令路径和命令版本写入 `/opt/agent-remote/toolchain/MANIFEST`，方便审计和复现。完整 Docker Sandbox 镜像仍由 Docker 管理，宿主机工具链不会自动出现在容器内，必须使用包含相同工具链的受管镜像。
+
+完整的命令清单、版本记录格式和 Docker 镜像检查方法见 [`docs/developer-toolchain.md`](docs/developer-toolchain.md)。
 
 命令可安全重复执行。再次执行会升级节点二进制、Claude 和所选 Node.js 发布线、刷新系统路径并复用已有 node token；只有明确需要替换注册信息时才添加 `--force-register`。
 

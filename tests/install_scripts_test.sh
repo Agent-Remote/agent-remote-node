@@ -50,6 +50,7 @@ bash -n "$ROOT/scripts/install.sh" "$ROOT/scripts/install-claude-runtime.sh" \
 "$ROOT/scripts/install.sh" --help | grep -q -- '--nodejs-version' || fail "Node.js install help is incomplete"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--enable-ego-browser' || fail "ego-browser enable option is missing"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--disable-ego-browser' || fail "ego-browser disable option is missing"
+"$ROOT/scripts/install.sh" --help | grep -q -- '--developer-toolchain' || fail "developer toolchain option is missing"
 "$ROOT/scripts/install.sh" --help | grep -q -- '--rotate-wireguard-listen-port' || \
   fail "WireGuard port rotation option is missing"
 grep -q '^Match all$' "$ROOT/scripts/install.sh" || fail "SSH Match block is not reset"
@@ -65,6 +66,13 @@ grep -Eq '^[[:space:]]+verify_ai_tooling$' "$ROOT/scripts/install.sh" || \
 for package in build-essential file git gh jq openssh-client python3 ripgrep rsync sqlite3 tree unzip wget zip; do
   grep -Eq "^[[:space:]].*${package}([[:space:]]|$)" "$ROOT/scripts/install.sh" || \
     fail "native developer dependency ${package} is not installed by default"
+done
+for package in autoconf clang clang-format clang-tidy cmake fzf gdb golang maven php-cli postgresql-client redis-tools rustc cargo; do
+  grep -Eq "(^|[[:space:]])${package}([[:space:]]|$)" "$ROOT/scripts/install.sh" || \
+    fail "expanded native developer dependency ${package} is not declared"
+done
+for command in clang-format cmake go rustc cargo java mvn psql redis-cli; do
+  grep -q -- "$command" "$ROOT/scripts/install.sh" || fail "expanded developer command ${command} is not verified"
 done
 grep -q 'wireguard-tools' "$ROOT/scripts/install.sh" || fail "WireGuard tools are not installed"
 grep -q 'acl ca-certificates git openssh-client openssh-server tmux util-linux wireguard-tools' "$ROOT/scripts/install.sh" || \
@@ -606,5 +614,20 @@ if (
 ) >/dev/null 2>&1; then
   fail "tampered release archive passed checksum verification"
 fi
+
+manifest_root="$WORK/toolchain-manifest"
+(
+  AGENT_REMOTE_INSTALL_LIB_ONLY=1 AGENT_REMOTE_DEVELOPER_TOOLCHAIN=core \
+    AGENT_REMOTE_TOOLCHAIN_ROOT="$manifest_root" TMPDIR="$WORK" \
+    . "$ROOT/scripts/install.sh"
+  uname() { printf 'Linux\n'; }
+  run_as_root() { "$@"; }
+  write_toolchain_manifest
+)
+[ -f "$manifest_root/MANIFEST" ] || fail "toolchain manifest was not written"
+grep -q '^schema_version=1$' "$manifest_root/MANIFEST" || fail "toolchain manifest schema is missing"
+grep -q '^backend=native$' "$manifest_root/MANIFEST" || fail "toolchain manifest backend is missing"
+grep -q '^profile=core$' "$manifest_root/MANIFEST" || fail "toolchain manifest profile is missing"
+grep -q '^managed_command=claude' "$manifest_root/MANIFEST" || fail "managed Claude version is missing from toolchain manifest"
 
 echo "install script tests passed"

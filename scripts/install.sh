@@ -40,6 +40,8 @@ NODEJS_CHANNEL="${NODEJS_CHANNEL:-22}"
 NODEJS_VERSION="${NODEJS_VERSION:-}"
 NODEJS_SOURCE="${NODEJS_SOURCE:-}"
 NODEJS_SHA256="${NODEJS_SHA256:-}"
+DEVELOPER_TOOLCHAIN_PROFILE="${AGENT_REMOTE_DEVELOPER_TOOLCHAIN:-full}"
+TOOLCHAIN_ROOT="${AGENT_REMOTE_TOOLCHAIN_ROOT:-/opt/agent-remote/toolchain}"
 DEVICE_RUNTIME_ROOT="${DEVICE_RUNTIME_ROOT:-/opt/agent-remote/device}"
 EGO_BROWSER_RUNTIME_ROOT="${EGO_BROWSER_RUNTIME_ROOT:-/opt/agent-remote/ego-browser}"
 EGO_BROWSER_ENABLE="${AGENT_REMOTE_ENABLE_EGO_BROWSER:-0}"
@@ -127,6 +129,8 @@ Options:
   --nodejs-version VALUE  Pin an official Node.js version, or use with --nodejs-source.
   --nodejs-source PATH    Pinned Node.js .tar.gz archive path or URL.
   --nodejs-sha256 HASH    Required checksum for --nodejs-source.
+  --developer-toolchain PROFILE
+                          Native toolchain profile: full, core, or none. Default: full.
   --enable-ego-browser    Explicitly enable the verified ego-browser bridge.
   --disable-ego-browser   Explicitly disable the ego-browser bridge.
   --no-dependencies       Do not install OS packages for selected runtimes.
@@ -168,6 +172,10 @@ Environment:
   NODEJS_VERSION           Same as --nodejs-version.
   NODEJS_SOURCE            Same as --nodejs-source.
   NODEJS_SHA256            Same as --nodejs-sha256.
+  AGENT_REMOTE_DEVELOPER_TOOLCHAIN
+                            Same as --developer-toolchain.
+  AGENT_REMOTE_TOOLCHAIN_ROOT
+                            Directory for the installed toolchain manifest.
   DEVICE_RUNTIME_ROOT      Managed device proxy runtime root.
   EGO_BROWSER_RUNTIME_ROOT Managed ego-browser wrapper and Skill runtime root.
   AGENT_REMOTE_ENABLE_EGO_BROWSER  Same as --enable-ego-browser.
@@ -311,6 +319,10 @@ while [ "$#" -gt 0 ]; do
       NODEJS_SHA256="${2:?--nodejs-sha256 requires a value}"
       shift 2
       ;;
+    --developer-toolchain)
+      DEVELOPER_TOOLCHAIN_PROFILE="${2:?--developer-toolchain requires full, core, or none}"
+      shift 2
+      ;;
     --enable-ego-browser)
       EGO_BROWSER_ENABLE=1
       shift
@@ -388,6 +400,10 @@ validate_options() {
   fi
   case "$NODEJS_CHANNEL" in
     ''|*[!0-9]*) echo "--nodejs-channel must be a major version" >&2; exit 2 ;;
+  esac
+  case "$DEVELOPER_TOOLCHAIN_PROFILE" in
+    full|core|none) ;;
+    *) echo "--developer-toolchain must be full, core, or none" >&2; exit 2 ;;
   esac
   IFS=, read -r -a backends <<< "$RUNTIME_BACKENDS"
   if [ "${#backends[@]}" -eq 0 ]; then
@@ -670,19 +686,285 @@ repair_awk() {
   fi
 }
 
+native_toolchain_base_packages() {
+  cat <<'EOF'
+acl
+bash
+bubblewrap
+build-essential
+bzip2
+ca-certificates
+coreutils
+curl
+diffutils
+dnsutils
+file
+findutils
+gawk
+gh
+git
+git-lfs
+grep
+gzip
+iproute2
+jq
+less
+locales
+lsof
+netcat-openbsd
+nftables
+openssh-client
+openssh-server
+patch
+pkg-config
+procps
+psmisc
+python3
+python3-pip
+python3-venv
+ripgrep
+rsync
+sed
+sqlite3
+strace
+tar
+tmux
+tree
+unzip
+util-linux
+wget
+which
+wireguard-tools
+xz-utils
+zip
+EOF
+}
+
+native_toolchain_core_packages() {
+  cat <<'EOF'
+autoconf
+automake
+bat
+bison
+ccache
+clang
+clang-format
+clang-tidy
+cmake
+fd-find
+flex
+fzf
+gdb
+gettext
+libtool
+lld
+lldb
+lz4
+m4
+meson
+ninja-build
+openssl
+shellcheck
+socat
+valgrind
+zstd
+EOF
+}
+
+native_toolchain_full_packages() {
+  cat <<'EOF'
+default-jdk-headless
+golang
+libffi-dev
+libsqlite3-dev
+libssl-dev
+mariadb-client
+maven
+perl
+php-cli
+postgresql-client
+python3-dev
+python3-setuptools
+redis-tools
+ruby-full
+rustc
+cargo
+zlib1g-dev
+EOF
+}
+
+native_toolchain_extra_packages() {
+  [ "$DEVELOPER_TOOLCHAIN_PROFILE" = "none" ] && return
+  native_toolchain_core_packages
+  if [ "$DEVELOPER_TOOLCHAIN_PROFILE" = "full" ]; then
+    native_toolchain_full_packages
+  fi
+}
+
+native_toolchain_packages() {
+  native_toolchain_base_packages
+  native_toolchain_extra_packages
+}
+
+native_toolchain_commands() {
+  cat <<'EOF'
+bash
+cc
+curl
+dig
+file
+find
+git
+git-lfs
+gh
+rg
+jq
+ssh
+rsync
+gzip
+ip
+lsof
+make
+nc
+patch
+python3
+sed
+sqlite3
+strace
+tar
+tree
+unzip
+wget
+which
+xz
+zip
+EOF
+  if [ "$DEVELOPER_TOOLCHAIN_PROFILE" != "none" ]; then
+    cat <<'EOF'
+gcc
+g++
+ar
+ld
+pip3
+scp
+sftp
+cmake
+ninja
+meson
+pkg-config
+autoconf
+automake
+bison
+flex
+m4
+clang
+clang++
+clang-format
+clang-tidy
+ccache
+gdb
+lldb
+msgfmt
+openssl
+shellcheck
+socat
+valgrind
+fzf
+fdfind
+batcat
+lz4
+zstd
+EOF
+  fi
+  if [ "$DEVELOPER_TOOLCHAIN_PROFILE" = "full" ]; then
+    cat <<'EOF'
+go
+rustc
+cargo
+java
+javac
+mvn
+ruby
+perl
+php
+psql
+mariadb
+redis-cli
+EOF
+  fi
+}
+
 verify_ai_tooling() {
   local command missing=()
   repair_awk
-  for command in bash cc curl dig file find git git-lfs gh gzip ip jq lsof make nc patch python3 rg rsync sed \
-    sqlite3 ssh strace tar tree unzip wget which xz zip; do
+  while IFS= read -r command; do
+    [ -n "$command" ] || continue
     if ! command -v "$command" >/dev/null 2>&1; then
       missing+=("$command")
     fi
-  done
+  done < <(native_toolchain_commands)
   if [ "${#missing[@]}" -gt 0 ]; then
     echo "AI development command baseline is incomplete: ${missing[*]}" >&2
     exit 1
   fi
+}
+
+write_toolchain_manifest() {
+  if ! backend_enabled native || [ "$(uname -s)" != "Linux" ]; then
+    return
+  fi
+  local manifest temporary package command version command_path distro version_id
+  manifest="$TOOLCHAIN_ROOT/native-${DEVELOPER_TOOLCHAIN_PROFILE}.manifest"
+  temporary="$(mktemp "${TMP_DIR%/}/agent-remote-toolchain.XXXXXX")"
+  track_temp "$temporary"
+  distro="unknown"
+  version_id="unknown"
+  if [ -r /etc/os-release ]; then
+    distro="$(. /etc/os-release; printf '%s' "${ID:-unknown}")"
+    version_id="$(. /etc/os-release; printf '%s' "${VERSION_ID:-unknown}")"
+  fi
+  {
+    printf 'schema_version=1\n'
+    printf 'backend=native\n'
+    printf 'profile=%s\n' "$DEVELOPER_TOOLCHAIN_PROFILE"
+    printf 'distro=%s\n' "$distro"
+    printf 'distro_version=%s\n' "$version_id"
+    printf 'generated_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    if command -v dpkg-query >/dev/null 2>&1; then
+      while IFS= read -r package; do
+        [ -n "$package" ] || continue
+        version="$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null || true)"
+        printf 'package=%s\t%s\n' "$package" "${version:-missing}"
+      done < <(native_toolchain_packages)
+    fi
+    while IFS= read -r command; do
+      [ -n "$command" ] || continue
+      command_path="$(command -v "$command" || true)"
+      version=""
+      if [ -n "$command_path" ]; then
+        version="$({ "$command" --version 2>&1 || true; } | head -n 1 | tr '\t\r\n' '   ')"
+      fi
+      printf 'command=%s\t%s\t%s\n' "$command" "${command_path:-missing}" "${version:-unknown}"
+    done < <(native_toolchain_commands)
+    for command in claude node npm npx; do
+      case "$command" in
+        claude) command_path="$CLAUDE_RUNTIME_ROOT/current/bin/claude" ;;
+        node) command_path="$CLAUDE_RUNTIME_ROOT/current/bin/node" ;;
+        npm) command_path="$CLAUDE_RUNTIME_ROOT/current/bin/npm" ;;
+        npx) command_path="$CLAUDE_RUNTIME_ROOT/current/bin/npx" ;;
+      esac
+      [ -x "$command_path" ] || command_path=""
+      version=""
+      if [ -n "$command_path" ]; then
+        version="$({ "$command_path" --version 2>&1 || true; } | head -n 1 | tr '\t\r\n' '   ')"
+      fi
+      printf 'managed_command=%s\t%s\t%s\n' "$command" "${command_path:-missing}" "${version:-unknown}"
+    done
+  } > "$temporary"
+  run_as_root install -d -m 0755 "$TOOLCHAIN_ROOT"
+  run_as_root install -m 0644 "$temporary" "$manifest"
+  run_as_root install -m 0644 "$manifest" "$TOOLCHAIN_ROOT/MANIFEST"
+  echo "Native developer toolchain manifest: $manifest"
 }
 
 install_system_dependencies() {
@@ -726,6 +1008,11 @@ install_system_dependencies() {
       gawk gh git git-lfs grep gzip iproute2 jq less locales lsof netcat-openbsd nftables openssh-client \
       openssh-server patch pkg-config procps psmisc python3 python3-pip python3-venv ripgrep rsync sed sqlite3 \
       strace tar tmux tree unzip util-linux wget which wireguard-tools xz-utils zip
+    if [ "$DEVELOPER_TOOLCHAIN_PROFILE" != "none" ]; then
+      mapfile -t toolchain_packages < <(native_toolchain_extra_packages)
+      run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
+        "${toolchain_packages[@]}"
+    fi
   else
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
       acl ca-certificates git openssh-client openssh-server tmux util-linux wireguard-tools
@@ -1512,6 +1799,10 @@ else
 fi
 install_managed_claude
 install_managed_nodejs
+if backend_enabled native && [ "$INSTALL_DEPENDENCIES" = "1" ]; then
+  verify_ai_tooling
+  write_toolchain_manifest
+fi
 register_node
 sync_ego_browser_config
 configure_wireguard
