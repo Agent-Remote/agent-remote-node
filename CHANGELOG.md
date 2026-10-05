@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.40 - 2026-10-05
+
+- feat: expand and audit native developer toolchain (d46f90a)
+
 ## v0.2.39 - 2026-10-02
 
 - feat: improve tmux terminal interaction and isolation (c21288b)
