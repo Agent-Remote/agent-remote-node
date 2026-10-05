@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.43 - 2026-10-05
+
+- fix(runtime): allow sandbox to traverse docker wrapper (051ad12)
+
 ## v0.2.42 - 2026-10-05
 
 - fix(runtime): mount docker capability inside bubblewrap (34cb8c4)
