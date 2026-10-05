@@ -43,7 +43,7 @@ Claude tool sessions may use `docker` through a session-owned wrapper. The
 wrapper talks to a root-owned runtime broker over a private Unix socket; the
 host `/var/run/docker.sock` is never mounted into Native or Docker Sandbox
 sessions. Requests are authenticated with the session runtime UID and limited
-to `build`, `run`, `exec`, `logs`, `ps`, `inspect`, `stop`, `rm`, `pull`, and
+to `version`, `build`, `run`, `exec`, `logs`, `ps`, `inspect`, `stop`, `rm`, `pull`, and
 `compose`.
 
 The broker rejects privileged mode, host PID/network, devices, arbitrary host

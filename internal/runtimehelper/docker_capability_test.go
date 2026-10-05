@@ -29,6 +29,12 @@ func TestValidateDockerCapabilityArgsAllowsWorkspaceBuild(t *testing.T) {
 	}
 }
 
+func TestValidateDockerCapabilityArgsAllowsVersion(t *testing.T) {
+	if err := validateDockerCapabilityArgs([]string{"version", "--format", "{{.Server.Version}}"}, "session_1", t.TempDir()); err != nil {
+		t.Fatalf("docker version rejected: %v", err)
+	}
+}
+
 func TestScopeDockerCapabilityArgsAddsSessionBoundary(t *testing.T) {
 	run := scopeDockerCapabilityArgs([]string{"run", "alpine"}, "session_1")
 	joined := strings.Join(run, " ")

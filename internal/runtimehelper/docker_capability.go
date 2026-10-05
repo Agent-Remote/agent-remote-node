@@ -223,7 +223,7 @@ func validateDockerCapabilityArgs(args []string, sessionID, workdir string) erro
 	}
 	command := args[0]
 	switch command {
-	case "build", "run", "exec", "logs", "ps", "inspect", "stop", "rm", "pull", "compose":
+	case "version", "build", "run", "exec", "logs", "ps", "inspect", "stop", "rm", "pull", "compose":
 	default:
 		return fmt.Errorf("docker command %q is not allowed", command)
 	}
