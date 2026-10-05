@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.46 - 2026-10-05
+
+- fix(runtime): scope docker run metadata before image (c918b6a)
+
 ## v0.2.45 - 2026-10-05
 
 - feat(runtime): allow docker version capability (fa4b159)
