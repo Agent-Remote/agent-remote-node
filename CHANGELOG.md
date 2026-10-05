@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.45 - 2026-10-05
+
+- feat(runtime): allow docker version capability (fa4b159)
+
 ## v0.2.44 - 2026-10-05
 
 - fix(runtime): mount docker wrapper outside runtime root (99a656a)
