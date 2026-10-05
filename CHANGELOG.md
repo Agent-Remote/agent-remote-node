@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.41 - 2026-10-05
+
+- feat(runtime): add session-scoped docker capability (ffaa3f2)
+
 ## v0.2.40 - 2026-10-05
 
 - feat: expand and audit native developer toolchain (d46f90a)
