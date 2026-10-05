@@ -41,6 +41,9 @@ func TestScopeDockerCapabilityArgsAddsSessionBoundary(t *testing.T) {
 	if !strings.Contains(joined, "com.agent-remote.session=session_1") || !hasDockerFlag(run, "--name") {
 		t.Fatalf("run command was not scoped: %v", run)
 	}
+	if len(run) < 5 || run[1] != "--label" || run[3] != "--name" || run[5] != "alpine" {
+		t.Fatalf("broker-owned run options were not placed before image: %v", run)
+	}
 	ps := scopeDockerCapabilityArgs([]string{"ps"}, "session_1")
 	if !strings.Contains(strings.Join(ps, " "), "label=com.agent-remote.session=session_1") {
 		t.Fatalf("ps command was not scoped: %v", ps)

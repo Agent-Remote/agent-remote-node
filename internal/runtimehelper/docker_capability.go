@@ -285,10 +285,13 @@ func scopeDockerCapabilityArgs(args []string, sessionID string) []string {
 	case "ps":
 		result = append(result, "--filter", "label="+label)
 	case "run":
-		result = append(result, "--label", label)
+		// Docker parses run options before the image name. Keep broker-owned
+		// metadata in that option section so it cannot become container argv.
+		prefix := []string{"run", "--label", label}
 		if !hasDockerFlag(result, "--name") {
-			result = append(result, "--name", "ar-"+shortDigest(sessionID+strconv.FormatInt(time.Now().UnixNano(), 10), 12))
+			prefix = append(prefix, "--name", "ar-"+shortDigest(sessionID+strconv.FormatInt(time.Now().UnixNano(), 10), 12))
 		}
+		result = append(prefix, result[1:]...)
 	case "compose":
 		if !hasDockerFlag(result, "--project-name") && !hasDockerFlag(result, "-p") {
 			result = append([]string{"compose", "--project-name", "ar-" + shortDigest(sessionID, 12)}, result[1:]...)
