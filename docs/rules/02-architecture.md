@@ -134,3 +134,27 @@ The trusted Docker spec stores terminal UID/GID and socket path; attach drops to
 Stopping the transient unit precedes sandbox removal. Legacy privileged tmux sessions are readable
 and stoppable but cannot be attached or silently adopted. Key-table restrictions supplement these
 process/socket boundaries and must never be treated as the sole isolation mechanism.
+
+## Isolated Claude Attachments
+
+New Claude sessions on both backends prepare
+`<account>/.agent-remote-attachments/<session_id>` and grant that exact directory
+with `--add-dir`. Native uses its `/account` mount; Docker Sandbox uses the
+absolute account mount path. The user settings source and
+`permissions.blockReadsOutsideWorkingDirectories` remain intact. Image and file
+uploads stay outside the project, and no other session or account directory is
+automatically authorized. Directory preparation rejects symlinks and preserves
+inherited runtime/sync ACLs. The CLI owns upload leases and their cleanup.
+
+Existing Claude processes retain their original working-directory grants. They
+can add their session attachment directory with `/add-dir` or receive the new
+grant on a fresh session; upgrading Node alone cannot change a running process's
+arguments. Do not restart an active Claude session or inject commands into a
+user's prompt to apply this migration.
+
+`tests/claude_attachments_live_test.py` is an opt-in authenticated Linux check of
+the actual Claude Read tool, including a valid PNG, a Unicode filename, denied
+outside-directory reads and both runtime path layouts. It creates isolated
+credential copies and removes all test state; it does not edit the user's
+settings or conversation. Docker startup itself is covered separately by the
+Sandbox command tests.

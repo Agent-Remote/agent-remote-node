@@ -76,6 +76,7 @@ func TestPrepareInstallsManagedSkillsAndOwnsRuntimeFiles(t *testing.T) {
 	}
 	for _, path := range []string{
 		result.MarkerPath,
+		filepath.Join(result.AccountRemotePath, ".agent-remote-attachments", "session_1"),
 		filepath.Join(result.AccountRemotePath, ".claude.json"),
 		filepath.Join(result.AccountRemotePath, ".claude", "skills", "ego-browser", "SKILL.md"),
 	} {
@@ -109,5 +110,20 @@ func TestDockerSandboxEnvironmentScrubsEveryEgoBrowserVariable(t *testing.T) {
 	got := clearManagedEnvironment(environ)
 	if strings.Join(got, "\x00") != "PATH=/usr/bin\x00LANG=C" {
 		t.Fatalf("unexpected scrubbed environment: %#v", got)
+	}
+}
+
+func TestSandboxAttachmentGrantPreservesPromptAndManagedArguments(t *testing.T) {
+	for _, template := range []bool{false, true} {
+		payload := CreatePayload{SessionID: "session", ToolType: "claude", SandboxName: "sandbox", Argv: []string{"--model", "opus", "review this"}}
+		if template {
+			payload.Template.Command = append([]string{"claude"}, payload.Argv...)
+			payload.Argv = nil
+		}
+		command := sandboxExecCommand("docker", "/workspace", "/accounts/account", "", payload, SandboxRuntime{ManagedArguments: []string{"--strict-mcp-config"}})
+		want := []string{"claude", "--strict-mcp-config", "--model", "opus", "review this", "--add-dir=/accounts/account/.agent-remote-attachments/session"}
+		if strings.Join(command[len(command)-len(want):], "\x00") != strings.Join(want, "\x00") {
+			t.Fatalf("unexpected launch arguments: %q", command)
+		}
 	}
 }

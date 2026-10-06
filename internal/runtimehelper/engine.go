@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/browser"
+	"github.com/Agent-Remote/agent-remote-node/internal/claudeattachments"
 	"github.com/Agent-Remote/agent-remote-node/internal/devicecontrol"
 	"github.com/Agent-Remote/agent-remote-node/internal/egobrowserartifact"
 	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
@@ -1502,6 +1503,10 @@ func (e Engine) buildSpecWithManagedBinding(payload map[string]any, sessionID st
 	}
 	dockerSocketPath, dockerWrapperPath := "", ""
 	if kind == "session" {
+		if err := claudeattachments.Prepare(accountPath, sessionID, identity.UID, identity.GID); err != nil {
+			return SessionSpec{}, err
+		}
+		argv = claudeattachments.Arguments(argv, claudeattachments.Directory("/account", sessionID))
 		if _, dockerSocketPath, dockerWrapperPath, err = prepareDockerCapability(sessionRoot, sessionID, workspacePath, e.config.DockerBinaryPath, identity.UID, identity.GID); err != nil {
 			return SessionSpec{}, fmt.Errorf("prepare session Docker capability: %w", err)
 		}

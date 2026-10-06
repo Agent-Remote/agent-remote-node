@@ -90,6 +90,13 @@ func TestManagedSpecLinuxCreateReplayAndBoundPreparation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	wantAttachment := "--add-dir=/account/.agent-remote-attachments/" + spec.SessionID
+	if len(spec.Argv) != 2 || spec.Argv[0] != "original" || spec.Argv[1] != wantAttachment {
+		t.Fatalf("managed Native attachment grant changed user arguments: %q", spec.Argv)
+	}
+	if info, err := os.Stat(filepath.Join(spec.AccountPath, ".agent-remote-attachments", spec.SessionID)); err != nil || !info.IsDir() {
+		t.Fatal("attachment directory missing before launch", err)
+	}
 	first, err := os.ReadFile(engine.specPath(spec.SessionID))
 	if err != nil {
 		t.Fatal(err)

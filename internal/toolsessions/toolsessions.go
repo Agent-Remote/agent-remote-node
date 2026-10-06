@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Agent-Remote/agent-remote-node/internal/claudeattachments"
 	"github.com/Agent-Remote/agent-remote-node/internal/managedskills"
 )
 
@@ -226,6 +227,9 @@ func Prepare(workspaceRoot string, accountRoot string, dockerBinary string, tmux
 		return CreateResult{}, err
 	}
 	if payload.ToolType == "claude" {
+		if err := claudeattachments.Prepare(accountPath, payload.SessionID, runtime.UID, runtime.GID); err != nil {
+			return CreateResult{}, err
+		}
 		if err := managedskills.InstallClaude(accountPath, sandboxOwnership(runtime)); err != nil {
 			return CreateResult{}, err
 		}
@@ -412,7 +416,11 @@ func sandboxExecCommand(dockerBinary string, workspacePath string, accountPath s
 		)
 	}
 	args = append(args, "-w", workspacePath, payload.SandboxName)
-	return append(args, sessionCommand(payload, runtime.ManagedArguments)...)
+	command := sessionCommand(payload, runtime.ManagedArguments)
+	if payload.ToolType == "claude" && len(command) > 0 {
+		command = append(command[:1:1], claudeattachments.Arguments(command[1:], claudeattachments.Directory(accountPath, payload.SessionID))...)
+	}
+	return append(args, command...)
 }
 
 func clearManagedEnvironment(environ []string) []string {
