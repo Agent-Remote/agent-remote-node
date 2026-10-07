@@ -56,6 +56,7 @@ type EngineConfig struct {
 	NFTPath                   string
 	SetfaclPath               string
 	MountPath                 string
+	MkfsExt4Path              string
 	UmountPath                string
 	MountpointPath            string
 	DataGroup                 string
@@ -136,6 +137,9 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 	}
 	if c.MountPath == "" {
 		c.MountPath = "mount"
+	}
+	if c.MkfsExt4Path == "" {
+		c.MkfsExt4Path = "mkfs.ext4"
 	}
 	if c.UmountPath == "" {
 		c.UmountPath = "umount"
@@ -1390,18 +1394,21 @@ type SessionSpec struct {
 
 // RuntimePolicy contains root-validated per-session resource and network limits.
 type RuntimePolicy struct {
-	MemoryHighBytes  int64    `json:"memory_high_bytes"`
-	MemoryMaxBytes   int64    `json:"memory_max_bytes"`
-	CPUQuotaPercent  int64    `json:"cpu_quota_percent"`
-	TasksMax         int64    `json:"tasks_max"`
-	LimitNOFILE      int64    `json:"limit_nofile"`
-	TmpfsSizeBytes   int64    `json:"tmpfs_size_bytes"`
-	NetworkAllowlist []string `json:"network_allowlist"`
+	MemoryHighBytes    int64    `json:"memory_high_bytes"`
+	MemoryMaxBytes     int64    `json:"memory_max_bytes"`
+	CPUQuotaPercent    int64    `json:"cpu_quota_percent"`
+	TasksMax           int64    `json:"tasks_max"`
+	LimitNOFILE        int64    `json:"limit_nofile"`
+	TmpfsSizeBytes     int64    `json:"tmpfs_size_bytes"`
+	TemporaryStorage   string   `json:"temporary_storage,omitempty"`
+	TemporarySizeBytes int64    `json:"temporary_size_bytes,omitempty"`
+	NetworkAllowlist   []string `json:"network_allowlist"`
 }
 
 var defaultRuntimePolicy = RuntimePolicy{
 	MemoryHighBytes: 3 << 30, MemoryMaxBytes: 4 << 30, CPUQuotaPercent: 200,
 	TasksMax: 512, LimitNOFILE: 8192, TmpfsSizeBytes: 1 << 30,
+	TemporaryStorage: "disk", TemporarySizeBytes: 16 << 30,
 }
 
 func (e Engine) buildSpec(payload map[string]any, sessionID string, userID string, accountID string, workspacePath string, accountPath string, argv []string, kind string) (SessionSpec, error) {
@@ -1765,6 +1772,12 @@ func (e Engine) waitForSessionReady(ctx context.Context, spec SessionSpec) error
 }
 
 func (e Engine) setupTemp(ctx context.Context, spec SessionSpec) error {
+	if spec.Policy.TemporaryStorage == "disk" {
+		return e.setupDiskTemp(ctx, spec)
+	}
+	if spec.Policy.TemporaryStorage != "" && spec.Policy.TemporaryStorage != "tmpfs" {
+		return errors.New("unsupported temporary storage")
+	}
 	tempPath := filepath.Join(spec.SessionRoot, "tmp")
 	if err := os.MkdirAll(tempPath, 0o700); err != nil {
 		return err
@@ -2496,6 +2509,7 @@ func parseRuntimePolicy(value any) (RuntimePolicy, error) {
 		{"tasks_max", &policy.TasksMax, defaultRuntimePolicy.TasksMax, 16},
 		{"limit_nofile", &policy.LimitNOFILE, defaultRuntimePolicy.LimitNOFILE, 256},
 		{"tmpfs_size_bytes", &policy.TmpfsSizeBytes, defaultRuntimePolicy.TmpfsSizeBytes, 16 << 20},
+		{"temporary_size_bytes", &policy.TemporarySizeBytes, defaultRuntimePolicy.TemporarySizeBytes, 64 << 20},
 	}
 	for _, limit := range limits {
 		rawValue, exists := raw[limit.key]
@@ -2507,6 +2521,12 @@ func parseRuntimePolicy(value any) (RuntimePolicy, error) {
 			return RuntimePolicy{}, fmt.Errorf("runtime_policy.%s is outside local limits", limit.key)
 		}
 		*limit.target = number
+	}
+	if storage, exists := raw["temporary_storage"]; exists {
+		if storage != "disk" && storage != "tmpfs" {
+			return RuntimePolicy{}, errors.New("runtime_policy.temporary_storage must be disk or tmpfs")
+		}
+		policy.TemporaryStorage = storage.(string)
 	}
 	if policy.MemoryHighBytes > policy.MemoryMaxBytes {
 		return RuntimePolicy{}, errors.New("runtime_policy.memory_high_bytes exceeds memory_max_bytes")

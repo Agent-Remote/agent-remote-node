@@ -698,6 +698,7 @@ coreutils
 curl
 diffutils
 dnsutils
+e2fsprogs
 file
 findutils
 gawk
@@ -1004,7 +1005,7 @@ install_system_dependencies() {
   run_as_root apt-get update
   if backend_enabled native; then
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
-      acl bash bubblewrap build-essential bzip2 ca-certificates coreutils curl diffutils dnsutils file findutils \
+      acl bash bubblewrap build-essential bzip2 ca-certificates coreutils curl diffutils dnsutils e2fsprogs file findutils \
       gawk gh git git-lfs grep gzip iproute2 jq less locales lsof netcat-openbsd nftables openssh-client \
       openssh-server patch pkg-config procps psmisc python3 python3-pip python3-venv ripgrep rsync sed sqlite3 \
       strace tar tmux tree unzip util-linux wget which wireguard-tools xz-utils zip
@@ -1285,7 +1286,7 @@ check_native_prerequisites() {
     [ "$STRICT_PREREQUISITES" = "1" ] && return 1
     return 0
   fi
-  for dependency in bwrap systemd-run systemctl nft ip setfacl mount umount mountpoint tmux locale; do
+  for dependency in bwrap systemd-run systemctl nft ip setfacl mount umount mountpoint mkfs.ext4 tmux locale; do
     if ! command -v "$dependency" >/dev/null 2>&1; then
       echo "error missing native runtime dependency: $dependency" >&2
       failed=1
@@ -1436,6 +1437,7 @@ install_packaged() {
     check_dependency mount
     check_dependency umount
     check_dependency mountpoint
+    check_dependency mkfs.ext4
   fi
   check_native_prerequisites
   if [ "$(uname -s)" = "Linux" ] && [ ! -c /dev/net/tun ]; then

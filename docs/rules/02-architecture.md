@@ -135,6 +135,19 @@ Stopping the transient unit precedes sandbox removal. Legacy privileged tmux ses
 and stoppable but cannot be attached or silently adopted. Key-table restrictions supplement these
 process/socket boundaries and must never be treated as the sole isolation mechanism.
 
+## Native Temporary Storage
+
+New Native sessions default to a private, disk-backed ext4 temporary filesystem with a 16 GiB
+image limit. The root-only image lives below the session root, outside the runtime's mounts;
+only its mounted contents are bound to `/tmp`, with `nosuid,nodev` and runtime-owner mode 0700.
+Sparse allocation consumes host disk on demand; filesystem metadata reduces usable capacity.
+Admission retains the host disk watermark. `temporary_size_bytes` permits 64 MiB through 16 GiB;
+`temporary_storage=tmpfs` explicitly selects the legacy `tmpfs_size_bytes` limit (up to 1 GiB).
+Old saved specs without a storage selector remain tmpfs. Never reformat existing images or
+replace live session mounts. Stopping removes the mount before deleting its backing image;
+managed finalization verifies the loop device's original backing inode before unmounting.
+The installer and capability probe require e2fsprogs and loop-device support.
+
 ## Isolated Claude Attachments
 
 New Claude sessions on both backends prepare

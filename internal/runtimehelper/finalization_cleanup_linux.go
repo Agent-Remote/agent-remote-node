@@ -122,9 +122,8 @@ func cleanupFinalizedTemp(spec SessionSpec) error {
 		return err
 	}
 	target := fmt.Sprintf("/proc/self/fd/%d/tmp", parent.Fd())
-	var stat unix.Statfs_t
-	if err := unix.Statfs(target, &stat); err != nil || stat.Type != unix.TMPFS_MAGIC {
-		return errors.New("runtime tmp mount has unexpected filesystem")
+	if err := verifyTemporaryMount(spec, parent, target); err != nil {
+		return err
 	}
 	if err := unix.Unmount(target, 0); err != nil {
 		return errors.New("runtime tmp mount remains busy or unavailable")

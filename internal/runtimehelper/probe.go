@@ -31,6 +31,8 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 		"nft":             commandAvailable(e.config.NFTPath),
 		"setfacl":         commandAvailable(e.config.SetfaclPath),
 		"mount":           commandAvailable(e.config.MountPath),
+		"mkfs_ext4":       commandAvailable(e.config.MkfsExt4Path),
+		"loop_devices":    pathExists("/dev/loop-control"),
 		"umount":          commandAvailable(e.config.UmountPath),
 		"mountpoint":      commandAvailable(e.config.MountpointPath),
 		"tmux":            commandAvailable(e.config.TmuxBinaryPath),
