@@ -712,6 +712,8 @@ jq
 less
 locales
 lsof
+media-types
+netbase
 netcat-openbsd
 nftables
 openssh-client
@@ -731,6 +733,7 @@ strace
 tar
 tmux
 tree
+tzdata
 unzip
 util-linux
 wget
@@ -1006,9 +1009,9 @@ install_system_dependencies() {
   if backend_enabled native; then
     run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \
       acl bash bubblewrap build-essential bzip2 ca-certificates coreutils curl diffutils dnsutils e2fsprogs file findutils \
-      gawk gh git git-lfs grep gzip iproute2 jq less locales lsof netcat-openbsd nftables openssh-client \
+      gawk gh git git-lfs grep gzip iproute2 jq less locales lsof media-types netbase netcat-openbsd nftables openssh-client \
       openssh-server patch pkg-config procps psmisc python3 python3-pip python3-venv ripgrep rsync sed sqlite3 \
-      strace tar tmux tree unzip util-linux wget which wireguard-tools xz-utils zip
+      strace tar tmux tree tzdata unzip util-linux wget which wireguard-tools xz-utils zip
     if [ "$DEVELOPER_TOOLCHAIN_PROFILE" != "none" ]; then
       mapfile -t toolchain_packages < <(native_toolchain_extra_packages)
       run_as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-upgrade --no-install-recommends \

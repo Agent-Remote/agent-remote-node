@@ -209,6 +209,17 @@ so dynamic session users can start normally even when `/etc/agent-remote-node/co
 owner-only. Upgrade the Runtime Helper and Node binaries together; existing root-owned session
 specifications remain usable across later node configuration changes.
 
+Native sessions read-only mount an explicit set of host system files for name resolution
+(`hosts`, NSS, service/protocol databases), dynamic linking and Debian/Ubuntu alternatives,
+OS identification, MIME types, terminal data, CA certificates, OpenJDK public runtime data,
+and Maven bootstrap configuration (excluding management passwords and repository credentials). User/group identity, DNS
+resolvers and timezone remain session-managed. `/etc/mtab` describes the session mount namespace;
+`/var/tmp` uses the session's quota-limited `/tmp`, and `/var/run` points to its private `/run`.
+The installer includes `netbase`, `media-types`, and `tzdata` for these databases. Upgrade the Runtime Helper
+and create a new session to receive these mounts; an already running namespace is not modified.
+Run `tests/linux_native_filesystem_test.sh` for real Bubblewrap checks on Debian 12, Ubuntu 22.04,
+and Ubuntu 24.04 (Docker required; optional image arguments select a subset).
+
 No public listener, Docker port publish, NAT rule, or dynamic WireGuard ACL is created for session forwards. The existing restricted SSH port is the only data-plane entry. Runtime Helper and node services must be upgraded before enabling the control-plane policy.
 
 `browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.

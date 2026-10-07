@@ -189,6 +189,15 @@ Native session spec 现在包含由 root 生成且不含敏感信息的 runtime 
 权限，动态 session 用户也能正常启动。请同时升级 Runtime Helper 和 Node 二进制；已有的
 root-owned session spec 可在后续节点配置变化后继续使用。
 
+Native session 按明确清单只读挂载宿主系统文件，包含 `hosts`、NSS、服务名和协议数据库、
+动态链接器、Debian/Ubuntu alternatives、系统版本、MIME、终端数据、CA 证书、OpenJDK 公共运行
+配置和 Maven 启动配置（不挂载管理密码或仓库凭据）。
+用户/组身份、DNS resolver 和时区仍由 session 管理。`/etc/mtab` 对应会话自己的挂载 namespace，
+`/var/tmp` 使用已有容量限制的会话 `/tmp`，`/var/run` 指向私有 `/run`。安装器包含提供数据库的
+`netbase`、`media-types` 和 `tzdata`。升级 Runtime Helper 后新建会话即可使用新增挂载；运行中的 namespace
+不会被修改。`tests/linux_native_filesystem_test.sh` 可在 Debian 12、Ubuntu 22.04 和 Ubuntu 24.04
+执行真实 Bubblewrap 验证（需要 Docker，可通过镜像参数选择部分发行版）。
+
 Session 转发不会创建公网 listener、Docker 端口发布、NAT 规则或动态 WireGuard ACL，现有受限 SSH 端口是唯一数据入口。启用控制面策略前必须先升级 Runtime Helper 和 Node 服务。
 
 `browser_public_base_url` 是可选项。为空时，节点会报告 KasmVNC 的本地 Docker 端口映射。在部署环境中，应将其设置为能访问浏览器容器 stream endpoint 的节点侧 HTTPS 反向代理 URL。

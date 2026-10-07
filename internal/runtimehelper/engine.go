@@ -3081,18 +3081,11 @@ func readTrustedSpec(config EngineConfig, specPath string) (SessionSpec, error) 
 
 func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 	args := []string{"--die-with-parent", "--new-session", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts", "--proc", "/proc", "--dev", "/dev", "--dir", "/etc", "--dir", "/workspace", "--dir", "/account", "--dir", "/home", "--dir", "/home/runtime", "--dir", "/run", "--dir", "/run/agent-remote"}
-	for _, path := range []string{"/usr", "/bin", "/lib", "/lib64"} {
-		if pathExists(path) {
-			args = append(args, "--ro-bind", path, path)
-		}
-	}
+	args = appendNativeSystemMounts(args)
 	args = append(args,
 		"--ro-bind", filepath.Join(spec.SessionRoot, "passwd"), "/etc/passwd",
 		"--ro-bind", filepath.Join(spec.SessionRoot, "group"), "/etc/group",
 	)
-	if pathExists("/etc/nsswitch.conf") {
-		args = append(args, "--ro-bind", "/etc/nsswitch.conf", "/etc/nsswitch.conf")
-	}
 	args = append(args,
 		"--ro-bind", spec.RuntimeRoot, "/opt/agent-remote/runtime",
 		"--bind", spec.WorkspacePath, "/workspace",
@@ -3183,11 +3176,6 @@ func bubblewrapArgs(config EngineConfig, spec SessionSpec) []string {
 			"--ro-bind", spec.DeviceProxyPath,
 			"/opt/agent-remote/device/bin/agent-remote-device-proxy",
 		)
-	}
-	for _, path := range []string{"/etc/ssl", "/etc/pki"} {
-		if pathExists(path) {
-			args = append(args, "--ro-bind", path, path)
-		}
 	}
 	args = append(args, "--chdir", "/workspace", "--", spec.RuntimeCommand)
 	return append(args, spec.Argv...)
