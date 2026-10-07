@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.49 - 2026-10-07
+
+- fix(runtime): complete native system filesystem mounts (9d1ab5d)
+
 ## v0.2.48 - 2026-10-07
 
 - fix(runtime): use bounded disk storage for native temporary files (16b1b7a)
