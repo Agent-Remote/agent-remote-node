@@ -2,6 +2,10 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.48 - 2026-10-07
+
+- fix(runtime): use bounded disk storage for native temporary files (16b1b7a)
+
 ## v0.2.47 - 2026-10-06
 
 - fix(claude): grant access to isolated session attachments (b025859)
