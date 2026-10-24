@@ -105,7 +105,8 @@ func TestManagedLaunchLinuxRecoveryBeforePreparationAndCancellationFence(t *test
 					t.Fatal(err)
 				}
 			}
-			client := skillPreparationTestPeer(t, NewServer("", -1, os.Geteuid(), engine).handle)
+			server := NewServer("", -1, os.Geteuid(), engine)
+			client := skillPreparationTestPeer(t, server.handle)
 			result, err := client.RecoverManagedSession(context.Background(), "original_managed_task", input)
 			if err != nil || result["status"] != "not_started" {
 				t.Fatal("unstarted session could not be prepared", result, err)
