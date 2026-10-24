@@ -56,7 +56,7 @@ func TestDockerTerminalLaunchUsesPrivateStdinAndNoSecretArguments(t *testing.T) 
 python3 -c 'import json,sys; value=json.load(sys.stdin); assert value["Environment"] == ["SYNTHETIC_SECRET=fixture-only"]; assert value["UID"] == 1002'
 printf 'ready\n'`)
 	t.Setenv("TERMINAL_TEST_ARGS", args)
-	engine := NewEngine(EngineConfig{StateRoot: root, SystemdRunPath: launcher,
+	engine := NewEngine(EngineConfig{StateRoot: root, NodeID: "33333333-3333-4333-8333-333333333333", SystemdRunPath: launcher,
 		RuntimeBinaryPath: "/fixed/runtime", TmuxBinaryPath: writeTestCommand(t, "tmux", "exit 1")})
 	spec := DockerSessionSpec{SessionID: "session_1", TmuxSessionName: "managed", TmuxSocketPath: filepath.Join(root, "tmux.sock"), TerminalUID: 1002, TerminalGID: 1003}
 	if err := engine.startDockerTerminal(spec, []string{"/fixed/docker", "sandbox", "exec"}, []string{"SYNTHETIC_SECRET=fixture-only"}); err != nil {
