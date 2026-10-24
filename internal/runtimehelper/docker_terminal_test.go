@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -50,6 +51,9 @@ func TestDockerTmuxInspectionsDropPrivilegeAndPinSocket(t *testing.T) {
 }
 
 func TestDockerTerminalLaunchUsesPrivateStdinAndNoSecretArguments(t *testing.T) {
+	if runtime.GOOS == "linux" && os.Geteuid() != 0 {
+		t.Skip("requires privileged Linux helper")
+	}
 	root := t.TempDir()
 	args := filepath.Join(root, "args")
 	launcher := writeTestCommand(t, "systemd-run", `printf '%s\n' "$@" > "$TERMINAL_TEST_ARGS"
