@@ -325,9 +325,14 @@ func startRuntimeHelperStub(t *testing.T, result map[string]any) (string, <-chan
 			var request runtimehelper.Request
 			if json.NewDecoder(connection).Decode(&request) == nil {
 				operations <- request.Operation
-				_ = json.NewEncoder(connection).Encode(runtimehelper.Response{
-					Version: runtimehelper.ProtocolVersion, OK: true, Result: result,
-				})
+				response := runtimehelper.Response{Version: runtimehelper.ProtocolVersion, OK: true, Result: result}
+				if request.SessionLifecycleVersion == 1 {
+					response.SessionExecution = fixtureSessionExecution(request)
+				}
+				if request.Operation == "record_session_stop_intent" {
+					response.Result = map[string]any{"intent_recorded": true}
+				}
+				_ = json.NewEncoder(connection).Encode(response)
 			}
 			_ = connection.Close()
 		}
@@ -450,7 +455,7 @@ func TestWorkerPollOnceReplaysFailedTask(t *testing.T) {
 					"tasks": []map[string]any{{
 						"task_id":         "task_failed",
 						"node_id":         "node_1",
-						"task_type":       "stop_tool_session",
+						"task_type":       "prepare_workspace",
 						"idempotency_key": "task_failed",
 						"payload":         map[string]any{},
 					}},
@@ -1089,4 +1094,17 @@ func TestTakeRuntimeUIDRejectsRoot(t *testing.T) {
 	if _, exposed := result["runtime_uid"]; exposed {
 		t.Fatal("rejected trusted runtime UID escaped into the task result")
 	}
+}
+
+func fixtureSessionExecution(request runtimehelper.Request) *runtimehelper.SessionExecution {
+	session, _ := request.Payload["session_id"].(string)
+	backend, _ := request.Payload["runtime_backend"].(string)
+	if backend == "" {
+		backend = "native"
+		if strings.HasPrefix(request.Operation, "docker_") {
+			backend = "docker_sandbox"
+		}
+	}
+	fresh := request.Operation == "start_session" || request.Operation == "docker_start_session"
+	return &runtimehelper.SessionExecution{Version: 1, SessionID: session, Backend: backend, FreshAdmission: fresh, StopIntent: !fresh}
 }

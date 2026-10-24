@@ -193,3 +193,12 @@ func TestManagedSnapshotStartupFailuresStayNonterminalAndDrainOriginal(t *testin
 		})
 	}
 }
+
+func (f *snapshotStartupFixture) RecoverManagedSessionExecution(ctx context.Context, task string, input runtimehelper.ManagedSessionSpecRequest) (runtimehelper.SessionCallResult, error) {
+	result, err := f.RecoverManagedSession(ctx, task, input)
+	return runtimehelper.SessionCallResult{Result: result, Execution: runtimehelper.SessionExecution{Version: 1, SessionID: input.Snapshot.SessionID, Backend: "native"}}, err
+}
+func (f *snapshotStartupFixture) StartManagedSessionExecution(ctx context.Context, task string, input runtimehelper.ManagedSessionSpecRequest) (runtimehelper.SessionCallResult, error) {
+	result, err := f.StartManagedSession(ctx, task, input)
+	return runtimehelper.SessionCallResult{Result: result, Execution: runtimehelper.SessionExecution{Version: 1, SessionID: input.Snapshot.SessionID, Backend: "native", FreshAdmission: true}}, err
+}

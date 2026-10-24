@@ -24,18 +24,21 @@ const (
 
 // Request is the versioned local runtime-helper request envelope.
 type Request struct {
-	Version   int            `json:"version"`
-	RequestID string         `json:"request_id"`
-	Operation string         `json:"operation"`
-	Payload   map[string]any `json:"payload"`
+	SessionLifecycleVersion int `json:"session_lifecycle_version,omitempty"`
+	execution               *SessionExecution
+	Version                 int            `json:"version"`
+	RequestID               string         `json:"request_id"`
+	Operation               string         `json:"operation"`
+	Payload                 map[string]any `json:"payload"`
 }
 
 // Response is the versioned local runtime-helper response envelope.
 type Response struct {
-	Version int            `json:"version"`
-	OK      bool           `json:"ok"`
-	Result  map[string]any `json:"result,omitempty"`
-	Error   *Error         `json:"error,omitempty"`
+	SessionExecution *SessionExecution `json:"session_execution,omitempty"`
+	Version          int               `json:"version"`
+	OK               bool              `json:"ok"`
+	Result           map[string]any    `json:"result,omitempty"`
+	Error            *Error            `json:"error,omitempty"`
 }
 
 // Error is a non-sensitive runtime-helper error.
@@ -67,13 +70,18 @@ func NewClient(socketPath string) Client {
 
 // Call executes one declarative helper operation.
 func (c Client) Call(ctx context.Context, requestID string, operation string, payload map[string]any) (map[string]any, error) {
+	response, err := c.callResponse(ctx, requestID, operation, payload, 0)
+	return response.Result, err
+}
+
+func (c Client) callResponse(ctx context.Context, requestID string, operation string, payload map[string]any, lifecycleVersion int) (Response, error) {
 	if requestID == "" || operation == "" {
-		return nil, errors.New("runtime helper request_id and operation are required")
+		return Response{}, errors.New("runtime helper request_id and operation are required")
 	}
 	dialer := net.Dialer{Timeout: c.timeout}
 	connection, err := dialer.DialContext(ctx, "unix", c.socketPath)
 	if err != nil {
-		return nil, fmt.Errorf("connect runtime helper: %w", err)
+		return Response{}, fmt.Errorf("connect runtime helper: %w", err)
 	}
 	defer connection.Close()
 	if operation == deploymentDrainOperation || operation == migrationRecoveryOperation {
@@ -90,32 +98,33 @@ func (c Client) Call(ctx context.Context, requestID string, operation string, pa
 	}
 	_ = connection.SetDeadline(deadline)
 	request := Request{
-		Version:   ProtocolVersion,
-		RequestID: requestID,
-		Operation: operation,
-		Payload:   payload,
+		Version:                 ProtocolVersion,
+		SessionLifecycleVersion: lifecycleVersion,
+		RequestID:               requestID,
+		Operation:               operation,
+		Payload:                 payload,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
-		return nil, fmt.Errorf("encode runtime helper request: %w", err)
+		return Response{}, fmt.Errorf("encode runtime helper request: %w", err)
 	}
 	limit := int64(maxHelperResponseBytes)
 	if operation == "import_account_config" {
 		limit = maxHelperImportBytes
 	}
-	response, err := readHelperResponseLimitNumbers(connection, limit, operation == deploymentDrainOperation || operation == accountTakeoverOperation || operation == skillReconciliationOperation || operation == skillAdmissionDrainOperation || operation == finalizationListOperation || operation == finalizationInspectOperation || operation == finalizationAckOperation || operation == finalizationCleanupOperation)
+	response, err := readHelperResponseLimitNumbers(connection, limit, operation == "probe" || operation == deploymentDrainOperation || operation == accountTakeoverOperation || operation == skillReconciliationOperation || operation == skillAdmissionDrainOperation || operation == finalizationListOperation || operation == finalizationInspectOperation || operation == finalizationAckOperation || operation == finalizationCleanupOperation)
 	if err != nil {
-		return nil, fmt.Errorf("decode runtime helper response: %w", err)
+		return Response{}, fmt.Errorf("decode runtime helper response: %w", err)
 	}
 	if response.Version != ProtocolVersion {
-		return nil, fmt.Errorf("unsupported runtime helper response version %d", response.Version)
+		return Response{}, fmt.Errorf("unsupported runtime helper response version %d", response.Version)
 	}
 	if !response.OK {
 		if response.Error == nil {
-			return nil, errors.New("runtime helper returned an unspecified error")
+			return Response{}, errors.New("runtime helper returned an unspecified error")
 		}
-		return nil, response.Error
+		return Response{}, response.Error
 	}
-	return response.Result, nil
+	return response, nil
 }
 
 // DialSessionLoopback asks the helper to connect inside a managed session network namespace.

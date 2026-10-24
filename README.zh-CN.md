@@ -12,314 +12,134 @@
 
 [English](README.md) | 中文
 
-agent-remote 的节点侧运行时。
+`agent-remote-node` 是部署在 VPS 主机上的 Go 运行时。它轮询 Agent Remote 控制面，通过 runtime helper 执行获准任务，不暴露公开入站控制 API。
 
-节点运行在 VPS 上，并通过轮询控制平面与 `agent-remote-server` 通信。它不会暴露公开 HTTP 端口。
+## 运行边界
 
-受管 tmux 会话支持拖选复制：即使 Agent 开启鼠标事件，拖动仍会选择回复文本，松开后通过
-OSC 52 发送选区。更新后的本机 CLI 将其写入系统剪贴板；直接使用普通 SSH 时，需要终端支持
-并允许 OSC 52。普通点击和滚轮绑定不变，终端的 Shift／Option 强制原生选择方式仍可使用。
-Native 和新版 Docker Sandbox 会在下次连接时应用设置；旧版 Docker 终端需要重建。`set-clipboard external`
-只允许 tmux 选区触发复制，不允许应用通过 OSC 52 填充 tmux 缓冲区；CLI 不桥接剪贴板读取。
-
-受管会话使用明确的空 tmux 配置和专用按键表，不读取宿主机用户配置。Ctrl+B 后按 D 可断开并
-保留 Claude；Ctrl+B 后按 `[` 进入历史，方向键／PageUp／PageDown 移动，空格开始选择，Enter／Y
-复制，Esc／Q 返回。Ctrl+B 后按 `]` 粘贴 tmux 缓冲区，连续两次 Ctrl+B 向 Claude 发送 Ctrl+B。
-不提供宿主机命令提示符、菜单、新窗口、分屏或跨会话切换。新 pane 保留 20,000 行历史，RGB
-配置保留其他终端能力，扩展按键仅在应用请求后协商启用，Esc 等待为 10ms。发送选区后显示短暂
-tmux 提示；本地剪贴板拒绝或未完成的请求由 CLI 单独反馈。
-
-Docker 的 tmux 改用每用户非 root 身份和每会话独立 socket；单独的 root systemd 服务运行固定的
-Docker exec，仅接收该身份提供且与指定 pane 匹配的 TTY 描述符和缩放通知。tmux 与 worker 都不获得
-Docker 权限。启动凭据通过私有管道传输，不写入 spec。Docker 终端托管要求 systemd 249+ 和 useradd。
-升级后旧版 Docker 终端拒绝连接，需要停止并重建工具会话，或重新发起账户绑定；旧状态仍可读取和
-停止，不会静默迁移正在运行的会话或重放命令。验证范围见[终端交互说明](docs/terminal-interaction.md)。
+- 无特权 worker 轮询控制面，处理任务 lease 和持久完成记录。
+- 特权主机操作统一隔离在 runtime helper 后面。
+- Native session 使用独立 Linux 身份、systemd 限制、Bubblewrap、network namespace、nftables 规则、有界临时存储和私有 tmux socket。
+- Docker Sandbox session 使用非 root 会话身份和 root-owned trusted spec；worker 不加入 Docker 组。
+- forced-command SSH 是唯一接入路径。会话端口转发使用独立的受权 loopback 隧道，不开启 OpenSSH TCP forwarding。
+- 浏览器 session 使用隔离的临时容器和 profile，不挂载工作区或工具账户目录。
 
 ## 命令
 
-```sh
-go test ./...
-```
+运行检查：
 
 ```sh
+go test ./...
 go run ./cmd/agent-remote-node --help
 ```
 
-推荐从已登录的控制工作站发起受管 enrollment：
+受管 enrollment 从已登录的控制工作站发起：
 
 ```sh
 agent-remote node install --node <node-id-or-prefix>
 ```
 
-CLI 会先用 checksum 与 Sigstore bundle 验证固定版本的 Node 归档，通过独立 SSH stdin 传输并
-安装成功后，才在另一次 SSH 调用的 stdin 中发送短期加入码。新 Node 默认保持 ego-browser
-关闭；只有管理员明确添加 `--enable-ego-browser` 才表达启用意图，重装已有 Node 则保留原设置。
+CLI 会验证固定版本的 Node 归档，通过独立 SSH stdin 通道传输，申请一次性加入码，再在另一次 SSH 请求中发送加入码。新 Node 默认关闭 ego-browser，只有管理员显式提供 `--enable-ego-browser` 才会启用意图；重新安装已有 Node 会保留原设置。
 
-直接使用 `register --registration-token` 仅是高级旧版兼容入口，不是普通 enrollment 流程：
+直接注册命令仅用于高级兼容场景：
 
 ```sh
-go run ./cmd/agent-remote-node register \
-  --config ./config.json \
-  --server-url http://localhost:8000 \
-  --node-id <node-id> \
+go run ./cmd/agent-remote-node register --config ./config.json \
+  --server-url http://localhost:8000 --node-id <node-id> \
   --registration-token <registration-token>
-```
-
-```sh
 go run ./cmd/agent-remote-node heartbeat --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node poll-once --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node run --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node install-ssh --config ./config.json
 ```
 
-```sh
-go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> --device <device-id> --dry-run
-go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-id> --device <device-id> --dry-run
-```
+`agent-remote-attach` 要求准确的 session/device 或 binding/device 身份，并在交互接入前执行 dry-run。
 
-`install-ssh` 会准备受管 `authorized_keys` 文件。运行时 SSH key 由带 forced-command 限制的 `sync_ssh_keys` 节点任务原子写入；每个任务只替换指定设备的受管 key，在保留其他设备的同时清理该设备轮换前的旧 key。
-
-`prepare_workspace` 会安装设备的稳定 SSH gateway key，并由特权 runtime helper 使用控制面用户对应的 Linux UID 创建 workspace。Mutagen 命令每次按设备和节点重新鉴权，随后在无网络且只能看到该用户数据的 Bubblewrap 环境中运行。
-
-`create_binding_session` 和 `create_tool_session` 使用控制面固定的 backend。Native session 使用受管 Claude 二进制、独立 Linux UID、systemd cgroup 限额、Bubblewrap 文件隔离、独立 network namespace、nftables 出口规则、带容量上限的临时目录和独立 tmux socket。Docker Sandbox session 使用 Node service 固定的非 root UID/GID，并为 account/workspace 路径设置对应 ownership 与数字 ACL。Docker 生命周期状态记录在 root-owned trusted spec 中，全部 Docker 操作仍经过特权 helper；Node worker 不加入 Docker 组。
-
-两个 runtime backend 都支持持久的 Git 与 GitHub CLI developer credential profile。SSH 私钥始终留在客户端：仅获授权的 `ssh -A` attach 会在连接存活期间通过 session 级 Unix socket 代理到 runtime。Native 与 Docker Sandbox attach 都从 root-owned runtime state 解析 tmux target 和 SSH mode，不信任控制面携带的 resource name。gateway 仍禁止 TCP 转发、X11 转发和用户 SSH rc。
-
-Session 端口转发使用独立的无 PTY forced command，不会开启 OpenSSH TCP forwarding。Node 兑换绑定设备和 SSH key 的一次性 token 后，一条 HTTP/2 隧道只承载一个已授权 runtime loopback 端口的 CONNECT stream。特权 Runtime Helper 自行解析 Native network namespace 或 root-owned Docker Sandbox spec，并仅通过 `SCM_RIGHTS` 返回已经连接的 socket FD；客户端不能提供 host、IP、PID、namespace path、sandbox name 或 container ID。heartbeat 会为每个已启用且健康的 backend 上报该能力。
-
-受管 macOS 设备控制只有在至少一个已启用 runtime backend 和已验证 device proxy 可用时才广告必需的
-`observation_mode_v2`、`ax_state_v2`、`adaptive_settle_v2` 基础集合，以及可选的
-`clipboard_payload_v2` 扩展。上报的 backend 列表是精确的：Native 还要求 network namespace
-probe 通过，Docker Sandbox 则要求完整 runtime probe 通过。Server 会选择完整基础集合并带上双方支持的扩展，或使用空的 v1
-fallback；部分集合和同 generation capability 变化都会被拒绝。新 generation 默认选择受支持的 v2 集合，
-Server 紧急开关可强制选择空的 v1 集合。Runtime Helper 把协商结果写入
-owner-only managed context，以四工具紧凑 MCP 面启动 proxy，并把隔离 session 内的零内容优化指标
-固定写到 `/tmp/agent-remote-device-optimization.jsonl`。
-
-两个 runtime backend 的账户绑定都要求使用已注册的设备令牌和活跃 SSH key。绑定 attach 与普通 session 共用 forced-command gateway，每次连接都会重新向控制面鉴权；Docker tmux 只能经 trusted helper 进入。
-
-`create_browser_session` 节点任务默认启动临时 Kasm Chrome 容器。浏览器运行时会接收时区、locale、启动 URL、incognito Chrome 参数和临时 VNC 密码。它不会挂载 workspace 或工具账户目录。`stop_browser_session` 会删除容器以及 `browser_root` 下的临时 profile 目录。
-
-## 配置
-
-不可变 wrapper/Skill 源制品合同见 `docs/ego-browser-artifacts.zh-CN.md`，runtime UID/ACL 诊断、指标和恢复流程见 `docs/ego-browser-operations.md`。Native 与 Docker Sandbox 上符合条件的 Claude tool session 都会收到 runtime-scoped broker capability。Docker 启动会校验并挂载 release-pinned artifact，以准确的受管内容刷新 account 中的 Skill tree，把 wrapper 目录放在 `PATH` 首位，并且只通过进程环境传递 nonce。
-
-高级兼容命令 `register` 会把节点 token 写入配置的 JSON 文件：
-
-```json
-{
-  "server_url": "http://localhost:8000",
-  "node_id": "00000000-0000-0000-0000-000000000000",
-  "node_token": "node_...",
-  "version": "",
-  "supported_tool_types": ["claude"],
-  "heartbeat_interval_seconds": 30,
-  "poll_interval_seconds": 5,
-  "ledger_path": "./agent-remote-node-ledger.json",
-  "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
-  "attach_binary_path": "agent-remote-attach",
-  "workspace_root": "/var/lib/agent-remote/users",
-  "account_root": "/var/lib/agent-remote/users",
-  "skill_manager_enabled": true,
-  "skill_state_root": "/var/lib/agent-remote-skill-state",
-  "skill_state_policy": {
-    "checkpoint_bytes": 1073741824,
-    "directory_bytes": 10737418240,
-    "entries": 100000,
-    "minimum_free_bytes": 2147483648,
-    "reserve_percent": 5
-  },
-  "docker_binary_path": "docker",
-  "tmux_binary_path": "tmux",
-  "mutagen_binary_path": "mutagen",
-  "browser_root": "/var/lib/agent-remote/browser-sessions",
-  "browser_image": "kasmweb/chrome:1.18.0",
-  "browser_public_base_url": "",
-  "browser_docker_network": "",
-  "allowed_runtime_backends": ["docker_sandbox", "native"],
-  "runtime_socket_path": "/run/agent-remote/runtime.sock",
-  "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
-  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude",
-  "device_proxy_path": "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
-}
-```
-
-配置文件包含节点凭据，必须使用部署级文件权限保存。
-
-`skill_state_root` 用于持久化技能副本、journal、账户围栏与导入收据。Linux root Helper 要求该目录由 root
-所有、权限为 `0700`，祖先目录也必须满足安全检查，并与 runtime、账户、workspace、browser
-和 broker 根目录独立；不能放进安装器授予 worker 所有权的数据目录。未设置时使用上述默认值；
-显式设置 policy 时须提供全部字段。字节上限单位是 byte，`entries` 计量 manifest 条目数，
-启动保留空间取 `minimum_free_bytes` 与文件系统容量的 `reserve_percent` 百分比中的较大值。
-Helper 必须通过实际 Native 探测后，Worker 才会报告 Skill 能力。
-
-
-在 Linux 上，安装器安装或升级受管 runtime 后会自动运行 `configure-ego-browser`。它从不可变
-的 `current` release 同步 wrapper/Skill 的路径、版本和摘要，同时保留现有的
-`ego_browser_enabled` 值；安装或升级 artifact 不会隐式开启 bridge。若 runtime 是单独安装的，
-可手动同步：
-
-```sh
-sudo agent-remote-node configure-ego-browser \
-  --config /etc/agent-remote-node/config.json \
-  --runtime-root /opt/agent-remote/ego-browser
-```
-
-只有在 Server evidence 和 artifact-bound canary 通过后才启用 bridge：
-
-```sh
-sudo agent-remote-node configure-ego-browser \
-  --config /etc/agent-remote-node/config.json \
-  --runtime-root /opt/agent-remote/ego-browser \
-  --enable
-sudo systemctl restart agent-remote-runtime.service agent-remote-node.service
-```
-
-Native session spec 现在包含由 root 生成且不含敏感信息的 runtime 配置快照。supervisor 和 Claude
-子进程不再需要读取受保护的节点配置，因此即使 `/etc/agent-remote-node/config.json` 只有 owner
-权限，动态 session 用户也能正常启动。请同时升级 Runtime Helper 和 Node 二进制；已有的
-root-owned session spec 可在后续节点配置变化后继续使用。
-
-Native session 按明确清单只读挂载宿主系统文件，包含 `hosts`、NSS、服务名和协议数据库、
-动态链接器、Debian/Ubuntu alternatives、系统版本、MIME、终端数据、CA 证书、OpenJDK 公共运行
-配置和 Maven 启动配置（不挂载管理密码或仓库凭据）。
-用户/组身份、DNS resolver 和时区仍由 session 管理。`/etc/mtab` 对应会话自己的挂载 namespace，
-`/var/tmp` 使用已有容量限制的会话 `/tmp`，`/var/run` 指向私有 `/run`。安装器包含提供数据库的
-`netbase`、`media-types` 和 `tzdata`。升级 Runtime Helper 后新建会话即可使用新增挂载；运行中的 namespace
-不会被修改。`tests/linux_native_filesystem_test.sh` 可在 Debian 12、Ubuntu 22.04 和 Ubuntu 24.04
-执行真实 Bubblewrap 验证（需要 Docker，可通过镜像参数选择部分发行版）。
-
-Session 转发不会创建公网 listener、Docker 端口发布、NAT 规则或动态 WireGuard ACL，现有受限 SSH 端口是唯一数据入口。启用控制面策略前必须先升级 Runtime Helper 和 Node 服务。
-
-`browser_public_base_url` 是可选项。为空时，节点会报告 KasmVNC 的本地 Docker 端口映射。在部署环境中，应将其设置为能访问浏览器容器 stream endpoint 的节点侧 HTTPS 反向代理 URL。
-
-当控制平面和节点运行在同一台 Docker 主机上时，可将 `browser_docker_network` 设置为控制平面的 Compose 网络（例如 `agent-remote_default`）。浏览器容器会加入该私有网络，控制平面通过容器 DNS 访问 KasmVNC，无需向宿主机暴露端口。
-
-## 安装
-
-普通受管流程先在管理控制台创建 Node 及其 SSH 传输信息，再从已登录的控制工作站运行：
-
-```sh
-agent-remote node install --node <node-id-or-prefix>
-```
-
-该流程会先验证并安装 release，再向控制面申请一次性加入码；release 归档和加入码分别使用
-独立的 SSH stdin。持久化 exchange ID 让同一命令可以恢复中断的 enrollment，不会把加入码或
-最终 Node token 放入 argv、环境变量、URL、日志或终端输出。新 Node 默认关闭 ego-browser
-capability，已有 Node 保留原值；`--enable-ego-browser` 只表达管理员的明确意图，仍必须通过
-本机 release 校验。
-
-直接传 registration token 的安装器仅保留给全新 Debian 12+ 或 Ubuntu 22.04+ VPS 上的高级
-旧版 provisioning。缺少 `cosign` 时，安装器会在本次运行的私有临时目录下载并校验固定 SHA-256
-的官方 verifier；release checksum 或 Sigstore workflow identity 任一校验失败时，直接下载路径
-仍会关闭失败：
+在 Linux 主机使用仓库安装器安装最新已验证的 Node 归档：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
-  bash -s -- \
-  --server-url https://agent-remote.example.com \
-  --node-id <node-id> \
-  --registration-token <registration-token>
+  bash -s -- --server-url https://agent-remote.example.com \
+  --node-id <node-id> --registration-token <token>
 ```
 
-该兼容入口会补齐所选 backend 的依赖但不会升级已经安装的系统包，配置受限 SSH gateway，安装受管 device proxy，注册节点，启动两个 systemd service，并验证 runtime probe 与控制面 heartbeat。它会在 argv 中携带短期 registration token，因此只能用于隔离的人工维护环境，并且不得写入 shell history 或日志。使用默认 `native` backend 时，它还会启用 IPv4 forwarding 和 user namespace，通过 Anthropic 官方 installer 下载 Claude Code `latest`，并在同一个只读受管 runtime 中安装带 `npm` 和 `npx` 的最新已验证 Node.js 22 release。默认配置不要求 KVM 或 Docker。请以 root 或具有 `sudo` 权限的用户运行；安装器只会为系统操作提权。
+使用 `--version <version>` 固定发布版本。安装器会先验证归档、配置所选运行时 backend，
+并仅在所有探测通过后启动服务。使用
+`DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh` 构建归档；校验和与包
+不能替代主机、SSH 或 broker 验收。
 
-默认 Native 依赖还会为精简 VPS 镜像补齐一致的 AI 开发命令基线：常用 shell/文本/文件工具、`rg`、`jq`、Git/Git LFS/GitHub CLI、压缩工具、`rsync`、带 pip 和 venv 的 Python 3、SQLite、C/C++ 编译工具链，以及常见的进程、网络和 DNS 排障命令。默认的 `full` 开发工具链还包括 CMake/Ninja/Meson、Clang/LLDB/GDB、ShellCheck、fzf、Valgrind、Go、Rust、Java/Maven、Ruby、PHP、Perl、PostgreSQL/MariaDB/Redis 客户端和常用开发头文件。安装器会在装包后逐项验证命令，并通过重装 `gawk` 修复损坏的 `awk` alternatives 链。这些宿主工具在 Native session 内只读可见，不会授予额外权限。
-
-工具链可以按需缩小：`--developer-toolchain full`（默认，完整常用开发环境）、`--developer-toolchain core`（编译、调试和脚本工具，不安装额外语言和数据库客户端）或 `--developer-toolchain none`（不安装额外扩展，只保留原有基础命令基线）。安装使用 `apt-get --no-upgrade`，不会隐式升级已有系统包；成功安装后会把发行版、精确 Debian 包版本、命令路径和命令版本写入 `/opt/agent-remote/toolchain/MANIFEST`，方便审计和复现。完整 Docker Sandbox 镜像仍由 Docker 管理，宿主机工具链不会自动出现在容器内，必须使用包含相同工具链的受管镜像。
-
-完整的命令清单、版本记录格式和 Docker 镜像检查方法见 [`docs/developer-toolchain.md`](docs/developer-toolchain.md)。
-
-命令可安全重复执行。再次执行会升级节点二进制、Claude 和所选 Node.js 发布线、刷新系统路径并复用已有 node token；只有明确需要替换注册信息时才添加 `--force-register`。
-
-全新安装时，安装器不再使用知名 WireGuard 端口 `51820`，而是从动态端口段 `49152-65535` 随机选择一个本机未占用的 UDP 端口。选中的端口会一致写入 WireGuard interface、Runtime Helper unit、Node 配置和对外上报 endpoint，后续升级继续复用。已有的旧版 `51820` 安装会自动迁移；只有确实需要保留它时才显式传入 `--wireguard-listen-port 51820`。如果以后某条公网路径封锁了当前端口，可用 `--rotate-wireguard-listen-port` 重新运行安装器，在宿主机或云防火墙中放行输出的 UDP 端口，然后在每台客户端执行 `agent-remote wireguard config` 并重启隧道。本机端口未占用不等于上游链路一定可达，因此轮换后仍需从受影响客户端验证真实握手。
-
-安装指定 node 版本或固定官方 Claude 版本：
+安装指定版本或已解压的归档：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
-  bash -s -- \
-  --version <node-version> \
+  bash -s -- --version <node-version> \
   --server-url https://agent-remote.example.com \
-  --node-id <node-id> \
-  --registration-token <registration-token> \
+  --node-id <node-id> --registration-token <registration-token> \
   --claude-version <claude-version>
-```
-
-如需严格固定 Claude artifact，同时添加下面三个参数：
-
-```sh
---claude-version <version> --claude-source <artifact-or-url> --claude-sha256 <sha256>
-```
-
-Node.js 默认安装经过校验的最新 22.x 版本。可用 `--nodejs-version` 固定官方版本，或同时提供下面三个参数固定自备归档：
-
-```sh
---nodejs-version <version> --nodejs-source <archive-or-url> --nodejs-sha256 <sha256>
-```
-
-如果所选 backend 的 probe 不满足要求，安装器会在启用 worker 前明确失败。Native 要求 Linux 5.15+、systemd 249+、cgroup v2、Bubblewrap user namespace 与配置的 locale。Docker Sandbox 要求 Linux、root helper、tmux、Git、POSIX ACL 工具、有效的非 root runtime identity，以及 daemon 和 `docker sandbox` 命令均可用的既有 Docker CLI。使用 `--runtime-backends native,docker_sandbox` 同时启用二者，或使用 `--runtime-backends docker_sandbox` 仅启用 Docker。只安装文件、不注册和启动时，省略三个控制面参数并添加 `--no-start`。
-
-从解压后的 release archive 安装时，使用相同的一键参数：
-
-```sh
 ./install.sh --server-url <url> --node-id <id> --registration-token <token>
 ```
 
-## 发布打包
+## 配置与状态
 
-Node 与 Device 使用彼此独立的发布版本。`release-dependencies.json` 固定每个 Node 发布包内置的
-Device proxy 精确 tag、commit 和制品签名 workflow。升级该依赖必须作为可审查的源码变更完成；准备新的 Node 版本
-不会改写它。
+JSON 配置包含服务器 URL、Node 身份、轮询间隔、ledger 路径、SSH 路径、workspace/account 根目录、运行时 backend 策略和受保护 helper 路径。配置包含 Node 凭据，必须只允许 owner 读取。
 
-Linux 发布包要求按架构和 libc 提供对应的受管 device proxy：
+工作区准备与同步会把目标路径绑定到获准的用户、工作区、设备和 SSH key。特权操作前会校验路径、标识、运行时 backend、资源限制、符号链接、硬链接和特殊文件。Skill 状态、运行时状态、浏览器状态和工作区数据使用分开的受保护根目录。
 
-```text
-$DEVICE_PROXY_DIR/linux-amd64-glibc/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-arm64-glibc/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-amd64-musl/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-arm64-musl/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/<target>/VERSION
-```
+Native 和 Docker backend 会上报真实能力。只有 backend 和 Device proxy 探测通过时，Server 才能协商 Device v2 capability；能力不完整或未知时 fail-closed。
 
-安装器会验证摘要，将其安装到 `/opt/agent-remote/device/releases/<version>/` 并原子切换
-`current`。同一版本出现不同内容时会拒绝覆盖；proxy 缺失或不可执行时 capability 保持关闭。
+## 开发与发布
+
+需要 Go 1.26.6 或更高版本。运行：
 
 ```sh
-DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+bash -n scripts/*.sh
+gofmt -l .
+go vet ./...
+go test ./...
+scripts/run-quality-checks.sh
 ```
 
-发布流程会构建六个归档：`darwin-amd64`、`darwin-arm64`、`linux-amd64-glibc`、`linux-arm64-glibc`、`linux-amd64-musl` 和 `linux-arm64-musl`。Go 二进制使用 `CGO_ENABLED=0` 构建；glibc 和 musl 标签用于让安装器和用户按部署环境选择包。
+使用一次性 server/node home，并在验收后删除测试容器、临时 key 和浏览器 profile。发布归档由 `scripts/build-release.sh` 构建；包和校验和验证不能替代原生运行、SSH、broker 或远程会话证据。
 
-每个归档包含节点二进制、安装器、systemd unit、示例配置、license 和 notices；Linux 归档还包含受管 device proxy。
+## 脚本入口
 
-GitHub Actions 会在 `v*` tag 上运行该打包流程，并把归档上传到 GitHub Release。
+仓库保留以下安装、运行时打包和验收入口：
 
-## Skill 管理
+```sh
+# 构建发布归档（DEVICE_PROXY_DIR 提供已签名的 device proxy）。
+DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+# 准备发布元数据并运行包及源码检查。
+scripts/prepare-release.sh
+python3 scripts/generate-release-policy.py --help
+scripts/check-ego-browser-skill-source.sh
+scripts/check-managed-skills.sh
+scripts/check-coverage.sh
+# 安装 Node 及可选托管运行时。
+scripts/install.sh --server-url <url> --node-id <id> --registration-token <token>
+scripts/install-claude-runtime.sh
+scripts/install-nodejs-runtime.sh
+scripts/install-device-proxy.sh
+scripts/install-ego-browser-runtime.sh
+# 为本地开发安装仓库 hooks。
+scripts/install-githooks.sh
+# 主机文件系统和配置导入验收。
+bash tests/linux_native_filesystem_test.sh
+bash tests/linux_config_import_test.sh
+```
 
-Skill 默认开启；Helper 的真实 Native 依赖、运行程序和存储探测通过后，Worker 才会上报能力。
-显式 false 会跨升级保留，旧安装器写入的 false 需按管理员意图修改；Worker 和 Helper 必须一起升级。
-配置、恢复边界与实现入口见 [Node Skill 管理](docs/skill-manager.md)。
+`install.sh` 是受支持的主机安装器。运行时和 device proxy 安装器由该流程调用，或由管理员
+在明确升级组件时调用；它们不会自行登记 Node。
 
-配置导入必须获得当前任务授权，由 Helper 决定路径；受管账号使用 `account import-config --exclude-skills`。
-`CONFIG_IMPORT_PENDING` 需先对账，`CONFIG_IMPORT_FAILED` 重放原失败，不能自动重新导入。
-限制为单文件 1 MiB、原始总量 8 MiB、编码列表 12 MiB；轮询/导入帧允许 16 MiB。
-真实属主测试入口为 `bash tests/linux_config_import_test.sh`，须在其要求的隔离 Linux 环境执行。
+## 文档
 
-Docker Sandbox 的 create / exec / rm 探测须限时成功，退出码为零的移除提示不代表支持；
-此检查与 Native Skill 能力分开。
+- 运行时与包规则：`docs/rules/02-architecture.md`、`docs/rules/09-state-persistence.md`、`docs/rules/10-node-control.md`
+- 终端行为：`docs/terminal-interaction.md`
+- 会话与附件合同：`docs/session-lifecycle.md`、`docs/session-exact-attach.md`、`docs/session-exact-attachment-transfer.md`
+- 工作区安全：`docs/workspace-sync-safety.md`
+- Ego-browser 运行时：`docs/ego-browser-artifacts.md`、`docs/ego-browser-operations.md`
+- Skills：`docs/skill-manager.md`
+
+这些文档描述当前行为；如果某条说明过时，以代码、测试和控制面合同为准。
 
 ## 许可证
 
-agent-remote-node 使用 GPL-3.0-only 许可证。详见 `LICENSE`。
-
-第三方依赖声明见 `THIRD_PARTY_NOTICES.md`。
+GPL-3.0-only。详见 `LICENSE` 和 `THIRD_PARTY_NOTICES.md`。

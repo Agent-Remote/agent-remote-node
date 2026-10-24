@@ -12,353 +12,138 @@
 
 English | [中文](README.zh-CN.md)
 
-Node-side runtime for agent-remote.
+`agent-remote-node` is the Go runtime deployed on a VPS host. It polls the Agent Remote control plane, executes approved tasks through the runtime helper and never exposes a public inbound control API.
 
-The node runs on a VPS and talks to `agent-remote-server` by polling the control plane. It does not expose public HTTP ports.
+## Runtime boundary
 
-Managed tmux sessions support drag-to-copy: dragging selects response text even when the agent
-requests mouse events, and releasing copies the selection through OSC 52. The updated local CLI
-writes it to the desktop clipboard; plain SSH requires terminal OSC 52 support and permission.
-Normal clicks and wheel bindings remain unchanged. Native terminal selection remains available
-with the terminal's Shift/Option override. Settings apply to both runtime backends on the next
-attach (legacy Docker terminals must be recreated). `set-clipboard external` permits tmux selections without allowing applications to populate
-tmux clipboard buffers; clipboard reads are not bridged by the CLI.
-
-Managed sessions use an explicit empty tmux configuration and owned key tables. Ctrl+B then D
-keeps Claude running while detaching; Ctrl+B then [ opens history; arrows/PageUp/PageDown navigate,
-Space starts selection, Enter/Y copies, and Esc/Q returns to Claude. Ctrl+B then ] pastes the tmux
-buffer and Ctrl+B twice sends a literal Ctrl+B. Host command prompts, menus, new windows, splits
-and session switching are unavailable. New panes retain 20,000 history lines. RGB capability is
-added without replacing other features; extended keys are negotiated only when requested by the
-application, with a 10 ms escape timeout. A brief tmux message confirms a selection was sent;
-the CLI reports rejected/unfinished local clipboard writes separately.
-
-Docker terminals now run tmux as a per-user non-root identity on a private per-session socket.
-A separate root systemd service owns the fixed Docker exec command and accepts only a verified
-pane TTY descriptor plus resize notifications from that identity. No Docker privilege is given to
-tmux or the worker. Launch secrets travel through a private pipe and are not stored in the spec.
-Docker terminal hosting requires systemd 249+ and useradd. Existing legacy Docker terminals cannot
-be attached after upgrade: stop and recreate tool sessions, or restart account binding. Legacy
-state remains readable and stoppable; active sessions are never silently migrated or replayed.
-See [terminal validation](docs/terminal-interaction.md) for test coverage and upgrade details.
+- The unprivileged worker polls the control plane and handles task leases and durable completion records.
+- Privileged host work is isolated behind the runtime helper.
+- Native sessions use a dedicated Linux identity, systemd limits, Bubblewrap, network namespace, nftables rules, bounded temporary storage and a private tmux socket.
+- Docker Sandbox sessions use a non-root session identity and a root-owned trusted spec; the worker never joins the Docker group.
+- Forced-command SSH is the only attach path. Session port forwarding uses a separate authorized loopback tunnel and does not enable OpenSSH TCP forwarding.
+- Browser sessions use an isolated temporary container and profile; they do not mount a workspace or tool-account directory.
 
 ## Commands
 
-```sh
-go test ./...
-```
+Run the checks with:
 
 ```sh
+go test ./...
 go run ./cmd/agent-remote-node --help
 ```
 
-Run managed enrollment from a logged-in control workstation:
+Managed enrollment starts from a logged-in control workstation:
 
 ```sh
 agent-remote node install --node <node-id-or-prefix>
 ```
 
-The CLI authenticates the pinned Node archive with its checksum and Sigstore bundle, transfers and
-installs it over a dedicated SSH stdin, and only then issues a short-lived join code over a separate
-SSH invocation. New Nodes keep ego-browser disabled unless the administrator explicitly adds
-`--enable-ego-browser`; reinstalling an existing Node preserves its current setting.
+The CLI verifies the pinned Node archive, transfers it over an independent SSH stdin channel, requests a one-time join code and sends that code in a separate SSH request. New Nodes keep ego-browser disabled unless the administrator explicitly supplies `--enable-ego-browser`; reinstalling an existing Node preserves its setting.
 
-Direct `register --registration-token` is an advanced legacy compatibility path, not the normal
-enrollment flow:
+The direct registration command is an advanced compatibility path:
 
 ```sh
-go run ./cmd/agent-remote-node register \
-  --config ./config.json \
-  --server-url http://localhost:8000 \
-  --node-id <node-id> \
+go run ./cmd/agent-remote-node register --config ./config.json \
+  --server-url http://localhost:8000 --node-id <node-id> \
   --registration-token <registration-token>
-```
-
-```sh
 go run ./cmd/agent-remote-node heartbeat --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node poll-once --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node run --config ./config.json
-```
-
-```sh
 go run ./cmd/agent-remote-node install-ssh --config ./config.json
 ```
 
-```sh
-go run ./cmd/agent-remote-attach --config ./config.json --session <session-id> --device <device-id> --dry-run
-go run ./cmd/agent-remote-attach --config ./config.json --binding <tool-account-id> --device <device-id> --dry-run
-```
+`agent-remote-attach` requires an exact session/device or binding/device identity and performs a dry-run before an interactive attach.
 
-`install-ssh` prepares the managed `authorized_keys` file. Runtime SSH keys are written atomically by the `sync_ssh_keys` node task with forced-command restrictions. Each task replaces only the named device's managed keys, preserving other devices while removing stale keys after rotation.
-
-`prepare_workspace` tasks install the device's stable SSH gateway key and ask the privileged runtime helper to create the workspace as the control-plane user's Linux UID. Mutagen commands are re-authorized by device and node, then run without network access in a Bubblewrap view containing only that user's data.
-
-`create_binding_session` and `create_tool_session` use the backend pinned by the control plane. Native sessions run the managed Claude binary under a per-user UID with systemd cgroup limits, Bubblewrap filesystem isolation, a dedicated network namespace, nftables egress filtering, a quota-limited temporary filesystem, and a per-session tmux socket. Docker Sandbox sessions run as the Node service's fixed non-root UID/GID, with owned account/workspace paths and numeric ACL access. Docker lifecycle state is recorded in a root-owned trusted spec, and Docker operations remain behind the privileged helper; the Node worker is not a member of the Docker group.
-
-Developer credential profiles provide persistent Git and GitHub CLI configuration directories for both runtime backends. SSH private keys remain on the client: only an authorized `ssh -A` attach is bridged through a session-local Unix socket, and only while that connection is active. Native and Docker Sandbox attach both resolve the tmux target and SSH mode from root-owned runtime state instead of control-plane resource names. The gateway continues to deny TCP forwarding, X11 forwarding, and user SSH rc execution.
-
-Session port forwarding uses a separate no-PTY forced command and does not enable OpenSSH TCP forwarding. After redeeming a device- and SSH-key-bound one-time token, one HTTP/2 tunnel carries CONNECT streams for exactly one authorized runtime loopback port. The privileged Runtime Helper resolves either the Native network namespace or the root-owned Docker Sandbox spec and returns only an already-connected socket FD over `SCM_RIGHTS`; clients cannot provide a host, IP, PID, namespace path, sandbox name, or container ID. Heartbeats advertise this capability for every healthy enabled backend.
-
-Managed macOS device control advertises the required `observation_mode_v2`,
-`ax_state_v2`, and `adaptive_settle_v2` base plus the optional
-`clipboard_payload_v2` extension only when at least one enabled runtime backend and the verified device
-proxy are available. The advertised backend list is exact: Native additionally requires its network
-namespace probe, while Docker Sandbox requires its full runtime probe. The Server selects the complete required base, includes
-supported extensions, or uses an empty v1 fallback; partial sets and
-same-generation capability changes are rejected. New generations use the
-supported v2 set by default, while the Server emergency switch forces the empty
-v1 set. Runtime Helper writes
-the negotiated set into the owner-only managed context, starts the proxy with the
-four-tool compact MCP surface, and fixes zero-content optimization metrics at
-`/tmp/agent-remote-device-optimization.jsonl` inside the isolated session.
-
-Account binding on either runtime backend requires a registered device token and an active SSH key. Binding attach uses the same forced-command gateway as normal sessions, is re-authorized by the control plane on every connection, and reaches Docker tmux only through the trusted helper.
-
-`create_browser_session` node tasks start a temporary Kasm Chrome container by default. The browser runtime receives timezone, locale, launch URL, incognito Chrome arguments, and a temporary VNC password. It does not mount workspace or tool-account directories. `stop_browser_session` removes the container and the temporary profile directory under `browser_root`.
-
-## Config
-
-The immutable wrapper/Skill source contract is documented in
-`docs/ego-browser-artifacts.md`; runtime UID/ACL diagnostics, metrics, and
-recovery are in `docs/ego-browser-operations.md`. Eligible Claude tool sessions on both
-Native and Docker Sandbox receive a runtime-scoped broker capability. Docker startup verifies and
-mounts the release-pinned artifacts, refreshes the exact managed Skill tree in the account, prepends
-the wrapper directory to `PATH`, and passes the nonce only through the process environment.
-
-The advanced compatibility `register` command writes the node token to the configured JSON file:
-
-```json
-{
-  "server_url": "http://localhost:8000",
-  "node_id": "00000000-0000-0000-0000-000000000000",
-  "node_token": "node_...",
-  "version": "",
-  "supported_tool_types": ["claude"],
-  "heartbeat_interval_seconds": 30,
-  "poll_interval_seconds": 5,
-  "ledger_path": "./agent-remote-node-ledger.json",
-  "ssh_authorized_keys_path": "./authorized_keys.agent-remote",
-  "attach_binary_path": "agent-remote-attach",
-  "workspace_root": "/var/lib/agent-remote/users",
-  "account_root": "/var/lib/agent-remote/users",
-  "skill_manager_enabled": true,
-  "skill_state_root": "/var/lib/agent-remote-skill-state",
-  "skill_state_policy": {
-    "checkpoint_bytes": 1073741824,
-    "directory_bytes": 10737418240,
-    "entries": 100000,
-    "minimum_free_bytes": 2147483648,
-    "reserve_percent": 5
-  },
-  "docker_binary_path": "docker",
-  "tmux_binary_path": "tmux",
-  "mutagen_binary_path": "mutagen",
-  "browser_root": "/var/lib/agent-remote/browser-sessions",
-  "browser_image": "kasmweb/chrome:1.18.0",
-  "browser_public_base_url": "",
-  "browser_docker_network": "",
-  "allowed_runtime_backends": ["docker_sandbox", "native"],
-  "runtime_socket_path": "/run/agent-remote/runtime.sock",
-  "runtime_binary_path": "/usr/local/bin/agent-remote-runtime",
-  "claude_runtime_path": "/opt/agent-remote/runtimes/claude/current/bin/claude",
-  "device_proxy_path": "/opt/agent-remote/device/current/bin/agent-remote-device-proxy"
-}
-```
-
-The config file contains node credentials and must be stored with deployment-level file permissions.
-
-`skill_state_root` stores durable skill copies, journals, account fences and import receipts. The Linux root helper requires
-an independent root-owned `0700` directory with safe root-owned ancestors, outside runtime, account,
-workspace, browser and broker roots. Do not put it beneath the installer’s worker-owned data directory.
-Omitted configuration uses the values above; an explicit policy must supply every field. Byte limits
-use bytes, `entries` counts manifest entries, and startup reserve is the greater of
-`minimum_free_bytes` and `reserve_percent` of filesystem capacity. The Helper must pass its actual Native probes before Worker reports Skill capability.
-
-
-On Linux, the installer automatically runs `configure-ego-browser` after installing the managed
-runtime. It updates the wrapper and Skill paths, versions, and digest from the immutable `current`
-release while preserving the existing `ego_browser_enabled` value. Installing or upgrading the
-artifact does not implicitly enable the bridge. To synchronize an independently installed runtime,
-run:
-
-```sh
-sudo agent-remote-node configure-ego-browser \
-  --config /etc/agent-remote-node/config.json \
-  --runtime-root /opt/agent-remote/ego-browser
-```
-
-Only enable the bridge after the Server evidence and artifact-bound canary have passed:
-
-```sh
-sudo agent-remote-node configure-ego-browser \
-  --config /etc/agent-remote-node/config.json \
-  --runtime-root /opt/agent-remote/ego-browser \
-  --enable
-sudo systemctl restart agent-remote-runtime.service agent-remote-node.service
-```
-
-Native session specifications now carry a root-generated, non-sensitive runtime configuration
-snapshot. The supervisor and Claude child therefore do not need to read the protected node config,
-so dynamic session users can start normally even when `/etc/agent-remote-node/config.json` is
-owner-only. Upgrade the Runtime Helper and Node binaries together; existing root-owned session
-specifications remain usable across later node configuration changes.
-
-Native sessions read-only mount an explicit set of host system files for name resolution
-(`hosts`, NSS, service/protocol databases), dynamic linking and Debian/Ubuntu alternatives,
-OS identification, MIME types, terminal data, CA certificates, OpenJDK public runtime data,
-and Maven bootstrap configuration (excluding management passwords and repository credentials). User/group identity, DNS
-resolvers and timezone remain session-managed. `/etc/mtab` describes the session mount namespace;
-`/var/tmp` uses the session's quota-limited `/tmp`, and `/var/run` points to its private `/run`.
-The installer includes `netbase`, `media-types`, and `tzdata` for these databases. Upgrade the Runtime Helper
-and create a new session to receive these mounts; an already running namespace is not modified.
-Run `tests/linux_native_filesystem_test.sh` for real Bubblewrap checks on Debian 12, Ubuntu 22.04,
-and Ubuntu 24.04 (Docker required; optional image arguments select a subset).
-
-No public listener, Docker port publish, NAT rule, or dynamic WireGuard ACL is created for session forwards. The existing restricted SSH port is the only data-plane entry. Runtime Helper and node services must be upgraded before enabling the control-plane policy.
-
-`browser_public_base_url` is optional. When it is empty, the node reports the local Docker port mapping for KasmVNC. In deployed environments, set it to the node-side HTTPS reverse-proxy URL that reaches the browser container stream endpoint.
-
-For a control plane and node running on the same Docker host, set `browser_docker_network` to the control-plane Compose network (for example `agent-remote_default`). Browser containers then join that private network and the control plane reaches KasmVNC by container DNS without exposing its port on the host.
-
-## Install
-
-For the managed path, create the Node and its SSH transport in the admin console, then run this from
-the logged-in control workstation:
-
-```sh
-agent-remote node install --node <node-id-or-prefix>
-```
-
-This path authenticates and installs the release before asking the control plane for a one-time join
-code. The release archive and code use separate SSH stdin invocations. A persisted exchange ID lets
-the same command recover an interrupted enrollment without putting the code or resulting Node token
-in argv, environment variables, URLs, logs, or terminal output. The default leaves a new Node's
-ego-browser capability disabled and preserves an existing Node's setting; `--enable-ego-browser` is
-an explicit administrator intent and still requires local release verification.
-
-The direct registration-token installer remains available only for advanced legacy provisioning on
-a clean Debian 12+ or Ubuntu 22.04+ VPS. If `cosign` is missing, the installer downloads the
-checksum-pinned official verifier into a private temporary directory for this run. Direct downloads
-still fail closed unless the release checksum and Sigstore workflow identity both verify:
+Install the latest verified node archive on a Linux host with the repository
+installer:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
-  bash -s -- \
-  --server-url https://agent-remote.example.com \
-  --node-id <node-id> \
-  --registration-token <registration-token>
+  bash -s -- --server-url https://agent-remote.example.com \
+  --node-id <node-id> --registration-token <token>
 ```
 
-This compatibility path installs the dependencies required by the selected backends without upgrading packages that are already installed, configures the restricted SSH gateway, installs the managed device proxy, registers the node, starts both systemd services, and verifies the runtime probe and control-plane heartbeat. Its registration token is a short-lived secret carried in argv, so restrict this path to isolated manual maintenance and keep it out of shell history and logs. With the default `native` backend it also enables IPv4 forwarding and user namespaces, downloads Claude Code `latest` through Anthropic's official installer, and installs the latest verified Node.js 22 release with `npm` and `npx` into the same read-only managed runtime. The default does not require KVM or Docker. Run it as root, or as a user that has `sudo` access; the installer elevates only the system operations.
+Pin a release with `--version <version>`. The installer verifies the archive,
+configures the selected runtime backend and starts services only after all
+probes pass. Build archives with `DEVICE_PROXY_DIR=/path/to/device-proxies
+scripts/build-release.sh`; checksums and packages do not replace host, SSH or
+broker acceptance.
 
-The default native dependency set also provides a consistent AI development baseline on minimal VPS images: standard shell/text/file utilities, `rg`, `jq`, Git/Git LFS/GitHub CLI, archive tools, `rsync`, Python 3 with pip and venv, SQLite, a C/C++ build toolchain, and common process/network/DNS diagnostics. The default `full` developer toolchain also includes CMake/Ninja/Meson, Clang/LLDB/GDB, ShellCheck, fzf, Valgrind, Go, Rust, Java/Maven, Ruby, PHP, Perl, PostgreSQL/MariaDB/Redis clients, and common development headers. The installer verifies the commands after package installation and repairs a broken `awk` alternatives link by reinstalling `gawk`. These host tools are exposed read-only inside Native sessions and do not grant additional privileges.
-
-Use `--developer-toolchain full` (the default) for the complete common development environment, `--developer-toolchain core` for compiler, debugger, and scripting tools without extra language runtimes or database clients, or `--developer-toolchain none` to skip the additional bundle and keep the existing baseline only. Installation uses `apt-get --no-upgrade`, so existing system packages are not silently upgraded. After a successful install, the distro, exact Debian package versions, command paths, and command versions are recorded in `/opt/agent-remote/toolchain/MANIFEST` for audit and reproduction. Docker Sandbox images remain Docker-managed; host tools are not automatically available in the container, which must use a managed image containing the same toolchain.
-
-See [`docs/developer-toolchain.md`](docs/developer-toolchain.md) for the complete command inventory, manifest format, and Docker image checks.
-
-The command is idempotent. Re-running it upgrades the node binaries, Claude, and the selected Node.js release line, refreshes the system layout, and reuses the existing node token. Add `--force-register` only when intentionally replacing the node registration.
-
-On a fresh installation the installer chooses an unused UDP port from the dynamic range `49152-65535` instead of using the well-known WireGuard port `51820`. The selected port is written consistently to the WireGuard interface, Runtime Helper unit, node configuration, and advertised public endpoint. Later upgrades preserve that port. An existing legacy `51820` installation is migrated automatically; pass `--wireguard-listen-port 51820` only when retaining it is intentional. To select a new random port after a route-level block, rerun the installer with `--rotate-wireguard-listen-port`, allow the printed UDP port in any host or cloud firewall, then refresh each client with `agent-remote wireguard config` before restarting its tunnel. Local availability does not prove an upstream network path, so verify a real handshake from the affected client after rotation.
-
-Install a specific node release or pin the official Claude version:
+Install a specific release or an extracted archive:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/Agent-Remote/agent-remote-node/main/scripts/install.sh | \
-  bash -s -- \
-  --version <node-version> \
+  bash -s -- --version <node-version> \
   --server-url https://agent-remote.example.com \
-  --node-id <node-id> \
-  --registration-token <registration-token> \
+  --node-id <node-id> --registration-token <registration-token> \
   --claude-version <claude-version>
-```
-
-For a supply-chain-pinned Claude artifact, add all three options:
-
-```sh
---claude-version <version> --claude-source <artifact-or-url> --claude-sha256 <sha256>
-```
-
-Node.js defaults to the latest verified release in the 22.x line. Pin an official version with `--nodejs-version`, or pin a supplied archive with all three options:
-
-```sh
---nodejs-version <version> --nodejs-source <archive-or-url> --nodejs-sha256 <sha256>
-```
-
-The installer fails before enabling the worker when a selected backend does not satisfy its probe.
-Native requires Linux 5.15+, systemd 249+, cgroup v2, Bubblewrap user namespaces, and the configured
-locale. Docker Sandbox requires Linux, a root helper, tmux, Git, POSIX ACL tools, a valid non-root
-runtime identity, and an installed Docker CLI whose daemon and `docker sandbox create`, `exec` and
-`rm` commands are available. The installer and Helper verify command-specific usage: Docker releases
-that replace the plugin with a successful removal notice are unsupported. New starts fail before
-account/workspace changes; stop and cleanup preserve trusted runtime records when lifecycle commands
-are unavailable. This compatibility check does not establish sandbox-wide writer quiescence or
-managed-skill acceptance. Use `--runtime-backends native,docker_sandbox` for both or
-`--runtime-backends docker_sandbox` for Docker only. To install files without registration or startup,
-omit the three control-plane options and add `--no-start`.
-
-Install from an extracted release archive with the same one-command options:
-
-```sh
 ./install.sh --server-url <url> --node-id <id> --registration-token <token>
 ```
 
-## Release Packaging
+## Configuration and state
 
-Node and Device use independent release versions. `release-dependencies.json` pins the exact
-Device proxy tag, commit, and artifact-signing workflow embedded by a Node release. Updating that dependency is an explicit,
-reviewable source change; preparing a new Node version does not rewrite it.
+The JSON config contains the server URL, Node identity, polling intervals, ledger path, SSH paths, workspace/account roots, runtime backend policy and protected helper paths. It contains a Node credential and must be owner-readable only.
 
-Linux packages require an architecture- and libc-matched managed device proxy at:
+Workspace preparation and synchronization bind the requested path to the authorized user, workspace, device and SSH key. Paths, identifiers, runtime backends, resource limits, symlinks, hard links and special files are validated before any privileged operation. Skill state, runtime state, browser state and workspace data use separate protected roots.
 
-```text
-$DEVICE_PROXY_DIR/linux-amd64-glibc/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-arm64-glibc/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-amd64-musl/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/linux-arm64-musl/agent-remote-device-proxy
-$DEVICE_PROXY_DIR/<target>/VERSION
-```
+Native and Docker backends report their actual capabilities. The server may negotiate the Device v2 capability set only when the backend and device proxy probes pass; partial or unknown capability sets fail closed.
 
-The installer verifies its digest, installs it under
-`/opt/agent-remote/device/releases/<version>/`, and atomically switches `current`. Reusing a
-version with different bytes is rejected, and capability remains disabled if the proxy is absent
-or not executable.
+## Development and release
+
+Go 1.26.6 or newer is required. Run:
 
 ```sh
-DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+bash -n scripts/*.sh
+gofmt -l .
+go vet ./...
+go test ./...
+scripts/run-quality-checks.sh
 ```
 
-The release flow builds six archives: `darwin-amd64`, `darwin-arm64`, `linux-amd64-glibc`, `linux-arm64-glibc`, `linux-amd64-musl`, and `linux-arm64-musl`. The Go binaries are built with `CGO_ENABLED=0`; the glibc and musl labels exist so installers and users can select packages by deployment environment.
+Use disposable server/node homes and remove test containers, temporary keys and browser profiles after acceptance. Release archives are built by `scripts/build-release.sh`; package and checksum verification do not replace native runtime, SSH, broker or remote-session evidence.
 
-Each archive includes node binaries, installer, systemd unit, sample config, license, and notices.
-Linux archives also include the managed device proxy.
+## Script entry points
 
-GitHub Actions runs this packaging flow for `v*` tags and uploads the archives to the GitHub Release.
+The repository keeps these installation, runtime packaging and acceptance
+entry points:
 
-## Skill Management
+```sh
+# Build a release archive (DEVICE_PROXY_DIR supplies signed device proxies).
+DEVICE_PROXY_DIR=/path/to/device-proxies scripts/build-release.sh
+# Prepare release metadata and run package/source checks.
+scripts/prepare-release.sh
+python3 scripts/generate-release-policy.py --help
+scripts/check-ego-browser-skill-source.sh
+scripts/check-managed-skills.sh
+scripts/check-coverage.sh
+# Install the node and its optional managed runtimes.
+scripts/install.sh --server-url <url> --node-id <id> --registration-token <token>
+scripts/install-claude-runtime.sh
+scripts/install-nodejs-runtime.sh
+scripts/install-device-proxy.sh
+scripts/install-ego-browser-runtime.sh
+# Install repository hooks for local development.
+scripts/install-githooks.sh
+# Host-only filesystem and configuration-import acceptance.
+bash tests/linux_native_filesystem_test.sh
+bash tests/linux_config_import_test.sh
+```
 
-Skill management defaults to enabled. The Helper must pass the real Native dependency/runtime/storage
-probe before Worker advertises capability. Explicit false stays disabled across upgrades; old installer
-configurations containing false require an intentional change. Upgrade Worker and Helper together.
-See [Node Skill manager](docs/skill-manager.md) for configuration, safe recovery and implementation.
+`install.sh` is the supported host installer. The runtime and device-proxy
+installers are called by that flow or by an administrator performing an
+explicit component upgrade; they do not register a node on their own.
 
-Configuration imports use fresh task-bound authorization and Helper-selected paths. Managed accounts
-require `account import-config --exclude-skills`. `CONFIG_IMPORT_PENDING` requires reconciliation;
-`CONFIG_IMPORT_FAILED` replays the saved failure, not automatic reimport. Import limits remain 1 MiB
-per file, 8 MiB raw and 12 MiB encoded; polling/import frames permit 16 MiB. Actual ownership tests:
-`bash tests/linux_config_import_test.sh` in its required isolated Linux environment.
+## Documentation
 
-Docker Sandbox availability requires successful bounded `create`, `exec` and `rm` capability probes;
-a removal notice with exit code zero is not support. This is separate from Native Skill support.
+- Runtime and package rules: `docs/rules/02-architecture.md`, `docs/rules/09-state-persistence.md`, `docs/rules/10-node-control.md`
+- Terminal behavior: `docs/terminal-interaction.md`
+- Session and attachment contracts: `docs/session-lifecycle.md`, `docs/session-exact-attach.md`, `docs/session-exact-attachment-transfer.md`
+- Workspace safety: `docs/workspace-sync-safety.md`
+- Ego-browser runtime: `docs/ego-browser-artifacts.md`, `docs/ego-browser-operations.md`
+- Skills: `docs/skill-manager.md`
+
+These documents describe current behavior. Code, tests and the control-plane contract take precedence if a note is stale.
 
 ## License
 
-agent-remote-node is licensed under GPL-3.0-only. See `LICENSE`.
-
-Third-party dependency notices are listed in `THIRD_PARTY_NOTICES.md`.
+GPL-3.0-only. See `LICENSE` and `THIRD_PARTY_NOTICES.md`.

@@ -126,18 +126,12 @@ func TestParseRuntimePolicyAppliesDefaultsAndLowerLimits(t *testing.T) {
 	}
 }
 
-func TestCleanupResourcesIsIdempotentForMissingSession(t *testing.T) {
+func TestCleanupResourcesMissingSessionRemainsPending(t *testing.T) {
 	for _, backend := range []string{"native", "docker_sandbox"} {
-		engine := NewEngine(EngineConfig{StateRoot: t.TempDir()})
-		result, err := engine.cleanupResources(context.Background(), map[string]any{
-			"runtime_backend": backend,
-			"session_ids":     []any{"session_1"},
-		})
-		if err != nil {
-			t.Fatalf("%s cleanup failed: %v", backend, err)
-		}
-		if result["cleaned_count"] != 1 || result["runtime_backend"] != backend {
-			t.Fatalf("unexpected %s cleanup result: %#v", backend, result)
+		engine := NewEngine(EngineConfig{StateRoot: t.TempDir(), NodeID: "fixture-node"})
+		result, err := engine.cleanupResources(context.Background(), map[string]any{"runtime_backend": backend, "session_ids": []any{"session_1"}})
+		if !errors.Is(err, errSessionStopPending) || result != nil {
+			t.Fatalf("%s missing runtime was declared stopped: %v %v", backend, result, err)
 		}
 	}
 }
@@ -585,11 +579,8 @@ func TestDockerStopSessionIgnoresUntrustedResourceNamesWhenSpecIsMissing(t *test
 		"session_id": "session_1", "runtime_backend": "docker_sandbox",
 		"tmux_session_name": "task-controlled-tmux", "sandbox_name": "task-controlled-sandbox",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result["runtime_resource_id"] != "" || result["tmux_stopped"] != false || result["sandbox_removed"] != false {
-		t.Fatalf("unexpected idempotent Docker stop result: %#v", result)
+	if !errors.Is(err, errSessionStopPending) || result != nil {
+		t.Fatalf("missing Docker spec proved termination: %v %v", result, err)
 	}
 	if _, err := os.Stat(logPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing Docker spec allowed a task-controlled command: %v", err)

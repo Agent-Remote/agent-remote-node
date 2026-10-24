@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
-	"time"
 )
 
 const controlPlaneRoot = "/var/lib/agent-remote/users"
@@ -50,32 +50,49 @@ func DecodePreparePayload(payload map[string]any) (PreparePayload, error) {
 
 // Prepare creates the remote workspace directory and writes a small marker file.
 func Prepare(root string, payload PreparePayload) (PrepareResult, error) {
-	remotePath, err := resolveRemotePath(root, payload)
+	directory, err := OpenDirectory(root, payload)
 	if err != nil {
 		return PrepareResult{}, err
 	}
-	if err := os.MkdirAll(remotePath, 0o700); err != nil {
-		return PrepareResult{}, err
+	defer directory.Close()
+	return directory.WriteMarker(payload)
+}
+
+var managedID = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+
+func validatePayload(payload PreparePayload) error {
+	if !managedID.MatchString(payload.UserID) || !managedID.MatchString(payload.WorkspaceID) || !managedID.MatchString(payload.SyncSessionID) {
+		return errors.New("workspace identity is invalid")
 	}
-	markerPath := filepath.Join(remotePath, ".agent-remote-workspace.json")
-	marker := map[string]string{
-		"user_id":         payload.UserID,
-		"workspace_id":    payload.WorkspaceID,
-		"sync_session_id": payload.SyncSessionID,
-		"prepared_at":     time.Now().UTC().Format(time.RFC3339),
+	return nil
+}
+
+// Directory retains the exact managed ancestor and workspace directory handles.
+// Close releases all handles; callers must not close individual entries.
+type Directory struct {
+	Path    string
+	Parents []*os.File
+	File    *os.File
+}
+
+// Close releases the pinned workspace and ancestor handles.
+func (d *Directory) Close() {
+	if d.File != nil {
+		_ = d.File.Close()
 	}
-	data, err := json.MarshalIndent(marker, "", "  ")
-	if err != nil {
-		return PrepareResult{}, err
+	for _, parent := range d.Parents {
+		_ = parent.Close()
 	}
-	if err := os.WriteFile(markerPath, append(data, '\n'), 0o600); err != nil {
-		return PrepareResult{}, err
-	}
-	return PrepareResult{RemotePath: remotePath, MarkerPath: markerPath}, nil
 }
 
 func resolveRemotePath(root string, payload PreparePayload) (string, error) {
-	cleanRoot := filepath.Clean(root)
+	if err := validatePayload(payload); err != nil {
+		return "", err
+	}
+	cleanRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
 	remotePath := payload.RemotePath
 	if remotePath == "" {
 		remotePath = filepath.Join(cleanRoot, payload.UserID, "workspaces", payload.WorkspaceID, "files")
@@ -87,7 +104,7 @@ func resolveRemotePath(root string, payload PreparePayload) (string, error) {
 	if !filepath.IsAbs(cleanPath) {
 		cleanPath = filepath.Join(cleanRoot, cleanPath)
 	}
-	if !isPathInside(cleanRoot, cleanPath) {
+	if cleanPath != filepath.Join(cleanRoot, payload.UserID, "workspaces", payload.WorkspaceID, "files") {
 		return "", fmt.Errorf("remote_path %s is outside workspace_root %s", cleanPath, cleanRoot)
 	}
 	return cleanPath, nil

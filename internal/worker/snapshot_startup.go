@@ -14,8 +14,8 @@ var errManagedSessionPending = errors.New("SKILL_START_PENDING: managed session 
 
 type snapshotStartupHelper interface {
 	snapshotPreparationHelper
-	RecoverManagedSession(context.Context, string, runtimehelper.ManagedSessionSpecRequest) (map[string]any, error)
-	StartManagedSession(context.Context, string, runtimehelper.ManagedSessionSpecRequest) (map[string]any, error)
+	RecoverManagedSessionExecution(context.Context, string, runtimehelper.ManagedSessionSpecRequest) (runtimehelper.SessionCallResult, error)
+	StartManagedSessionExecution(context.Context, string, runtimehelper.ManagedSessionSpecRequest) (runtimehelper.SessionCallResult, error)
 	CancelManagedSession(context.Context, string, runtimehelper.ManagedSessionSpecRequest) error
 }
 
@@ -68,7 +68,8 @@ func startManagedSnapshotWithPublication(ctx context.Context, client snapshotPre
 			return err
 		}
 		touchedHelper = true
-		result, err = helper.RecoverManagedSession(workCtx, requestID, request)
+		recovery, err := helper.RecoverManagedSessionExecution(workCtx, requestID, request)
+		result = recovery.Result
 		if err != nil {
 			var stopped *runtimehelper.Error
 			if publish != nil && errors.As(err, &stopped) && stopped.Code == "SKILL_START_STOPPED" {
@@ -79,6 +80,9 @@ func startManagedSnapshotWithPublication(ctx context.Context, client snapshotPre
 		}
 		if err := workCtx.Err(); err != nil {
 			return err
+		}
+		if recovery.Execution.StopIntent || recovery.Execution.ReceiptReplay {
+			return errManagedSessionPending
 		}
 		if result["status"] == "running" {
 			uid, err := takeRuntimeUID(result)
@@ -106,9 +110,13 @@ func startManagedSnapshotWithPublication(ctx context.Context, client snapshotPre
 		if err := workCtx.Err(); err != nil {
 			return err
 		}
-		result, err = helper.StartManagedSession(workCtx, requestID, request)
+		execution, err := helper.StartManagedSessionExecution(workCtx, requestID, request)
+		result = execution.Result
 		if err != nil {
 			return err
+		}
+		if !execution.Execution.FreshAdmission || execution.Execution.ReceiptReplay || execution.Execution.StopIntent {
+			return errManagedSessionPending
 		}
 		uid, err := takeRuntimeUID(result)
 		if err != nil || uid != prepared.RuntimeUID {

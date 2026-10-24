@@ -119,6 +119,14 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request exceeds its operation limit."))
 		return
 	}
+	if request.Version != ProtocolVersion || (request.SessionLifecycleVersion != 0 && request.SessionLifecycleVersion != 1) || validateID(request.RequestID, "request_id") != nil {
+		_ = encoder.Encode(errorResponse("INVALID_REQUEST", "Runtime helper request version or identity is invalid."))
+		return
+	}
+	if err := s.engine.prepareSessionStopIntents(ctx, request); err != nil {
+		_ = encoder.Encode(errorResponse(classifyError(err), publicError(err)))
+		return
+	}
 	if request.Operation == accountTakeoverOperation {
 		s.handleAccountTakeover(ctx, connection, reader, request)
 		return
@@ -185,13 +193,13 @@ func (s *Server) handle(ctx context.Context, connection net.Conn) {
 		return
 	}
 	s.mu.Lock()
-	result, err := s.engine.Execute(ctx, request)
+	response, err := s.engine.executeSessionResponse(ctx, request)
 	s.mu.Unlock()
 	if err != nil {
 		_ = encoder.Encode(errorResponse(classifyError(err), publicError(err)))
 		return
 	}
-	_ = encoder.Encode(Response{Version: ProtocolVersion, OK: true, Result: result})
+	_ = encoder.Encode(response)
 }
 
 func rejectDuplicateJSONKeys(payload []byte) error {
@@ -302,6 +310,12 @@ func errorResponse(code string, message string) Response {
 }
 
 func classifyError(err error) string {
+	if errors.Is(err, errSessionStopPending) {
+		return "SESSION_STOP_PENDING"
+	}
+	if errors.Is(err, errSessionClosed) {
+		return "SESSION_ADMISSION_CLOSED"
+	}
 	if errors.Is(err, toolsessions.ErrManagedSkillsUnsupported) {
 		return "SKILL_MANAGER_UNSUPPORTED"
 	}

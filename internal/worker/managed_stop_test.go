@@ -211,7 +211,7 @@ func TestManagedStopQueueFreezesBeforeTransferAndReplaysOnlyProcessReceipt(t *te
 	defer listener.Close()
 	done := make(chan error, 1)
 	go func() {
-		for _, operation := range []string{"stop_session", "reconcile_skill_session"} {
+		for _, operation := range []string{"record_session_stop_intent", "record_session_stop_intent", "stop_session", "reconcile_skill_session"} {
 			connection, err := listener.Accept()
 			if err != nil {
 				done <- err
@@ -229,7 +229,14 @@ func TestManagedStopQueueFreezesBeforeTransferAndReplaysOnlyProcessReceipt(t *te
 					result, err = runtimehelper.Map(runtimehelper.SkillSessionObservation{SessionID: f.capture.Binding.SessionID, State: "finalized", Record: &f.capture})
 				}
 				if err == nil {
-					err = json.NewEncoder(connection).Encode(runtimehelper.Response{Version: runtimehelper.ProtocolVersion, OK: true, Result: result})
+					response := runtimehelper.Response{Version: runtimehelper.ProtocolVersion, OK: true, Result: result}
+					if request.SessionLifecycleVersion == 1 {
+						response.SessionExecution = fixtureSessionExecution(request)
+					}
+					if operation == "record_session_stop_intent" {
+						response.Result = map[string]any{"intent_recorded": true}
+					}
+					err = json.NewEncoder(connection).Encode(response)
 				}
 			}
 			_ = connection.Close()
@@ -249,12 +256,12 @@ func TestManagedStopQueueFreezesBeforeTransferAndReplaysOnlyProcessReceipt(t *te
 		t.Fatal(err)
 	}
 	_ = listener.Close()
-	if err := w.executeTask(context.Background(), task); err != nil {
-		t.Fatal("replay touched unavailable Helper", err)
+	if err := w.executeTask(context.Background(), task); !errors.Is(err, errFinalizationPending) {
+		t.Fatal("historical stop replay bypassed current Helper proof", err)
 	}
 	completionMu.Lock()
 	defer completionMu.Unlock()
-	if len(completions) != 2 || !reflect.DeepEqual(completions[0], managedStopResult(f.capture)) || !reflect.DeepEqual(completions[0], completions[1]) {
+	if len(completions) != 1 || !reflect.DeepEqual(completions[0], managedStopResult(f.capture)) {
 		t.Fatal("changed immutable stopped receipt", completions)
 	}
 	record, err := f.journal.load(f.capture)
@@ -345,7 +352,7 @@ func TestManagedStopQueueConfirmsPendingAfterStopCaptureError(t *testing.T) {
 	defer listener.Close()
 	done := make(chan error, 1)
 	go func() {
-		for _, operation := range []string{"stop_session", "reconcile_skill_session"} {
+		for _, operation := range []string{"record_session_stop_intent", "record_session_stop_intent", "stop_session", "reconcile_skill_session"} {
 			connection, err := listener.Accept()
 			if err != nil {
 				done <- err
@@ -364,6 +371,12 @@ func TestManagedStopQueueConfirmsPendingAfterStopCaptureError(t *testing.T) {
 				}
 				if err == nil {
 					response := runtimehelper.Response{Version: runtimehelper.ProtocolVersion, OK: true, Result: result}
+					if request.SessionLifecycleVersion == 1 {
+						response.SessionExecution = fixtureSessionExecution(request)
+					}
+					if operation == "record_session_stop_intent" {
+						response.Result = map[string]any{"intent_recorded": true}
+					}
 					if operation == "stop_session" {
 						response = runtimehelper.Response{Version: runtimehelper.ProtocolVersion, OK: false, Error: &runtimehelper.Error{Code: "FINALIZATION_PENDING", Message: "capture failed"}}
 					}
@@ -387,12 +400,12 @@ func TestManagedStopQueueConfirmsPendingAfterStopCaptureError(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = listener.Close()
-	if err := w.executeTask(context.Background(), task); err != nil {
-		t.Fatal("replay touched unavailable Helper", err)
+	if err := w.executeTask(context.Background(), task); !errors.Is(err, errFinalizationPending) {
+		t.Fatal("historical stop replay bypassed current Helper proof", err)
 	}
 	completionMu.Lock()
 	defer completionMu.Unlock()
-	if len(completions) != 2 || !reflect.DeepEqual(completions[0], managedPendingStopResult(failure)) || !reflect.DeepEqual(completions[0], completions[1]) {
+	if len(completions) != 1 || !reflect.DeepEqual(completions[0], managedPendingStopResult(failure)) {
 		t.Fatal("changed immutable stopped receipt", completions)
 	}
 	record, err := f.journal.load(f.capture)

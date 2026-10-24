@@ -99,3 +99,8 @@ func TestManagedStartupKeepsLeaseThroughDurableServerConfirmation(t *testing.T) 
 		})
 	}
 }
+
+func (f *snapshotConfirmationFixture) RecoverManagedSessionExecution(ctx context.Context, task string, input runtimehelper.ManagedSessionSpecRequest) (runtimehelper.SessionCallResult, error) {
+	result, err := f.RecoverManagedSession(ctx, task, input)
+	return runtimehelper.SessionCallResult{Result: result, Execution: runtimehelper.SessionExecution{Version: 1, SessionID: input.Snapshot.SessionID, Backend: "native"}}, err
+}

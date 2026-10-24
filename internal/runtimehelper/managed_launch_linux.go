@@ -21,6 +21,11 @@ func (e Engine) recoverManagedSession(ctx context.Context, request Request) (map
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	if err := e.requireSessionOpen(ctx, input.Snapshot.SessionID); err != nil {
+		if request.Operation != managedCancelOperation {
+			return nil, errors.Join(errManagedStartPending, err)
+		}
+	}
 	store, err := e.openExistingSkillStateRoot()
 	if err != nil {
 		return nil, err
@@ -29,6 +34,9 @@ func (e Engine) recoverManagedSession(ctx context.Context, request Request) (map
 	_, lookupErr := store.Lstat("session-launch-" + input.Snapshot.SessionID + ".json")
 	_ = store.Close()
 	if errors.Is(lookupErr, os.ErrNotExist) {
+		if request.Operation == managedCancelOperation {
+			return nil, errSessionStopPending
+		}
 		return map[string]any{
 			"status": "not_started", "session_id": input.Snapshot.SessionID, "skill_snapshot_id": input.Snapshot.SnapshotID,
 			"task_record_id": input.Snapshot.TaskID, "runtime_backend": "native",
@@ -98,7 +106,13 @@ func (e Engine) runManagedSession(ctx context.Context, request Request) (map[str
 	}
 	if readErr == nil && saved.State == "started" && request.Operation == managedLaunchOperation {
 		// This is the historical task outcome, even if stop already removed the transient spec.
+		if request.execution != nil {
+			request.execution.ReceiptReplay = true
+		}
 		return managedLaunchResult(spec), nil
+	}
+	if err := e.requireSessionOpen(ctx, input.Snapshot.SessionID); err != nil {
+		return nil, errors.Join(errManagedStartPending, err)
 	}
 	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
 		return nil, readErr
@@ -162,8 +176,11 @@ func (e Engine) launchManagedOnce(ctx context.Context, store *os.Root, spec Sess
 	if err != nil {
 		return nil, errManagedStartPending
 	}
-	if err := skillmanager.FinishSessionLaunch(store, launch, invocation); err != nil {
+	if err := e.withSessionAdmission(ctx, spec.SessionID, "session", func() error { return skillmanager.FinishSessionLaunch(store, launch, invocation) }); err != nil {
 		return nil, err
+	}
+	if requestExecution := e.execution; requestExecution != nil {
+		requestExecution.FreshAdmission = true
 	}
 	return managedLaunchResult(spec), nil
 }
@@ -208,6 +225,9 @@ func (e Engine) recoverManagedLaunch(ctx context.Context, store *os.Root, spec S
 		return nil, errManagedStartPending
 	}
 	if state.LoadState == "loaded" && state.ActiveState == "active" && state.SubState == "running" {
+		if err := e.requireSessionOpen(ctx, spec.SessionID); err != nil {
+			return nil, errors.Join(errManagedStartPending, err)
+		}
 		if err := e.requireManagedSpecReceipt(spec); err != nil {
 			return nil, errManagedStartPending
 		}
@@ -231,7 +251,10 @@ func (e Engine) recoverManagedLaunch(ctx context.Context, store *os.Root, spec S
 		if err != nil || before != after {
 			return nil, errManagedStartPending
 		}
-		if err := skillmanager.FinishSessionLaunch(store, launch, before); err != nil {
+		if err := e.requireSessionOpen(ctx, spec.SessionID); err != nil {
+			return nil, errors.Join(errManagedStartPending, err)
+		}
+		if err := e.withSessionAdmission(ctx, spec.SessionID, "session", func() error { return skillmanager.FinishSessionLaunch(store, launch, before) }); err != nil {
 			return nil, err
 		}
 		return managedLaunchResult(spec), nil

@@ -50,6 +50,10 @@ func (s *Server) handleManagedSpec(parent context.Context, connection net.Conn, 
 	}()
 	encoder := json.NewEncoder(connection)
 	fail := func(err error) {
+		if errors.Is(err, errSessionStopPending) {
+			_ = encoder.Encode(errorResponse("SESSION_STOP_PENDING", "Original session termination remains unproven."))
+			return
+		}
 		if request.Operation == managedLaunchOperation || request.Operation == managedRecoveryOperation || request.Operation == managedCancelOperation {
 			if errors.Is(err, errManagedStartStopped) {
 				_ = encoder.Encode(errorResponse("SKILL_START_STOPPED", "Managed session launch ended; retained skill state requires finalization."))
@@ -64,11 +68,11 @@ func (s *Server) handleManagedSpec(parent context.Context, connection net.Conn, 
 		fail(err)
 		return
 	}
-	result, err := s.engine.Execute(ctx, request)
+	response, err := s.engine.executeSessionResponse(ctx, request)
 	s.mu.Unlock()
 	if err != nil || ctx.Err() != nil {
 		fail(err)
 		return
 	}
-	_ = encoder.Encode(Response{Version: ProtocolVersion, OK: true, Result: result})
+	_ = encoder.Encode(response)
 }

@@ -3,6 +3,7 @@ package runtimehelper
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -68,6 +69,9 @@ func TestManagedLaunchLinuxReplaysOriginalReceiptAfterTransientCleanup(t *testin
 	if err := os.RemoveAll(spec.SessionRoot); err != nil {
 		t.Fatal(err)
 	}
+	if err := engine.publishSessionStop(context.Background(), sessionStopIntent{Version: 1, NodeID: engine.config.NodeID, SessionID: spec.SessionID, Scope: "tool_session", RequestID: "original-stop", Operation: "stop_session", Backend: "native"}); err != nil {
+		t.Fatal(err)
+	}
 	server := NewServer("", -1, os.Geteuid(), engine)
 	client := skillPreparationTestPeer(t, server.handle)
 	for range 2 {
@@ -79,32 +83,43 @@ func TestManagedLaunchLinuxReplaysOriginalReceiptAfterTransientCleanup(t *testin
 			t.Fatal("replay recreated transient files", err)
 		}
 	}
+	execution, err := client.StartManagedSessionExecution(context.Background(), "original_managed_task", input)
+	if err != nil || execution.Result["status"] != "running" || !execution.Execution.ReceiptReplay || !execution.Execution.StopIntent || execution.Execution.FreshAdmission {
+		t.Fatalf("historical managed result acquired admission: %+v %v", execution, err)
+	}
+	if _, err := client.RecoverManagedSessionExecution(context.Background(), "original_managed_task", input); err == nil {
+		t.Fatal("closed session restored readiness")
+	}
 	input.Session.Argv = []string{"changed"}
 	if _, err := client.StartManagedSession(context.Background(), "original_managed_task", input); err == nil {
 		t.Fatal("changed launch input replayed")
 	}
 }
 
-func TestManagedLaunchLinuxRecoveryBeforePreparationDoesNotCreateIntent(t *testing.T) {
-	engine, input, _ := managedSpecFixture(t)
-	server := NewServer("", -1, os.Geteuid(), engine)
-	client := skillPreparationTestPeer(t, server.handle)
+func TestManagedLaunchLinuxRecoveryBeforePreparationAndCancellationFence(t *testing.T) {
 	for _, prepare := range []bool{false, true} {
-		if prepare {
-			if _, err := engine.Execute(context.Background(), managedSpecRequest(t, input)); err != nil {
-				t.Fatal(err)
+		t.Run(fmt.Sprint(prepare), func(t *testing.T) {
+			engine, input, _ := managedSpecFixture(t)
+			if prepare {
+				if _, err := engine.Execute(context.Background(), managedSpecRequest(t, input)); err != nil {
+					t.Fatal(err)
+				}
 			}
-		}
-		result, err := client.RecoverManagedSession(context.Background(), "original_managed_task", input)
-		if err != nil || result["status"] != "not_started" {
-			t.Fatal("unstarted session could not be prepared", result, err)
-		}
-		if _, err := os.Lstat(filepath.Join(engine.config.SkillStateRoot, "session-launch-"+input.Snapshot.SessionID+".json")); !errors.Is(err, os.ErrNotExist) {
-			t.Fatal("recovery created launch intent", err)
-		}
-		if err := client.CancelManagedSession(context.Background(), "original_managed_task", input); err != nil {
-			t.Fatal("cancellation of unstarted session mutated state", err)
-		}
+			client := skillPreparationTestPeer(t, NewServer("", -1, os.Geteuid(), engine).handle)
+			result, err := client.RecoverManagedSession(context.Background(), "original_managed_task", input)
+			if err != nil || result["status"] != "not_started" {
+				t.Fatal("unstarted session could not be prepared", result, err)
+			}
+			if err := client.CancelManagedSession(context.Background(), "original_managed_task", input); err == nil {
+				t.Fatal("missing launch proved stopped")
+			}
+			if err := engine.requireSessionOpen(context.Background(), input.Snapshot.SessionID); !errors.Is(err, errSessionClosed) {
+				t.Fatal("cancel did not persist intent", err)
+			}
+			if _, err := client.RecoverManagedSession(context.Background(), "original_managed_task", input); err == nil {
+				t.Fatal("cancelled recovery authorized preparation")
+			}
+		})
 	}
 }
 
@@ -228,5 +243,44 @@ func TestManagedLaunchLinuxRecoveryDoesNotTreatHistoricalReadinessAsLiveness(t *
 	}
 	if _, err := os.Lstat(spec.SessionRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("recovery recreated transient files", err)
+	}
+}
+
+func TestManagedCancelRetainedIdentityWithoutSpecIntent(t *testing.T) {
+	engine, input, spec, _ := preparedManagedLaunch(t)
+	if err := os.Remove(filepath.Join(engine.config.SkillStateRoot, "spec-intent-"+spec.SessionID+".json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(spec.SessionRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"snapshot", "user", "account", "task", "digest"} {
+		changed := input
+		replacement := "88888888-8888-4888-8888-888888888888"
+		switch field {
+		case "snapshot":
+			changed.Snapshot.SnapshotID = replacement
+		case "user":
+			changed.Snapshot.UserID = replacement
+			changed.Session.UserID = replacement
+		case "account":
+			changed.Snapshot.AccountID = replacement
+			changed.Session.ToolAccountID = replacement
+		case "task":
+			changed.Snapshot.TaskID = replacement
+		case "digest":
+			changed.SnapshotInputDigest = strings.Repeat("b", 64)
+		}
+		payload, err := Map(changed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := Request{Version: 1, RequestID: "original_managed_task", Operation: managedCancelOperation, Payload: payload}
+		if err := engine.prepareSessionStopIntents(context.Background(), request); err == nil {
+			t.Fatal("changed retained identity closed session", field)
+		}
+		if err := engine.requireSessionOpen(context.Background(), spec.SessionID); err != nil {
+			t.Fatal("rejected cancellation wrote marker", field, err)
+		}
 	}
 }

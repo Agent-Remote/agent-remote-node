@@ -111,14 +111,23 @@ func TestVerifyRejectsWrapperAndSkillFromDifferentReleases(t *testing.T) {
 
 func TestPinnedSourceTreeDigest(t *testing.T) {
 	source := filepath.Join("..", "managedskills", "skills", "ego-browser")
-	digest, err := digestTree(source, false)
+	// A source checkout may be group-writable when the repository is mounted
+	// from a shared workspace or created with a permissive umask. That is not
+	// the managed release layout verified by digestTree, so normalize the
+	// fixture into a private temporary tree before hashing its content.
+	normalized := filepath.Join(t.TempDir(), "ego-browser")
+	if err := os.MkdirAll(normalized, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyTree(t, source, normalized)
+	digest, err := digestTree(normalized, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if digest != OfficialSkillTreeSHA256 {
 		t.Fatalf("official Skill digest = %s, want %s", digest, OfficialSkillTreeSHA256)
 	}
-	document, err := digestFile(filepath.Join(source, "SKILL.md"))
+	document, err := digestFile(filepath.Join(normalized, "SKILL.md"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -206,7 +206,8 @@ func (c EngineConfig) WithDefaults() EngineConfig {
 
 // Engine owns privileged native-runtime lifecycle operations.
 type Engine struct {
-	config EngineConfig
+	execution *SessionExecution
+	config    EngineConfig
 }
 
 // NewEngine creates a privileged runtime engine.
@@ -258,6 +259,7 @@ func (e Engine) DialSessionLoopback(ctx context.Context, request Request) (net.C
 
 // Execute performs one idempotent declarative operation.
 func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, error) {
+	e.execution = request.execution
 	if request.Version != ProtocolVersion {
 		return nil, fmt.Errorf("unsupported protocol version %d", request.Version)
 	}
@@ -269,6 +271,11 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 			return nil, err
 		}
 	}
+	unlock, err := e.beginSessionExecution(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	if request.Operation == "recover_account_migration" {
 		return e.recoverAccountMigration(ctx, request)
 	}
@@ -290,17 +297,27 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 	if request.Operation == managedSpecOperation {
 		return e.prepareManagedSessionSpec(ctx, request)
 	}
-	cacheable := request.Operation != "probe" && request.Operation != "inspect_session" && request.Operation != "list_sessions" && request.Operation != "wireguard_sync"
+	cacheable := request.Operation != recordSessionStopOperation && request.Operation != "probe" && request.Operation != "inspect_session" && request.Operation != "list_sessions" && request.Operation != "wireguard_sync"
 	if cacheable {
 		if cached, ok, err := e.cachedResult(request.RequestID); err != nil {
 			return nil, err
 		} else if ok {
+			if request.execution != nil {
+				request.execution.ReceiptReplay = true
+			}
+			if sessionStopOperation(request.Operation) {
+				if err := e.reobserveCachedStop(ctx, request); err != nil {
+					return nil, err
+				}
+			}
 			return cached, nil
 		}
 	}
 	var result map[string]any
-	var err error
+	err = nil
 	switch request.Operation {
+	case recordSessionStopOperation:
+		return map[string]any{"intent_recorded": true}, nil
 	case "probe":
 		result, err = e.probe(ctx)
 	case "prepare_account":
@@ -326,7 +343,7 @@ func (e Engine) Execute(ctx context.Context, request Request) (map[string]any, e
 	case "docker_stop_browser":
 		result, err = e.dockerStopBrowser(request.Payload)
 	case "prepare_workspace":
-		result, err = e.prepareWorkspace(request.Payload)
+		result, err = e.prepareWorkspace(ctx, request.Payload)
 	case "wireguard_sync":
 		result, err = e.wireGuardSync(ctx, request.Payload)
 	case "update_device_control_context":
@@ -698,16 +715,24 @@ func (e Engine) wireGuardSync(ctx context.Context, payload map[string]any) (map[
 	return map[string]any{"status": "synchronized", "peer_count": len(decoded.Peers)}, nil
 }
 
-func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error) {
+func (e Engine) prepareWorkspace(ctx context.Context, payload map[string]any) (map[string]any, error) {
+	if err := requireSyncPreparationPlatform(); err != nil {
+		return nil, err
+	}
 	decoded, err := workspace.DecodePreparePayload(payload)
 	if err != nil {
 		return nil, err
 	}
-	result, err := workspace.Prepare(e.config.WorkspaceRoot, decoded)
+	directory, err := workspace.OpenDirectory(e.config.WorkspaceRoot, decoded)
 	if err != nil {
 		return nil, err
 	}
-	if err := e.prepareSyncedWorkspace(decoded.UserID, result.RemotePath); err != nil {
+	defer directory.Close()
+	result, err := directory.WriteMarker(decoded)
+	if err != nil {
+		return nil, err
+	}
+	if err := e.prepareSyncDirectory(ctx, directory, decoded.UserID); err != nil {
 		return nil, err
 	}
 	return map[string]any{
@@ -716,6 +741,9 @@ func (e Engine) prepareWorkspace(payload map[string]any) (map[string]any, error)
 }
 
 func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, error) {
+	if err := e.requireBindingSessionSlot(optionalText(payload, "binding_id", ""), "docker_sandbox"); err != nil {
+		return nil, err
+	}
 	egoContext, err := parseEgoBrowserRuntimeContext(payload, e.config.WithDefaults())
 	if err != nil {
 		return nil, err
@@ -791,6 +819,12 @@ func (e Engine) dockerPrepareAccount(payload map[string]any) (map[string]any, er
 }
 
 func (e Engine) dockerStartSession(payload map[string]any) (map[string]any, error) {
+	if err := e.requireSessionOpen(context.Background(), optionalText(payload, "session_id", "")); err != nil {
+		return nil, err
+	}
+	if err := e.requireToolSessionSlot(optionalText(payload, "session_id", ""), "docker_sandbox"); err != nil {
+		return nil, err
+	}
 	egoContext, err := parseEgoBrowserRuntimeContext(payload, e.config.WithDefaults())
 	if err != nil {
 		return nil, err
@@ -873,12 +907,7 @@ func (e Engine) dockerStopSession(payload map[string]any) (map[string]any, error
 		decoded.TmuxSessionName = spec.TmuxSessionName
 		decoded.SandboxName = spec.SandboxName
 	} else if errors.Is(loadErr, os.ErrNotExist) {
-		return map[string]any{
-			"status": "stopped", "session_id": decoded.SessionID,
-			"tmux_session_name": "", "sandbox_name": "", "container_id": "",
-			"tmux_stopped": false, "sandbox_removed": false,
-			"runtime_backend": "docker_sandbox", "runtime_resource_id": "",
-		}, nil
+		return nil, errSessionStopPending
 	} else {
 		return nil, loadErr
 	}
@@ -1096,6 +1125,10 @@ func (e Engine) cleanupResources(ctx context.Context, payload map[string]any) (m
 		if !ok || validateID(sessionID, "session_id") != nil {
 			return nil, errors.New("session_ids contains an invalid session ID")
 		}
+		unlock, lockErr := e.lockSessionLifecycle(ctx, sessionID, "runtime")
+		if lockErr != nil {
+			return nil, errors.Join(errSessionStopPending, lockErr)
+		}
 		var cleanupErr error
 		if backend == "native" {
 			var result map[string]any
@@ -1108,8 +1141,9 @@ func (e Engine) cleanupResources(ctx context.Context, payload map[string]any) (m
 				"session_id": sessionID, "runtime_backend": backend,
 			})
 		}
+		unlock()
 		if cleanupErr != nil {
-			return nil, fmt.Errorf("clean session %s: %w", sessionID, cleanupErr)
+			return nil, errors.Join(errSessionStopPending, fmt.Errorf("clean session %s: %w", sessionID, cleanupErr))
 		}
 		cleaned = append(cleaned, sessionID)
 	}
@@ -1128,6 +1162,9 @@ func diskAvailableAt(path string, minimumBytes uint64) bool {
 }
 
 func (e Engine) prepareAccount(ctx context.Context, payload map[string]any) (map[string]any, error) {
+	if err := e.requireBindingSessionSlot(optionalText(payload, "binding_id", ""), "native"); err != nil {
+		return nil, err
+	}
 	bindingID, err := requiredText(payload, "binding_id")
 	if err != nil {
 		return nil, err
@@ -1186,6 +1223,12 @@ func (e Engine) prepareAccount(ctx context.Context, payload map[string]any) (map
 }
 
 func (e Engine) startSession(ctx context.Context, payload map[string]any) (map[string]any, error) {
+	if err := e.requireSessionOpen(ctx, optionalText(payload, "session_id", "")); err != nil {
+		return nil, err
+	}
+	if err := e.requireToolSessionSlot(optionalText(payload, "session_id", ""), "native"); err != nil {
+		return nil, err
+	}
 	if err := toolsessions.RequireLegacySkillStartup(payload); err != nil {
 		return nil, err
 	}
@@ -1269,9 +1312,12 @@ func (e Engine) stopSession(ctx context.Context, payload map[string]any) (map[st
 			if result, err := e.stopRetainedNativeSkillSession(ctx, sessionID); err != nil || result != nil {
 				return result, err
 			}
-			return map[string]any{"status": "stopped", "session_id": sessionID, "runtime_backend": "native", "runtime_resource_id": ""}, nil
+			return nil, errSessionStopPending
 		}
 		return nil, err
+	}
+	if spec.Kind != "session" {
+		return nil, errors.New("runtime is not a tool session")
 	}
 	termination, err := e.stopNativeWriters(ctx, spec)
 	if err != nil {
@@ -1732,8 +1778,13 @@ func (e Engine) launch(ctx context.Context, spec SessionSpec) error {
 		}
 	}
 	args = append(args, e.config.RuntimeBinaryPath, "supervise", "--state-root", e.config.StateRoot, "--spec", e.specPath(spec.SessionID))
-	if output, err := exec.CommandContext(ctx, e.config.SystemdRunPath, args...).CombinedOutput(); err != nil {
-		return errors.Join(fmt.Errorf("systemd-run failed: %w: %s", err, strings.TrimSpace(string(output))), e.cleanupFailedNativeLaunch(spec))
+	if err := e.submitSessionLaunch(ctx, spec.SessionID, spec.Kind, func() error {
+		if output, err := exec.CommandContext(ctx, e.config.SystemdRunPath, args...).CombinedOutput(); err != nil {
+			return fmt.Errorf("systemd-run failed: %w: %s", err, strings.TrimSpace(string(output)))
+		}
+		return nil
+	}); err != nil {
+		return errors.Join(err, e.cleanupFailedNativeLaunch(spec))
 	}
 	if err := e.waitForSessionReady(ctx, spec); err != nil {
 		return errors.Join(err, e.cleanupFailedNativeLaunch(spec))

@@ -94,6 +94,9 @@ func (w Worker) Heartbeat(ctx context.Context) error {
 		w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
 		w.egoBrowserProbeConfig(),
 	)
+	runtimeStatus.RuntimeCapabilities.BindingAttach = noderuntime.ProbeBindingAttach(ctx, w.cfg.AttachBinaryPath)
+	runtimeStatus.RuntimeCapabilities.SessionAttach = noderuntime.ProbeSessionAttach(ctx, w.cfg.AttachBinaryPath)
+	runtimeStatus.RuntimeCapabilities.SessionAttachmentTransfer = noderuntime.ProbeSessionAttachmentTransfer(ctx, w.cfg.AttachBinaryPath)
 	response, err := w.client.SendHeartbeatResponse(ctx, api.HeartbeatRequest{
 		NodeID:             w.cfg.NodeID,
 		Version:            w.cfg.Version,
@@ -180,6 +183,9 @@ func (w Worker) Reconcile(ctx context.Context) error {
 		w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
 		w.egoBrowserProbeConfig(),
 	)
+	runtimeStatus.RuntimeCapabilities.BindingAttach = noderuntime.ProbeBindingAttach(ctx, w.cfg.AttachBinaryPath)
+	runtimeStatus.RuntimeCapabilities.SessionAttach = noderuntime.ProbeSessionAttach(ctx, w.cfg.AttachBinaryPath)
+	runtimeStatus.RuntimeCapabilities.SessionAttachmentTransfer = noderuntime.ProbeSessionAttachmentTransfer(ctx, w.cfg.AttachBinaryPath)
 	sessions := []any{}
 	if slices.Contains(w.cfg.AllowedRuntimeBackends, "native") || slices.Contains(w.cfg.AllowedRuntimeBackends, "docker_sandbox") {
 		result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(
@@ -372,6 +378,21 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	if toolsessions.RequireLegacySkillStartup(task.Payload) != nil || ok && (entry.Status == managedStartPending || entry.Status == managedStartConfirmed || entry.Status == managedStartRetired) {
 		return w.executeManagedStartup(ctx, task)
 	}
+	if task.TaskType == "cleanup_resources" {
+		if err := w.validateCleanupTask(task); err != nil {
+			return err
+		}
+	}
+	if task.TaskType == "stop_tool_session" {
+		if err := w.recordSessionIntent(ctx, task); err != nil {
+			return err
+		}
+	}
+	if ok && (entry.Status == "succeeded" || entry.Status == "failed") {
+		if err := w.observeOldStopTask(ctx, task); err != nil {
+			return err
+		}
+	}
 	if ok {
 		switch entry.Status {
 		case "succeeded":
@@ -393,6 +414,9 @@ func (w Worker) executeTask(ctx context.Context, task api.TaskEnvelope) error {
 	}
 	result, err := w.executeKnownTask(ctx, task)
 	if err != nil {
+		if sessionStopPending(err) || task.TaskType == "stop_tool_session" || task.TaskType == "cleanup_resources" {
+			return errSessionStopPending
+		}
 		taskError := contentSafeTaskError(task, err)
 		if saveErr := w.ledger.Save(ledger.Entry{TaskID: task.TaskID, Status: "failed", Error: taskError}); saveErr != nil {
 			return saveErr
@@ -439,6 +463,9 @@ func (w Worker) executeKnownTask(ctx context.Context, task api.TaskEnvelope) (ma
 			w.cfg.AllowedRuntimeBackends, w.cfg.RuntimeSocketPath, w.cfg.DeviceProxyPath,
 			w.egoBrowserProbeConfig(),
 		)
+		runtimeStatus.RuntimeCapabilities.BindingAttach = noderuntime.ProbeBindingAttach(ctx, w.cfg.AttachBinaryPath)
+		runtimeStatus.RuntimeCapabilities.SessionAttach = noderuntime.ProbeSessionAttach(ctx, w.cfg.AttachBinaryPath)
+		runtimeStatus.RuntimeCapabilities.SessionAttachmentTransfer = noderuntime.ProbeSessionAttachmentTransfer(ctx, w.cfg.AttachBinaryPath)
 		result := map[string]any{
 			"status":    "reconciled",
 			"resources": resources,
@@ -715,6 +742,12 @@ func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, op
 	if err != nil {
 		return nil, err
 	}
+	if lifecycleSessionOperation(operation) && !managedStopTask(task) && w.managedAdmissions != nil {
+		if err := w.managedAdmissions.lock(ctx); err != nil {
+			return nil, err
+		}
+		defer w.managedAdmissions.unlock()
+	}
 	var registration *egoBrowserSessionRegistration
 	if isEgoBrowserContextOperation(operation) {
 		registration, err = w.applyEgoBrowserRuntimeContext(mapped, operation)
@@ -733,7 +766,23 @@ func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, op
 	mapped["workspace_root"] = w.cfg.WorkspaceRoot
 	mapped["account_root"] = w.cfg.AccountRoot
 	mapped["claude_runtime_path"] = w.cfg.ClaudeRuntimePath
-	result, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).Call(ctx, task.TaskID, operation, mapped)
+	var result map[string]any
+	var execution runtimehelper.SessionExecution
+	helper := runtimehelper.NewClient(w.cfg.RuntimeSocketPath)
+	if lifecycleSessionOperation(operation) {
+		var response runtimehelper.SessionCallResult
+		response, err = helper.CallSession(ctx, task.TaskID, operation, mapped)
+		result, execution = response.Result, response.Execution
+	} else {
+		result, err = helper.Call(ctx, task.TaskID, operation, mapped)
+	}
+	if err == nil && (operation == "start_session" || operation == "docker_start_session") && !execution.FreshAdmission {
+		delete(result, "runtime_uid")
+		if registration != nil && registration.created {
+			w.browserBroker.UnregisterToolSession(registration.toolSessionID, registration.nonce)
+		}
+		return result, nil
+	}
 	if err != nil && registration != nil && registration.created {
 		w.browserBroker.UnregisterToolSession(registration.toolSessionID, registration.nonce)
 	}
@@ -751,6 +800,7 @@ func (w Worker) callRuntimeHelper(ctx context.Context, task api.TaskEnvelope, op
 			return nil, egoBrowserBrokerError("authorize ego-browser tool session", uidErr)
 		}
 	}
+	delete(result, "runtime_uid")
 	return result, err
 }
 

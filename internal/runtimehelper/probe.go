@@ -87,8 +87,15 @@ func (e Engine) probe(parent context.Context) (map[string]any, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	lifecycle := map[string]any{}
+	if e.probeSessionLifecycle(ctx) {
+		for _, backend := range backends {
+			lifecycle[backend] = map[string]any{"supported": true, "protocol_version": 1}
+		}
+	}
 	return map[string]any{
-		"available": nativeOK || dockerOK, "backends": backends,
+		"session_lifecycle": lifecycle,
+		"available":         nativeOK || dockerOK, "backends": backends,
 		"native": nativeChecks, "docker_sandbox": dockerChecks,
 		"browser_docker": map[string]bool{"docker": dockerChecks["docker"], "daemon": dockerChecks["daemon"]},
 		"dependencies":   details,

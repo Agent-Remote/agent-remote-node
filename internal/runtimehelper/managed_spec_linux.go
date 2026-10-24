@@ -20,6 +20,12 @@ func (e Engine) prepareManagedSessionSpec(ctx context.Context, request Request) 
 	if err := input.validate(e.config.NodeID); err != nil {
 		return nil, err
 	}
+	if err := e.requireSessionOpen(ctx, input.Snapshot.SessionID); err != nil {
+		return nil, err
+	}
+	if err := e.requireToolSessionSlot(input.Snapshot.SessionID, "native"); err != nil {
+		return nil, err
+	}
 	payload, err := Map(input.Session)
 	if err != nil {
 		return nil, err

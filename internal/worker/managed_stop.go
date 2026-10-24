@@ -72,12 +72,27 @@ func (w Worker) executeManagedStop(ctx context.Context, task api.TaskEnvelope) e
 	if err != nil {
 		return errFinalizationPending
 	}
+	if err := w.recordSessionIntent(ctx, task); err != nil {
+		return errFinalizationPending
+	}
 	previous, exists, err := w.ledger.Get(task.TaskID)
 	if err != nil {
 		return errFinalizationPending
 	}
 	if exists {
 		if previous.Status != "succeeded" || previous.Result["skill_finalization_operation_id"] != binding.SnapshotID {
+			return errFinalizationPending
+		}
+		_ = w.stopManagedWriters(ctx, task, payload)
+		observation, err := runtimehelper.NewClient(w.cfg.RuntimeSocketPath).ReconcileSkillSession(ctx, "stop-finalization-observe", w.cfg.NodeID, payload.SessionID)
+		if err != nil {
+			return errFinalizationPending
+		}
+		if observation.Pending != nil {
+			if _, err := stoppedCapturePending(binding, observation); err != nil {
+				return errFinalizationPending
+			}
+		} else if _, err := stoppedCapture(binding, observation); err != nil {
 			return errFinalizationPending
 		}
 		return w.client.CompleteTask(ctx, task.TaskID, previous.Result)
@@ -126,6 +141,9 @@ func (w Worker) executeManagedStop(ctx context.Context, task api.TaskEnvelope) e
 }
 
 func (w Worker) stopManagedWriters(ctx context.Context, task api.TaskEnvelope, payload toolsessions.StopPayload) error {
+	if err := w.recordSessionIntent(ctx, task); err != nil {
+		return err
+	}
 	if err := w.managedAdmissions.lock(ctx); err != nil {
 		return err
 	}

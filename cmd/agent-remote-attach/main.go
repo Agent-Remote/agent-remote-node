@@ -34,10 +34,16 @@ func main() {
 }
 
 func run(args []string) error {
+	// Probe only the installed gateway; this path must not load credentials or dispatch a runtime.
+	if len(args) == 1 && (args[0] == "--protocol-info" || args[0] == "--session-protocol-info" || args[0] == "--session-attachments-protocol-info") {
+		_, err := fmt.Fprintln(os.Stdout, `{"supported":true,"protocol_version":1}`)
+		return err
+	}
 	fs := flag.NewFlagSet("agent-remote-attach", flag.ContinueOnError)
 	configPath := fs.String("config", defaultConfigPath(), "config path")
 	sessionID := fs.String("session", "", "session ID")
 	bindingID := fs.String("binding", "", "tool account ID for a binding session")
+	expectedBinding := fs.String("binding-session", "", "exact binding attempt ID")
 	deviceID := fs.String("device", "", "device ID")
 	sshKeyID := fs.String("ssh-key", "", "SSH key ID from the forced-command identity")
 	dryRun := fs.Bool("dry-run", false, "print tmux command without executing")
@@ -57,7 +63,22 @@ func run(args []string) error {
 	if *sessionID != "" && *bindingID != "" {
 		return fmt.Errorf("session and binding are mutually exclusive")
 	}
+	if *expectedBinding != "" && *bindingID == "" {
+		return fmt.Errorf("binding-session requires a binding account")
+	}
+	if *expectedBinding != "" {
+		if err := validateCommandID(*expectedBinding, "binding session ID"); err != nil {
+			return err
+		}
+	}
 	originalCommand := os.Getenv("SSH_ORIGINAL_COMMAND")
+	if attachmentSession, attachmentDevice, attachmentOK, attachmentErr := attachmentTargetFromOriginalCommand(originalCommand); attachmentErr != nil {
+		return attachmentErr
+	} else if attachmentOK {
+		return runExactAttachmentGateway(cfg, attachmentSession, attachmentDevice, *deviceID, *sshKeyID)
+	} else if strings.HasPrefix(strings.TrimSpace(originalCommand), "agent-remote-attach --session ") && strings.Contains(originalCommand, "--attachment-transfer") {
+		return errors.New("invalid exact attachment command")
+	}
 	if *sessionID == "" && *bindingID == "" {
 		if strings.HasPrefix(strings.TrimSpace(originalCommand), "agent-remote-skill-export") {
 			snapshotID, err := frozenExportFromCommand(originalCommand)
@@ -76,30 +97,56 @@ func run(args []string) error {
 		}
 	}
 	targetKind := "session"
+	expectedDevice := ""
 	targetID := *sessionID
 	if *bindingID != "" {
 		targetKind, targetID = "binding", *bindingID
 	}
 	if targetID == "" {
-		if kind, id, parseErr := attachTargetFromOriginalCommand(originalCommand); parseErr == nil {
-			targetKind, targetID = kind, id
+		if target, parseErr := attachRequestFromOriginalCommand(originalCommand); parseErr == nil {
+			targetKind, targetID, *expectedBinding = target.kind, target.id, target.bindingSession
+			expectedDevice = target.expectedDevice
 		} else {
-			return runSyncGateway(cfg, *deviceID, originalCommand, *dryRun)
+			if strings.HasPrefix(strings.TrimSpace(originalCommand), "agent-remote-attach") {
+				return parseErr
+			}
+			return runSyncGateway(cfg, *deviceID, *sshKeyID, originalCommand, *dryRun)
 		}
 	}
 	client := api.NewClient(cfg.ServerURL, cfg.NodeToken)
 	var runtimeBackend, runtimeSessionID, tmuxSessionName string
 	var forwardSSHAgent bool
 	if targetKind == "binding" {
+		if *expectedBinding != "" && *sshKeyID == "" {
+			return fmt.Errorf("SSH key is required for exact binding attachment")
+		}
 		response, err := client.VerifyBindingAttach(context.Background(), api.VerifyBindingAttachRequest{
 			NodeID: cfg.NodeID, ToolAccountID: targetID, DeviceID: *deviceID,
+			ExpectedBindingSessionID: *expectedBinding,
+			SSHKeyID:                 *sshKeyID,
 		})
 		if err != nil {
 			return err
 		}
+		// Older servers may ignore the additive expected-attempt field.
+		if *expectedBinding != "" && response.Data.BindingSessionID != *expectedBinding {
+			return fmt.Errorf("binding session changed; reconnect after reviewing the current binding")
+		}
+		if *expectedBinding != "" && response.Data.SSHKeyID != *sshKeyID {
+			return fmt.Errorf("server did not verify the exact SSH key for binding attachment")
+		}
 		runtimeBackend = response.Data.RuntimeBackend
 		runtimeSessionID = response.Data.BindingSessionID
 		tmuxSessionName = response.Data.TmuxSessionName
+	} else if expectedDevice != "" {
+		response, err := verifyExactSession(cfg, client, targetID, expectedDevice, *deviceID, *sshKeyID)
+		if err != nil {
+			return err
+		}
+		runtimeBackend = response.Data.RuntimeBackend
+		runtimeSessionID = response.Data.SessionID
+		tmuxSessionName = response.Data.TmuxSessionName
+		forwardSSHAgent = response.Data.ForwardSSHAgent
 	} else {
 		response, err := client.VerifyAttach(context.Background(), api.VerifyAttachRequest{
 			NodeID: cfg.NodeID, SessionID: targetID, DeviceID: *deviceID,
@@ -179,16 +226,22 @@ func defaultConfigPath() string {
 	return "config.json"
 }
 
-func runSyncGateway(cfg config.Config, deviceID string, originalCommand string, dryRun bool) error {
+func runSyncGateway(cfg config.Config, deviceID string, sshKeyID string, originalCommand string, dryRun bool) error {
+	if err := validateCommandID(sshKeyID, "SSH key ID"); err != nil {
+		return err
+	}
 	if originalCommand == "" || len(originalCommand) > 4096 || strings.ContainsAny(originalCommand, "\x00\r\n") {
 		return fmt.Errorf("SSH sync command is invalid")
 	}
 	client := api.NewClient(cfg.ServerURL, cfg.NodeToken)
 	response, err := client.VerifySync(context.Background(), api.VerifySyncRequest{
-		NodeID: cfg.NodeID, DeviceID: deviceID,
+		NodeID: cfg.NodeID, DeviceID: deviceID, SSHKeyID: sshKeyID,
 	})
 	if err != nil {
 		return err
+	}
+	if response.Data.SSHKeyID != sshKeyID {
+		return fmt.Errorf("server did not verify the exact SSH key for synchronization")
 	}
 	encoded := base64.RawURLEncoding.EncodeToString([]byte(originalCommand))
 	args := []string{
@@ -217,20 +270,46 @@ func sessionFromOriginalCommand(command string) (string, error) {
 }
 
 func attachTargetFromOriginalCommand(command string) (string, string, error) {
+	target, err := attachRequestFromOriginalCommand(command)
+	return target.kind, target.id, err
+}
+
+type attachTarget struct {
+	kind           string
+	id             string
+	bindingSession string
+	expectedDevice string
+}
+
+func attachRequestFromOriginalCommand(command string) (attachTarget, error) {
+	if len(command) > 512 || strings.ContainsAny(command, "\x00\r\n") {
+		return attachTarget{}, fmt.Errorf("SSH attach command is invalid")
+	}
 	fields := strings.Fields(command)
-	if len(fields) != 3 || fields[0] != "agent-remote-attach" || (fields[1] != "--session" && fields[1] != "--binding") {
-		return "", "", fmt.Errorf("SSH command is not an allowed agent-remote attach request")
+	if (len(fields) != 3 && len(fields) != 5) || fields[0] != "agent-remote-attach" || (fields[1] != "--session" && fields[1] != "--binding") {
+		return attachTarget{}, fmt.Errorf("SSH command is not an allowed agent-remote attach request")
 	}
-	for _, character := range fields[2] {
-		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '-' || character == '_' || character == ':' {
-			continue
+	if err := validateCommandID(fields[2], "attach target"); err != nil {
+		return attachTarget{}, err
+	}
+	target := attachTarget{kind: strings.TrimPrefix(fields[1], "--"), id: fields[2]}
+	if len(fields) == 5 {
+		if target.kind == "session" && fields[3] == "--expected-device" {
+			if err := validateCommandID(fields[4], "expected device ID"); err != nil {
+				return attachTarget{}, err
+			}
+			target.expectedDevice = fields[4]
+			return target, nil
 		}
-		return "", "", fmt.Errorf("attach target contains unsafe characters")
+		if target.kind != "binding" || fields[3] != "--binding-session" {
+			return attachTarget{}, fmt.Errorf("SSH binding command is invalid")
+		}
+		if err := validateCommandID(fields[4], "binding session ID"); err != nil {
+			return attachTarget{}, err
+		}
+		target.bindingSession = fields[4]
 	}
-	if fields[2] == "" || len(fields[2]) > 128 {
-		return "", "", fmt.Errorf("attach target is invalid")
-	}
-	return strings.TrimPrefix(fields[1], "--"), fields[2], nil
+	return target, nil
 }
 
 func tunnelFromOriginalCommand(command string) (string, error) {

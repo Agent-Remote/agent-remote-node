@@ -62,6 +62,7 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 		Dependencies:       map[string]string{},
 		ProbeErrors:        []string{},
 		SkillManager:       map[string]api.SkillManagerCapability{},
+		SessionLifecycle:   map[string]api.SessionLifecycleCapability{},
 		SkillManagerChecks: map[string]bool{},
 		EgoBrowserBridge:   api.EgoBrowserBridgeCapability{ProtocolVersions: []string{}, Backends: []string{}, RemotePlatform: "linux", LocalPlatform: "macos"},
 	}
@@ -89,6 +90,7 @@ func probeCapabilities(allowedBackends []string, runtimeSocketPath string, devic
 		}
 	}
 	portForwardBackends := supportedFeatureBackends(capabilities, true)
+	capabilities.SessionLifecycle = sessionLifecycleCapabilities(supportedFeatureBackends(capabilities, false), result["session_lifecycle"])
 	capabilities.SkillManager = managedSkillCapabilities(capabilities.Backends, result["skill_manager"])
 	capabilities.SkillManagerChecks = boolMap(result["skill_manager_checks"])
 	if len(portForwardBackends) > 0 {

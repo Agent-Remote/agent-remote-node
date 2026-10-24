@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"slices"
 
 	"github.com/Agent-Remote/agent-remote-node/internal/api"
@@ -14,8 +15,8 @@ func managedSkillCapabilities(backends []string, value any) map[string]api.Skill
 	reports, _ := value.(map[string]any)
 	report, _ := reports["native"].(map[string]any)
 	for _, field := range []string{"protocol_version", "manifest_version", "deployment_protocol_version"} {
-		version, ok := report[field].(float64)
-		if !ok || version != 1 {
+		version, ok := report[field].(json.Number)
+		if !ok || version != "1" {
 			return result
 		}
 	}

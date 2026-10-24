@@ -15,6 +15,14 @@ func (e Engine) prepareTransferredSkillSnapshot(ctx context.Context, snapshot sk
 	if snapshot.NodeID != e.config.NodeID || snapshot.RuntimeBackend != "native" {
 		return errors.New("skill preparation requires the original Native node")
 	}
+	unlock, err := e.lockSessionLifecycle(ctx, snapshot.SessionID, "runtime")
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if err := e.requireSessionOpen(ctx, snapshot.SessionID); err != nil {
+		return err
+	}
 	spec, err := e.loadSpec(snapshot.SessionID)
 	if err != nil {
 		return err

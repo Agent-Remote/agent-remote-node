@@ -33,6 +33,15 @@
 
 Privileged helper requests use a versioned local protocol, peer credential authorization, strict operation allowlists, managed-root path checks, and serialized mutation. SSH attach and sync forced commands re-authorize each connection with the server and continue to deny arbitrary commands and forwarding not explicitly approved.
 
+Binding attachment with an expected attempt must preserve that identity from the SSH
+original command through Server verification and runtime dispatch. Reject malformed,
+missing or mismatched attempt replies before invoking sudo/runtime; never substitute
+the currently newest account binding or enable agent forwarding for account login.
+The exact flow also requires the actual SSH key ID from the trusted authorized_keys
+forced command. Do not accept that identity from SSH_ORIGINAL_COMMAND; the Server checks
+that it is still active and belongs to the authenticated device. Legacy attachment
+without an expected attempt keeps its existing compatibility behavior.
+
 ## Backend Compatibility
 
 Docker Sandbox support requires bounded, successful command-specific help for create, exec and rm.
@@ -45,3 +54,18 @@ The mandatory Node lifecycle, storage and recovery rules are centralized in
 [Skill manager](../skill-manager.md) and its linked cross-repository contract. Read them before changing
 Skill code. Preserve exact original bindings, private Helper authority, writer/reader exclusion,
 immutable receipts and retention; do not reconstruct authorization from historical task success.
+
+Binding gateway capability probes use a fixed executable argument, a two-second
+deadline, a 256-byte stdout cap, discarded stderr, and process-group cancellation.
+Missing, incompatible, oversized, nonzero-exit or timed-out gateways never advertise
+exact binding support. Probe the configured gateway again on each runtime report.
+
+Sync authorization must include the forced-command SSH key ID, never a value from
+SSH_ORIGINAL_COMMAND. Reject a missing or changed Server key echo before sudo or
+runtime dispatch; do not fall back to device-only verification.
+
+Exact session attachment follows [its strict protocol](../session-exact-attach.md).
+Compare the expected device locally before HTTP, require the actual forced SSH key,
+reject redirects and incomplete/mismatched verification, and probe the installed
+gateway with `--session-protocol-info` independently of binding support on every
+runtime report. Never fall back to the legacy session verification route.

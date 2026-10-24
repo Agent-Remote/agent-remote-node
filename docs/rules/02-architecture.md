@@ -123,6 +123,26 @@ immutable receipts and retention; do not reconstruct authorization from historic
 
 ## Managed Terminal Boundary
 
+Exact Claude session attachment binds the session and expected device to the
+trusted forced-command device and SSH key, then verifies all four identities with
+the Server before runtime dispatch. Its separate installed-gateway capability and
+strict protocol are defined in [exact session attachment](../session-exact-attach.md).
+Keep the existing privileged runtime helper boundary intact.
+
+Exact account binding attachment accepts the fixed five-word SSH original command
+`agent-remote-attach --binding <account> --binding-session <attempt>`. The gateway sends
+the expected attempt and trusted forced-command SSH key ID to the Server, then compares
+both the returned runtime binding ID and verified key echo before dispatch. An older
+Server that omits the key verification echo fails closed. A mismatch never
+falls back to the newest binding. Legacy three-word attachment remains compatible;
+malformed attach commands cannot fall through to the sync gateway.
+The worker probes the configured `AttachBinaryPath` with only `--protocol-info`
+before reporting `runtime_capabilities.binding_attach`. Only an exact supported
+v1 response enables this capability (v1 requires exact attempt dispatch and current
+forced-command SSH key verification with the Server echo); a new worker with an old installed gateway
+remains unsupported. The gateway info mode exits before configuration, device
+authorization or any runtime dispatch.
+
 Both backends use non-root tmux servers and session-private sockets. Docker tool/binding
 terminals use a per-user runtime identity separate from the Node service UID inside the sandbox.
 The helper starts a root transient systemd terminal host, sends a bounded launch manifest over
@@ -171,3 +191,18 @@ outside-directory reads and both runtime path layouts. It creates isolated
 credential copies and removes all test state; it does not edit the user's
 settings or conversation. Docker startup itself is covered separately by the
 Sandbox command tests.
+
+Sync gateways require the SSH key ID from the trusted forced command, pass it to
+Server verification, and compare the verified key echo before dispatch. A missing
+or changed echo fails closed; an old Server must be upgraded before this Node can
+serve synchronization. Older Node gateways remain compatible with the additive
+Server API but do not provide exact-key revocation protection.
+
+Synchronization preparation pins each directory from the configured managed root
+through the exact user/workspace/files target using no-follow directory handles.
+Marker publication uses an exclusive temporary file and directory-relative atomic
+rename. Root-side ownership and ACL normalization walk only opened descriptors;
+they never recurse through a user-controlled absolute path. Symbolic-link entries
+are not followed, hard-linked regular files and special files are rejected, and
+ancestor ACL additions preserve existing effective access without unmasking other
+principals. Tests use only temporary trees.

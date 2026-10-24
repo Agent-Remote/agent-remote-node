@@ -16,6 +16,11 @@ func (e Engine) reconcileSkillSession(ctx context.Context, request Request) (Ski
 	if err != nil {
 		return result, err
 	}
+	unlock, err := e.lockSessionLifecycle(ctx, input.SessionID, "runtime")
+	if err != nil {
+		return result, err
+	}
+	defer unlock()
 	store, err := e.openExistingSkillStateRoot()
 	if err != nil {
 		return result, err

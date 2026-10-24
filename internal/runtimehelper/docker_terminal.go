@@ -116,7 +116,7 @@ func (e Engine) startDockerTerminal(spec DockerSessionSpec, command, environment
 	if err != nil {
 		return err
 	}
-	if err := cmd.Start(); err != nil {
+	if err := e.submitSessionLaunch(context.Background(), spec.SessionID, dockerSessionKind(spec), cmd.Start); err != nil {
 		return err
 	}
 	ready := make(chan bool, 1)

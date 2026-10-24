@@ -164,17 +164,33 @@ type RuntimeStatus struct {
 
 // RuntimeCapabilities describes independently detected node runtimes.
 type RuntimeCapabilities struct {
-	Backends              []string                          `json:"backends"`
-	Native                map[string]bool                   `json:"native"`
-	DockerSandbox         map[string]bool                   `json:"docker_sandbox"`
-	BrowserDocker         map[string]bool                   `json:"browser_docker"`
-	Dependencies          map[string]string                 `json:"dependencies"`
-	ProbeErrors           []string                          `json:"probe_errors"`
-	SkillManager          map[string]SkillManagerCapability `json:"skill_manager"`
-	SkillManagerChecks    map[string]bool                   `json:"skill_manager_checks"`
-	SessionPortForwarding SessionPortForwardingCapability   `json:"session_port_forwarding"`
-	DeviceControl         DeviceControlCapability           `json:"device_control"`
-	EgoBrowserBridge      EgoBrowserBridgeCapability        `json:"ego_browser_bridge"`
+	SessionLifecycle          map[string]SessionLifecycleCapability `json:"session_lifecycle"`
+	SessionAttach             SessionAttachCapability               `json:"session_attach"`
+	SessionAttachmentTransfer SessionAttachmentTransferCapability   `json:"session_attachment_transfer"`
+	BindingAttach             BindingAttachCapability               `json:"binding_attach"`
+	Backends                  []string                              `json:"backends"`
+	Native                    map[string]bool                       `json:"native"`
+	DockerSandbox             map[string]bool                       `json:"docker_sandbox"`
+	BrowserDocker             map[string]bool                       `json:"browser_docker"`
+	Dependencies              map[string]string                     `json:"dependencies"`
+	ProbeErrors               []string                              `json:"probe_errors"`
+	SkillManager              map[string]SkillManagerCapability     `json:"skill_manager"`
+	SkillManagerChecks        map[string]bool                       `json:"skill_manager_checks"`
+	SessionPortForwarding     SessionPortForwardingCapability       `json:"session_port_forwarding"`
+	DeviceControl             DeviceControlCapability               `json:"device_control"`
+	EgoBrowserBridge          EgoBrowserBridgeCapability            `json:"ego_browser_bridge"`
+}
+
+// SessionLifecycleCapability describes installed Helper support for durable future-start fencing.
+type SessionLifecycleCapability struct {
+	Supported       bool `json:"supported"`
+	ProtocolVersion int  `json:"protocol_version"`
+}
+
+// BindingAttachCapability describes exact binding and forced-command SSH key verification.
+type BindingAttachCapability struct {
+	Supported       bool `json:"supported"`
+	ProtocolVersion int  `json:"protocol_version"`
 }
 
 // SkillManagerCapability describes the implemented managed lifecycle for one verified backend.
@@ -536,9 +552,11 @@ type VerifyAttachResponse struct {
 
 // VerifyBindingAttachRequest validates an SSH forced-command binding attach.
 type VerifyBindingAttachRequest struct {
-	NodeID        string `json:"node_id"`
-	ToolAccountID string `json:"tool_account_id"`
-	DeviceID      string `json:"device_id"`
+	NodeID                   string `json:"node_id"`
+	ToolAccountID            string `json:"tool_account_id"`
+	DeviceID                 string `json:"device_id"`
+	ExpectedBindingSessionID string `json:"expected_binding_session_id,omitempty"`
+	SSHKeyID                 string `json:"ssh_key_id,omitempty"`
 }
 
 // VerifyBindingAttachResponse is the binding attach verification response.
@@ -547,6 +565,7 @@ type VerifyBindingAttachResponse struct {
 		BindingSessionID string `json:"binding_session_id"`
 		TmuxSessionName  string `json:"tmux_session_name"`
 		RuntimeBackend   string `json:"runtime_backend"`
+		SSHKeyID         string `json:"ssh_key_id"`
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 }
@@ -555,12 +574,14 @@ type VerifyBindingAttachResponse struct {
 type VerifySyncRequest struct {
 	NodeID   string `json:"node_id"`
 	DeviceID string `json:"device_id"`
+	SSHKeyID string `json:"ssh_key_id"`
 }
 
 // VerifySyncResponse identifies the isolated user for a sync transport.
 type VerifySyncResponse struct {
 	Data struct {
-		UserID string `json:"user_id"`
+		UserID   string `json:"user_id"`
+		SSHKeyID string `json:"ssh_key_id"`
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 }
