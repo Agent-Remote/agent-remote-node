@@ -2,6 +2,14 @@
 
 All notable changes to this repository are recorded here.
 
+## v0.2.50 - 2026-10-25
+
+- test(runtime): skip privileged docker fixture for nonroot (5552496)
+- fix(runtime): complete docker terminal fixture identity (8a7badc)
+- fix(runtime): keep linux test server addressable (4271386)
+- fix(deps): update Go toolchain and vulnerable modules (d7c6103)
+- feat: complete exact attachment and sync lifecycle contracts (f6d7732)
+
 ## v0.2.49 - 2026-10-07
 
 - fix(runtime): complete native system filesystem mounts (9d1ab5d)
